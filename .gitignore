@@ -1,0 +1,13 @@
+# Nunca versionar segredos — o .env real tem HF_TOKEN.
+.env
+*.env
+!.env.example
+
+# Backups gerados pelo apply.sh / edições
+*.bak
+*.bak-*
+
+# Lixo
+__pycache__/
+*.pyc
+.DS_Store

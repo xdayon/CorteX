@@ -1,0 +1,4886 @@
+#!/usr/bin/env python3
+"""
+podcli — CLI entry point.
+
+One-command processing:
+    python cli.py process video.mp4 --top 5 --transcript transcript.txt
+    python cli.py process video.mp4 --preset myshow
+    python cli.py presets list
+    python cli.py presets save myshow --caption-style branded --logo ~/logo.png
+    python cli.py info  (show encoder, system info)
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+import time
+from version import VERSION
+
+# Windows stdout/stderr default to cp1252, which can't encode chars like '→'; output is UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+_env_file = os.environ.get("PODCLI_ENV_FILE") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_env_file)
+except ImportError:
+    pass
+if os.path.exists(_env_file):
+    with open(_env_file, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _val = _line.split("=", 1)
+                _key, _val = _key.strip(), _val.strip()
+                if _key and _val:
+                    os.environ.setdefault(_key, _val)
+
+os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+if sys.platform == "darwin":
+    os.environ.setdefault("DYLD_LIBRARY_PATH", "")
+os.environ.setdefault("PODCLI_TRANSITION_AUTOFIX_PASSES", "2")
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def _reveal_in_os(path: str) -> None:
+    """Open a file or folder in the OS file manager / default app. Best-effort."""
+    try:
+        if sys.platform == "darwin":
+            import subprocess
+            subprocess.Popen(["open", path])
+        elif sys.platform == "win32":
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            import subprocess
+            subprocess.Popen(["xdg-open", path])
+    except Exception as exc:
+        print(f"  ⚠ Could not open {path}: {exc}", file=sys.stderr)
+
+
+from config.paths import paths
+from presets import MIN_CLIP_DURATION, MAX_CLIP_DURATION, TARGET_CLIP_DURATION_MIN, TARGET_CLIP_DURATION_MAX
+
+
+def _suggestions_session_path(cache_hash: str) -> str:
+    return os.path.join(paths["home"], "sessions", f"clips-{cache_hash}.json")
+
+
+def _selection_signature(config: dict) -> str:
+    """Flags that change which clips get selected. A cached session is only
+    valid for a re-run with the same signature, otherwise it would serve clips
+    that ignore the new --no-ai / --min-duration / --max-duration flags."""
+    return "|".join(str(x) for x in (
+        bool(config.get("ai_select", True)),
+        config.get("min_clip_duration", MIN_CLIP_DURATION),
+        config.get("max_clip_duration", MAX_CLIP_DURATION),
+        config.get("format", "vertical"),
+    ))
+
+
+def _load_suggestions_session(cache_hash: str, top_n: int, signature: str) -> list | None:
+    if not cache_hash:
+        return None
+    path = _suggestions_session_path(cache_hash)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("top_n") != top_n:
+        return None
+    if payload.get("signature") != signature:
+        return None
+    clips = payload.get("clips")
+    if not isinstance(clips, list) or not clips:
+        return None
+    return clips
+
+
+def _save_suggestions_session(cache_hash: str, top_n: int, engine: str | None, clips: list, signature: str) -> None:
+    if not cache_hash or not clips:
+        return
+    path = _suggestions_session_path(cache_hash)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"cache_hash": cache_hash, "top_n": top_n, "signature": signature,
+                 "engine": engine, "clips": clips},
+                f,
+            )
+    except Exception:
+        pass
+
+
+def _clear_suggestions_session(cache_hash: str) -> None:
+    if not cache_hash:
+        return
+    path = _suggestions_session_path(cache_hash)
+    try:
+        if os.path.exists(path):
+            os.unlink(path)
+    except Exception:
+        pass
+
+
+def _should_auto_migrate_cli(args) -> bool:
+    if getattr(args, "show_help", False):
+        return False
+    if args.command == "config":
+        action = getattr(args, "config_action", None) or "status"
+        if action == "status":
+            return False
+        if action == "migrate" and getattr(args, "dry_run", False):
+            return False
+    return True
+
+
+def _auto_migrate_cli(args) -> None:
+    if not _should_auto_migrate_cli(args):
+        return
+    from config_bundle import auto_migrate_legacy_if_pending
+
+    summary = auto_migrate_legacy_if_pending(quiet=True)
+    if not summary:
+        return
+    home = summary.get("home_migration") or {}
+    imported_home = home.get("imported")
+    moved_cache = summary.get("moved_json") or summary.get("moved_remotion_bundle")
+    moved_presets = (summary.get("presets_migration") or {}).get("moved")
+    copied_env = (summary.get("env_migration") or {}).get("copied")
+    if imported_home or moved_cache or moved_presets or copied_env:
+        gray = "\033[38;5;245m"
+        green = "\033[38;2;74;222;128m"
+        reset = "\033[0m"
+        if imported_home:
+            print(f"  {green}✓{reset} {gray}Imported your presets, knowledge & assets → {home.get('target_home')}{reset}")
+        if moved_cache:
+            print(f"  {green}✓{reset} {gray}Migrated transcript cache → {summary.get('target_dir')}{reset}")
+        if moved_presets:
+            pm = summary.get("presets_migration") or {}
+            print(f"  {green}✓{reset} {gray}Migrated presets → {pm.get('target_dir')}{reset}")
+        if copied_env:
+            print(f"  {green}✓{reset} {gray}Copied .env → {(summary.get('env_migration') or {}).get('target')}{reset}")
+        print()
+
+
+def _thumbnail_lead_timestamp(start_second: float, frame_offset: float = 1 / 30) -> float:
+    """Timestamp for the still frame that leads into a rendered clip."""
+    try:
+        start = float(start_second)
+    except (TypeError, ValueError):
+        start = 0.0
+    return max(0.0, start - max(0.0, frame_offset))
+
+
+def _extract_thumbnail_lead_frame(video_path: str, output_path: str, start_second: float) -> str | None:
+    """Extract the frame just before a clip start for thumbnail generation."""
+    from utils.proc import run as proc_run
+
+    timestamp = _thumbnail_lead_timestamp(start_second)
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{timestamp:.3f}",
+        "-i", video_path,
+        "-frames:v", "1",
+        "-q:v", "2",
+        output_path,
+    ]
+    result = proc_run(cmd, timeout=60, check=False)
+    if result.returncode == 0 and os.path.exists(output_path):
+        return output_path
+    return None
+
+
+def _ensure_ssl_certs():
+    """Fix SSL certificate issues automatically (macOS + corporate proxies)."""
+    import ssl
+
+    # Quick test — if HTTPS works, we're fine
+    try:
+        import urllib.request
+        urllib.request.urlopen("https://huggingface.co", timeout=5)
+        return
+    except Exception:
+        pass
+
+    print("  ⚠ SSL issue detected — fixing automatically...")
+
+    # Method 1: Set certifi certs (works for most cases including corporate proxies)
+    try:
+        import certifi
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+        os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+        # Monkey-patch ssl to use certifi for this process
+        ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+        print("  ✓ SSL configured via certifi")
+        return
+    except ImportError:
+        pass
+
+    # Method 2: pip install certifi into venv, then use it
+    venv_pip = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "venv", "bin", "pip")
+    if os.path.exists(venv_pip):
+        import subprocess as sp
+        try:
+            sp.run([venv_pip, "install", "-q", "certifi"], capture_output=True, timeout=60)
+            import importlib
+            certifi = importlib.import_module("certifi")
+            os.environ["SSL_CERT_FILE"] = certifi.where()
+            os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+            ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+            print("  ✓ SSL configured (installed certifi)")
+            return
+        except Exception:
+            pass
+
+    # Method 3: macOS Install Certificates command
+    if sys.platform == "darwin":
+        import subprocess as sp
+        import glob
+        ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        cert_scripts = glob.glob(f"/Applications/Python {ver}*/Install Certificates.command") + \
+                       glob.glob(f"/Applications/Python {ver}/Install Certificates.command")
+        if cert_scripts:
+            try:
+                sp.run(["bash", cert_scripts[0]], capture_output=True, timeout=30)
+                # Force reload ssl context
+                ssl._create_default_https_context = ssl._create_unverified_context
+                print("  ✓ SSL certificates installed (restart may be needed)")
+                return
+            except Exception:
+                pass
+
+    # Method 4: disable SSL verification only on explicit opt-in — silently
+    # turning off TLS verification is a downgrade risk.
+    if os.environ.get("PODCLI_INSECURE_SSL", "").strip().lower() in ("1", "true", "yes", "on"):
+        ssl._create_default_https_context = ssl._create_unverified_context
+        os.environ["PYTHONHTTPSVERIFY"] = "0"
+        print("  ⚠ SSL verification DISABLED (PODCLI_INSECURE_SSL set) — model downloads only")
+    else:
+        print(
+            "  ✗ Could not configure SSL certificates. Install certifi "
+            "(pip install certifi) or, to download models without verification, "
+            "re-run with PODCLI_INSECURE_SSL=1."
+        )
+
+
+def _sanitize_path_component(value: str) -> str:
+    """Convert a user-facing label into a safe directory name."""
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in value.strip())
+    safe = safe.strip("._")
+    return safe or "default"
+
+
+def _resolve_output_dir(
+    video_path: str,
+    preset_name: str | None,
+    configured_output_dir: str | None,
+    explicit_output_dir: str | None,
+) -> str:
+    """
+    Resolve the clip output directory.
+
+    Rules:
+    - Explicit --output wins exactly as given.
+    - Otherwise use preset/default output root.
+    - Preset-driven runs get their own subfolder by preset name to avoid
+      collisions when multiple presets run in parallel.
+    """
+    if explicit_output_dir:
+        return explicit_output_dir
+
+    base_output_dir = (
+        configured_output_dir
+        or os.environ.get("PODCLI_OUTPUT")
+        or os.path.join(os.path.dirname(video_path), "clips")
+    )
+    if not preset_name:
+        return base_output_dir
+
+    preset_folder = _sanitize_path_component(preset_name)
+    normalized_base = os.path.normpath(base_output_dir)
+    if os.path.basename(normalized_base) == preset_folder:
+        return base_output_dir
+    return os.path.join(base_output_dir, preset_folder)
+
+
+def _has_successful_results(results: list) -> bool:
+    """Return True if at least one clip rendered successfully."""
+    return any(isinstance(r, dict) and r.get("output_path") for r in results)
+
+
+def _should_enter_post_render_loop(config: dict, interrupted: bool, results: list) -> bool:
+    """Open the post-render rerender flow on explicit config or partial interrupt recovery."""
+    # The post-render loop is interactive (prompt_toolkit); never enter it
+    # without a real terminal or it crashes with OSError [Errno 22].
+    if not sys.stdin.isatty():
+        return False
+    return bool(config.get("post_render_review", False) or (interrupted and _has_successful_results(results)))
+
+
+def cmd_studio(args):
+    """Cut a fragment + wrap it with Remotion intro/outro bookends.
+
+    Thin wrapper around clip_studio.py (which orchestrates the
+    fragment render, bookend renders, and the concat). Runs it as a
+    subprocess with this same interpreter so the venv is reused.
+    """
+    if not getattr(args, "save_brand", False) and not args.paragraph and (args.start is None or args.end is None):
+        print("Error: provide either --start and --end, or --paragraph \"text\"", file=sys.stderr)
+        sys.exit(1)
+
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clip_studio.py")
+    if not os.path.exists(script):
+        print(f"Error: clip_studio.py not found at {script}", file=sys.stderr)
+        sys.exit(1)
+
+    # When just saving the brand, no video is needed; pass a placeholder the
+    # script ignores because --save-brand returns before touching the video.
+    video_arg = os.path.abspath(args.video) if args.video else "_brand_only_"
+    cmd = [sys.executable, script, video_arg]
+    if getattr(args, "save_brand", False):
+        cmd += ["--save-brand"]
+    if args.start is not None:
+        cmd += ["--start", str(args.start)]
+    if args.end is not None:
+        cmd += ["--end", str(args.end)]
+    if args.paragraph:
+        cmd += ["--paragraph", args.paragraph]
+    if args.language:
+        cmd += ["--language", args.language]
+    if getattr(args, "engine", None):
+        cmd += ["--engine", args.engine]
+    env = os.environ.copy()
+    if getattr(args, "assemblyai_api_key", None):
+        env["ASSEMBLYAI_API_KEY"] = args.assemblyai_api_key
+    cmd += [
+        "--caption-style", args.caption_style,
+        "--crop", args.crop,
+        "--intro-seconds", str(args.intro_seconds),
+        "--outro-seconds", str(args.outro_seconds),
+    ]
+    if args.outro_title is not None:
+        cmd += ["--outro-title", args.outro_title]
+    if args.platforms is not None:
+        cmd += ["--platforms", args.platforms]
+    if args.accent is not None:
+        cmd += ["--accent", args.accent]
+    if args.bg is not None:
+        cmd += ["--bg", args.bg]
+    if args.intro_title:
+        cmd += ["--intro-title", args.intro_title]
+    if args.handle:
+        cmd += ["--handle", args.handle]
+    if args.output:
+        cmd += ["--output", os.path.abspath(args.output)]
+    if args.no_intro:
+        cmd += ["--no-intro"]
+    if args.no_outro:
+        cmd += ["--no-outro"]
+
+    import subprocess
+    rc = subprocess.run(cmd, env=env).returncode
+    sys.exit(rc)
+
+
+def cmd_reel(args):
+    """Create and iterate on a highlights reel — detect once, then edit moments fast."""
+    from services.reel import (
+        ReelSession, seed_session, edit_moment, build_reel, list_sessions, delete_session,
+    )
+    from services.transcript_packer import compute_cache_hash, load_cached_transcript_for_video
+
+    def _mmss(s):
+        return f"{int(s // 60)}:{int(s % 60):02d}"
+
+    def _show(session):
+        for i, m in enumerate(session.moments, 1):
+            flag = "" if m.enabled else "  (disabled)"
+            print(f"  [{i}] {_mmss(m.start)}-{_mmss(m.end)} ({m.duration:.0f}s, {m.why}){flag}")
+            if m.text:
+                print("      " + (m.text[:150] + "…" if len(m.text) > 150 else m.text))
+
+    action = getattr(args, "reel_action", None)
+    if action == "new":
+        video = _clean_path(args.video)
+        sid = compute_cache_hash(video)
+        out_dir = args.output or os.path.join(os.getcwd(), f"reel_{sid[:8]}")
+        cached = load_cached_transcript_for_video(video)
+        words = cached.get("words") if cached else None
+        print("  Detecting moments (one-time)...")
+        session = seed_session(
+            sid, video, out_dir, profile=args.profile or "auto",
+            format=args.format or "horizontal", top_n=args.top or 10,
+            min_dur=args.min_dur, max_dur=args.max_dur,
+            words=words, progress_callback=lambda p, m: print(f"    {m}") if m else None,
+        )
+        _show(session)
+        print("  Building reel...")
+        reel = build_reel(session)
+        print(f"  ✓ {reel}")
+        print(f"  session: {sid}")
+        print(f"  edit with: podcli reel edit {sid} <N> <longer|shorter|earlier|later|shift|drop|toggle> [secs]")
+    elif action == "list":
+        for s in list_sessions():
+            print(f"  {s['session_id']}  {s['profile']}/{s['format']}  "
+                  f"{s['enabled_count']}/{s['moment_count']} moments  {os.path.basename(s['source'])}")
+    elif action == "delete":
+        ok = delete_session(args.session)
+        print(f"  {'✓ deleted' if ok else '✗ no such session'} {args.session}")
+    elif action == "show":
+        _show(ReelSession.load(args.session))
+    elif action == "edit":
+        session = edit_moment(ReelSession.load(args.session), args.index, args.op, args.seconds)
+        reel = build_reel(session)
+        print(f"  ✓ rebuilt {reel}")
+        _show(session)
+    elif action == "build":
+        reel = build_reel(ReelSession.load(args.session))
+        print(f"  ✓ {reel}")
+    else:
+        print("  Usage: podcli reel new <video> | list | show <session> | "
+              "edit <session> N <op> [secs] | build <session> | delete <session>")
+
+
+def cmd_process(args):
+    """Full auto pipeline: transcribe → suggest → export."""
+    from services.clip_generator import generate_clip
+    from services.transcript_parser import parse_speaker_transcript
+    from services.audio_analyzer import get_energy_profile
+    from services.audio_events import get_event_profile, is_available as audio_events_available
+    from services.encoder import get_encoder_info
+    from presets import get_preset, DEFAULT_PRESET, MIN_CLIP_DURATION, MAX_CLIP_DURATION, TARGET_CLIP_DURATION_MIN, TARGET_CLIP_DURATION_MAX
+
+    # Load preset or defaults
+    if args.preset:
+        try:
+            config = get_preset(args.preset)
+            print(f"  Using preset: {args.preset}")
+        except FileNotFoundError:
+            print(f"Error: Preset '{args.preset}' not found", file=sys.stderr)
+            sys.exit(1)
+    else:
+        config = {**DEFAULT_PRESET}
+
+    # Resolve video path: CLI arg > preset > error
+    if args.video:
+        video_path = _clean_path(args.video)
+    elif config.get("video_path"):
+        video_path = _clean_path(config["video_path"])
+    else:
+        print(f"Error: No video specified. Provide a path or use a preset with video_path.", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.exists(video_path):
+        print(f"Error: Video not found: {video_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Resolve transcript from preset if not given on CLI
+    if not args.transcript and config.get("transcript_path"):
+        args.transcript = config["transcript_path"]
+
+    # Apply preset corrections (merged with global corrections)
+    if config.get("corrections"):
+        from services.corrections import get_corrections, save_corrections
+        global_corr = get_corrections()
+        merged = {**global_corr, **config["corrections"]}
+        if merged != global_corr:
+            save_corrections(merged)
+
+    # CLI overrides
+    if getattr(args, "engine", None):
+        os.environ["PODCLI_ENGINE"] = args.engine
+    if getattr(args, "assemblyai_api_key", None):
+        os.environ["ASSEMBLYAI_API_KEY"] = args.assemblyai_api_key
+    if args.caption_style:
+        config["caption_style"] = args.caption_style
+    if args.crop:
+        config["crop_strategy"] = args.crop
+    if getattr(args, "format", None):
+        config["format"] = args.format
+    if getattr(args, "profile", None):
+        config["profile"] = args.profile
+    if getattr(args, "thumbnails", None) is not None:
+        config["generate_thumbnails"] = args.thumbnails
+    if args.top:
+        config["top_clips"] = args.top
+    if getattr(args, "review_each", False):
+        config["review_each_clip"] = True
+    if getattr(args, "post_review", False):
+        config["post_render_review"] = True
+    if args.logo:
+        from services.asset_store import resolve as resolve_asset
+        resolved = resolve_asset(args.logo)
+        if resolved:
+            config["logo_path"] = resolved
+        else:
+            print(f"  Warning: Logo '{args.logo}' not found (checked assets and filesystem)", file=sys.stderr)
+            config["logo_path"] = args.logo  # pass through anyway
+    if getattr(args, "no_outro", False):
+        config["outro_path"] = ""
+    elif args.outro:
+        from services.asset_store import resolve as resolve_asset_outro
+        resolved = resolve_asset_outro(args.outro)
+        if resolved:
+            config["outro_path"] = resolved
+        else:
+            print(f"  Warning: Outro '{args.outro}' not found (checked assets and filesystem)", file=sys.stderr)
+            config["outro_path"] = args.outro
+    elif not config.get("outro_path"):
+        # Highlight profiles (party/action) are raw moments, not branded shorts, so they
+        # skip the auto-outro; the podcast flow keeps it.
+        from services.profiles import get_profile as _get_profile
+        if _get_profile(config.get("profile")).candidate_source != "saliency":
+            from services.asset_store import default_outro
+            auto_outro = default_outro()
+            if auto_outro:
+                config["outro_path"] = auto_outro
+    if args.time_adjust is not None:
+        config["time_adjust"] = args.time_adjust
+    if args.no_energy:
+        config["energy_boost"] = False
+    if getattr(args, "no_speakers", False):
+        config["no_speakers"] = True
+    if getattr(args, "no_cache", False):
+        config["no_cache"] = True
+    if args.quality:
+        config["quality"] = args.quality
+    if getattr(args, "allow_ass_fallback", False):
+        config["allow_ass_fallback"] = True
+
+    if getattr(args, "fast", False):
+        # Fast mode is a draft-render path inspired by Clipify: skip the
+        # slowest analysis and polish passes while preserving explicit flags.
+        config["fast_mode"] = True
+        config["whisper_model"] = "tiny.en"
+        config["top_clips"] = args.top or min(config.get("top_clips", 5), 3)
+        config["energy_boost"] = False
+        config["no_speakers"] = True
+        config["quality"] = args.quality or "low"
+        config["crop_strategy"] = args.crop or "face"
+        config["allow_ass_fallback"] = True
+        config["use_ass_captions"] = True
+        config["generate_thumbnails"] = False
+        config["generate_content"] = False
+        config["ai_select"] = False
+        if not args.outro:
+            config["outro_path"] = ""
+        os.environ["PODCLI_TRANSITION_AUTOFIX_PASSES"] = "0"
+
+    # Set quality env var before importing video_processor
+    quality = config.get("quality", os.environ.get("PODCLI_QUALITY", "max"))
+    os.environ["PODCLI_QUALITY"] = quality
+
+    # Output directory: explicit --output wins. Otherwise preset runs get
+    # their own subfolder under the configured/default clips root.
+    output_dir = _resolve_output_dir(
+        video_path=video_path,
+        preset_name=args.preset,
+        configured_output_dir=config.get("output_dir"),
+        explicit_output_dir=args.output,
+    )
+    os.makedirs(output_dir, exist_ok=True)
+
+    enc_info = get_encoder_info()
+    print(f"\n  podcli — processing")
+    print(f"  Encoder: {enc_info['best']} ({enc_info['system']})")
+    print(f"  Quality: {quality}")
+    if config.get("fast_mode"):
+        print("  Mode:    fast draft")
+    print(f"  Video:   {os.path.basename(video_path)}")
+    print()
+
+    # Cache hash for resume — keyed by video size+mtime. Disabled when a custom
+    # transcript is supplied, since the hash ignores transcript contents and
+    # would otherwise resume suggestions made from a different transcript.
+    cache_hash = ""
+    if not args.transcript:
+        try:
+            from services.transcript_packer import compute_cache_hash as _compute_cache_hash
+
+            cache_hash = _compute_cache_hash(video_path)
+        except Exception:
+            cache_hash = ""
+
+    # ── Step 1: Get transcript ──
+    transcript = None
+    words = []
+    segments = []
+    result = {}
+
+    # Saliency profiles (party/action) select on audio/visual signals, not dialogue,
+    # so transcribing a long video would be wasted work — skip it entirely.
+    from services.profiles import get_profile
+
+    content_profile = get_profile(config.get("profile"))
+    skip_transcript = content_profile.candidate_source == "saliency" and not args.transcript
+
+    from services.transcript_packer import (
+        load_cached_transcript_for_video,
+        save_cached_transcript_for_video,
+    )
+
+    if skip_transcript:
+        # Reuse an existing transcript so highlight boundaries snap to whole sentences;
+        # only skip transcription outright when there is none (true no-dialogue footage).
+        cached = load_cached_transcript_for_video(video_path)
+        if cached and not config.get("no_cache", False):
+            words = cached["words"]
+            segments = cached["segments"]
+            result = cached
+            skip_transcript = False
+            print(f"  [1/4] Reusing cached transcript ({len(segments)} segments) for sentence-clean cuts")
+        else:
+            print(f"  [1/4] Skipping transcription ({content_profile.name} profile uses audio/visual signals)")
+
+    if args.transcript:
+        print("  [1/4] Loading transcript...")
+        with open(args.transcript, "r", encoding="utf-8") as f:
+            raw_text = f.read()
+
+        # Detect format
+        if raw_text.strip().startswith("{") or raw_text.strip().startswith("["):
+            data = json.loads(raw_text)
+            if isinstance(data, list):
+                words = data
+            else:
+                words = data.get("words", [])
+                segments = data.get("segments", [])
+            print(f"         JSON transcript: {len(words)} words")
+        else:
+            parsed = parse_speaker_transcript(
+                raw_text,
+                time_adjust=config.get("time_adjust", 0),
+            )
+            if "error" in parsed:
+                print(f"  Error: {parsed['error']}", file=sys.stderr)
+                sys.exit(1)
+            words = parsed["words"]
+            segments = parsed["segments"]
+            print(f"         Parsed: {len(segments)} segments, {len(words)} words")
+    elif not skip_transcript:
+        # Check cache first
+        cached = load_cached_transcript_for_video(video_path)
+        if cached and not config.get("no_cache", False):
+            print("  [1/4] Loaded from cache (instant)")
+            words = cached["words"]
+            segments = cached["segments"]
+            result = cached
+            print(f"         {len(segments)} segments, {len(words)} words")
+        else:
+            from services.engines import is_assemblyai_engine
+            engine_label = "AssemblyAI" if is_assemblyai_engine(os.environ.get("PODCLI_ENGINE", "")) else "Whisper"
+            print(f"  [1/4] Transcribing with {engine_label}...")
+            _ensure_ssl_certs()
+            import warnings
+            warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
+            from services.transcription import transcribe_file
+            import threading
+
+            # Spinner runs in background while Whisper blocks
+            _spin_stop = threading.Event()
+            _spin_msg = ["Loading model..."]
+
+            def _spinner():
+                frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                i = 0
+                while not _spin_stop.is_set():
+                    print(f"\r         {frames[i % len(frames)]}  {_spin_msg[0][:55]:<55}", end="", flush=True)
+                    i += 1
+                    _spin_stop.wait(0.12)
+                print(f"\r         {'':60}", end="\r")  # clear line
+
+            spin_thread = threading.Thread(target=_spinner, daemon=True)
+            spin_thread.start()
+
+            def _transcribe_progress(pct, msg):
+                _spin_msg[0] = f"{msg} ({pct}%)" if pct < 100 else msg
+
+            try:
+                result = transcribe_file(
+                    file_path=video_path,
+                    model_size=config.get("whisper_model", "large-v3-turbo"),
+                    language=config.get("language") or os.environ.get("PODCLI_LANGUAGE") or "pt",
+                    engine=os.environ.get("PODCLI_ENGINE") or None,
+                    enable_diarization=not config.get("no_speakers", False),
+                    progress_callback=_transcribe_progress,
+                )
+            except (RuntimeError, FileNotFoundError, subprocess.CalledProcessError) as e:
+                _spin_stop.set()
+                spin_thread.join(timeout=1)
+                print(f"\r{' ' * 70}\r  ✗ {e}\n", flush=True)
+                sys.exit(1)
+            _spin_stop.set()
+            spin_thread.join(timeout=1)
+            words = result["words"]
+            segments = result["segments"]
+            print(f"         Done: {len(segments)} segments, {len(words)} words")
+
+            # Save to cache for next run
+            save_cached_transcript_for_video(video_path, result)
+
+    # Apply word corrections (Whisper misheard proper nouns, brand names)
+    from services.corrections import apply_corrections
+    apply_corrections(words, segments)
+
+    # Extract face_map before result gets overwritten in clip loop
+    face_map = result.get("face_map")
+
+    # Check speaker data availability (needed for smart cropping)
+    speakers_in_words = set(w.get("speaker") for w in words if w.get("speaker"))
+    diarization_warning = result.get("diarization_warning")
+    if diarization_warning:
+        print(f"         ⚠ {diarization_warning}")
+    if len(speakers_in_words) > 1:
+        print(f"         Speakers detected: {len(speakers_in_words)} (crop will follow active speaker)")
+    elif len(speakers_in_words) == 1:
+        print(f"         Single speaker detected (static face crop)")
+    else:
+        print(f"         No speaker data (center crop fallback)")
+
+    if not segments and not skip_transcript:
+        print("  Error: No transcript segments found.", file=sys.stderr)
+        sys.exit(1)
+
+    # ── Step 2: Analyze audio energy ──
+    energy_scores = None
+    reaction_scores = None
+    if config.get("energy_boost", True):
+        print("  [2/4] Analyzing audio energy...")
+        try:
+            profile = get_energy_profile(video_path, segments)
+            energy_scores = profile["segment_scores"]
+            print(f"         {len(profile['peak_times'])} peak moments found")
+        except Exception as e:
+            print(f"         Skipped (error: {e})")
+        if audio_events_available():
+            try:
+                reactions = get_event_profile(video_path, segments)
+                reaction_scores = reactions["segment_scores"]
+                n = len(reactions["reaction_times"])
+                if n:
+                    print(f"         {n} laughter/reaction moments found")
+            except Exception as e:
+                print(f"         Reactions skipped (error: {e})")
+    else:
+        print("  [2/4] Audio analysis skipped (--no-energy)")
+
+    # ── Step 3: Score and select clips ──
+    top_n = config.get("top_clips", 5)
+    selection_sig = _selection_signature(config)
+    clips = None
+    resumed_from_session = False
+
+    if getattr(args, "no_resume", False) or config.get("no_cache", False):
+        _clear_suggestions_session(cache_hash)
+    else:
+        resumed = _load_suggestions_session(cache_hash, top_n, selection_sig)
+        if resumed:
+            print(f"  [3/4] Resumed {len(resumed)} cached suggestions (use --no-resume to regenerate)")
+            clips = resumed
+            resumed_from_session = True
+
+    # Saliency profiles (party/action) pick moments from the fused laughter/energy
+    # curve rather than the transcript, so they work on footage with no dialogue.
+    if content_profile.candidate_source == "saliency" and not clips:
+        from services.saliency import detect_highlights
+        from services.formats import get_format
+
+        spec = get_format(config.get("format", "vertical"))
+        print(f"  [3/4] Detecting {content_profile.name} highlights (laughter + energy)...")
+        clips = detect_highlights(
+            video_path,
+            profile_name=content_profile.name,
+            top_n=top_n,
+            min_dur=15.0,
+            max_dur=min(60.0, float(spec.dur_max)),
+            segments=segments or None,
+            words=words or None,
+            progress_callback=lambda pct, msg: print(f"         {msg}") if msg else None,
+        )
+        if clips:
+            print(f"         ✓ {len(clips)} highlights found")
+            _save_suggestions_session(cache_hash, top_n, "saliency", clips, selection_sig)
+        else:
+            print("         ⚠ No highlights found, falling back to transcript selection")
+
+    # Try an AI CLI first (uses PodStack knowledge base for intelligent selection)
+    from services.claude_suggest import suggest_initial_with_claude, _engine_label, _find_ai_cli
+
+    ai_path, ai_engine = _find_ai_cli()
+    if clips:
+        pass  # already selected (resumed cache or saliency profile)
+    elif ai_path and config.get("ai_select", True):
+        ai_label = _engine_label(ai_engine)
+        print(f"  [3/4] Selecting moments with {ai_label} (PodStack)...")
+        clips = suggest_initial_with_claude(
+            segments=segments,
+            top_n=top_n,
+            progress_callback=lambda pct, msg: print(f"         {msg}") if msg else None,
+        )
+        if clips:
+            actual_engine = next((c.get("_ai_engine") for c in clips if c.get("_ai_engine")), ai_engine)
+            print(f"         ✓ {_engine_label(actual_engine)} selected {len(clips)} clips")
+            _save_suggestions_session(cache_hash, top_n, actual_engine, clips, selection_sig)
+        else:
+            print("         ⚠ AI CLI unavailable, falling back to heuristics")
+    elif not config.get("ai_select", True):
+        print(f"  [3/4] Scoring clips (fast heuristic mode)...")
+    else:
+        print(f"  [3/4] Scoring clips (heuristic mode)...")
+        print(f"         ℹ Install Claude Code or Codex for smarter selection")
+
+    # Fallback to heuristic algorithm
+    if not clips:
+        clips = _suggest_clips(
+            segments=segments,
+            energy_scores=energy_scores,
+            reaction_scores=reaction_scores,
+            top_n=top_n,
+            min_dur=config.get("min_clip_duration", MIN_CLIP_DURATION),
+            max_dur=config.get("max_clip_duration", MAX_CLIP_DURATION),
+        )
+        if clips and not resumed_from_session:
+            _save_suggestions_session(cache_hash, top_n, "heuristic", clips, selection_sig)
+    elif len(clips) < top_n:
+        needed = top_n - len(clips)
+        print(f"         AI returned {len(clips)}/{top_n}; filling {needed} with heuristic picks...")
+        heuristic_clips = _suggest_clips(
+            segments=segments,
+            energy_scores=energy_scores,
+            reaction_scores=reaction_scores,
+            top_n=max(top_n * 3, top_n + needed),
+            min_dur=config.get("min_clip_duration", MIN_CLIP_DURATION),
+            max_dur=config.get("max_clip_duration", MAX_CLIP_DURATION),
+        )
+
+        def _overlaps_existing(candidate, existing_clips):
+            c_start = float(candidate.get("start_second", 0))
+            c_end = float(candidate.get("end_second", 0))
+            for existing in existing_clips:
+                e_start = float(existing.get("start_second", 0))
+                e_end = float(existing.get("end_second", 0))
+                overlap = min(c_end, e_end) - max(c_start, e_start)
+                if overlap > 5:
+                    return True
+            return False
+
+        for candidate in heuristic_clips:
+            if len(clips) >= top_n:
+                break
+            if not _overlaps_existing(candidate, clips):
+                clips.append(candidate)
+        clips = clips[:top_n]
+        clips.sort(key=lambda c: c.get("start_second", 0))
+        print(f"         Final suggestions: {len(clips)}/{top_n}")
+        if clips and not resumed_from_session:
+            _save_suggestions_session(cache_hash, top_n, "ai+heuristic", clips, selection_sig)
+
+    if not clips:
+        print("  No clips found. Try a longer transcript or lower --min-duration.", file=sys.stderr)
+        sys.exit(1)
+
+    # ── Step 3.5: Interactive review ──
+    clips = _review_clips(clips, segments, energy_scores, config)
+
+    if not clips:
+        print("\n  No clips selected. Exiting.")
+        return
+
+    # ── Step 4: Export ──
+    # Check if thumbnail generation is enabled
+    thumb_dir = os.path.join(output_dir, "thumbnails")
+    _thumb_intro_duration = 0.8
+    _tc_path = paths["thumbnailConfig"]
+
+    # Opt-in: a brand config must exist before podcli generates thumbnails.
+    # New users get no auto-thumbnails until they run `podcli init-thumbnail`
+    # (or write their own .podcli/thumbnail-config.json). Existing users who
+    # already have the file keep working - the file is the opt-in signal.
+    # An explicit `generate_thumbnails` flag in the runtime config still
+    # overrides either way for scripted runs.
+    _explicit = config.get("generate_thumbnails")
+    if _explicit is not None:
+        _thumb_enabled = bool(_explicit)
+    else:
+        _thumb_enabled = os.path.exists(_tc_path)
+
+    if _thumb_enabled and os.path.exists(_tc_path):
+        try:
+            with open(_tc_path, encoding="utf-8") as _tcf:
+                _thumb_cfg = json.load(_tcf)
+                _thumb_enabled = _thumb_cfg.get("enabled", True)
+                _thumb_intro_duration = float(
+                    _thumb_cfg.get("intro_duration", _thumb_cfg.get("clip_start_duration", _thumb_intro_duration))
+                )
+        except Exception:
+            pass
+    _thumb_intro_duration = max(0.5, min(_thumb_intro_duration, 1.0))
+
+    # Check if AI CLI is available for per-clip content generation
+    from services.claude_suggest import _find_ai_cli
+    _ai_cli_path, _ = _find_ai_cli()
+
+    # Pre-load thumbnail tools if enabled
+    _thumb_gen = None
+    _thumb_to_video = None
+    _thumb_logo = None
+    _thumb_photo = None
+    if _thumb_enabled:
+        try:
+            from services.thumbnail_ai import generate_variations as _tv, thumbnail_to_video_frame as _ttv
+            _thumb_gen = _tv
+            _thumb_to_video = _ttv
+            _thumb_logo = config.get("logo_path") or None
+            # Do not auto-pick a static photo for clip exports.
+            # Using a single image causes all thumbnail variations to show
+            # the same face moment. Prefer video-derived frames by default.
+            _thumb_photo = None
+        except Exception:
+            _thumb_enabled = False
+
+    _ai_label = " (+ AI titles)" if (_ai_cli_path and config.get("generate_content", True)) else ""
+    print(f"\n  [4/4] Exporting {len(clips)} clips{_ai_label} to {output_dir}/")
+    results = []
+    t0 = time.time()
+    _skip_review = not config.get("review_each_clip", False) or not sys.stdin.isatty()
+    interrupted = False
+
+    try:
+        for i, clip in enumerate(clips):
+            ok = False
+            result = None
+            with _Spinner(f"Clip {i+1}/{len(clips)}: {clip['title'][:40]}...") as sp:
+                try:
+                    result = generate_clip(
+                        video_path=video_path,
+                        start_second=clip["start_second"],
+                        end_second=clip["end_second"],
+                        caption_style=config.get("caption_style", "branded"),
+                        crop_strategy=config.get("crop_strategy", "face"),
+                        format=config.get("format", "vertical"),
+                        transcript_words=words,
+                        title=clip.get("title", f"clip_{i+1}"),
+                        output_dir=output_dir,
+                        logo_path=config.get("logo_path") or None,
+                        outro_path=config.get("outro_path") or None,
+                        keep_segments=clip.get("segments"),
+                        face_map=face_map,
+                        allow_ass_fallback=config.get("allow_ass_fallback", False),
+                        use_ass_captions=config.get("use_ass_captions", False),
+                    )
+                    results.append(result)
+                    ok = True
+                except Exception as e:
+                    print(f"\n         ✗ {e}")
+                    results.append({"status": "error", "error": str(e)})
+                    continue
+            if ok:
+                print(f"         ✓ Clip {i+1}/{len(clips)}: {result['file_size_mb']}MB")
+
+            # Generate thumbnail from the lead-in frame and hard-cut prepend it.
+            if _thumb_enabled and _thumb_gen and result.get("output_path"):
+                try:
+                    clip_thumb_dir = os.path.join(thumb_dir, f"clip_{i+1}")
+                    os.makedirs(clip_thumb_dir, exist_ok=True)
+                    lead_frame = _extract_thumbnail_lead_frame(
+                        video_path=video_path,
+                        output_path=os.path.join(clip_thumb_dir, "_lead_frame.jpg"),
+                        start_second=result.get("start_second", clip.get("start_second", 0)),
+                    )
+                    thumb_paths = _thumb_gen(
+                        title=clip.get("title", f"Clip {i+1}"),
+                        output_dir=clip_thumb_dir,
+                        photo_path=lead_frame or _thumb_photo,
+                        video_path=video_path,
+                        start_second=result.get("start_second", clip.get("start_second")),
+                        end_second=result.get("end_second", clip.get("end_second")),
+                        logo_path=_thumb_logo,
+                    )
+                    if thumb_paths:
+                        thumb_video = os.path.join(clip_thumb_dir, "thumb_frame.mp4")
+                        _thumb_to_video(thumb_paths[0], thumb_video, duration=_thumb_intro_duration)
+                        from services.video_processor import concat_outro
+                        final_with_thumb = result["output_path"].replace(".mp4", "_with_thumb.mp4")
+                        # Hard cut — thumbnail uses the frame just before content,
+                        # so playback feels like the clip has started.
+                        concat_outro(thumb_video, result["output_path"], final_with_thumb, crossfade_duration=0.0)
+                        os.replace(final_with_thumb, result["output_path"])
+                        print(f"                 + thumbnail prepended ({_thumb_intro_duration:.2f}s, {len(thumb_paths)} variations in {os.path.basename(clip_thumb_dir)}/)")
+                except Exception as e:
+                    print(f"                 ⚠ thumbnail: {e}")
+
+            # Generate titles, descriptions, tags for this clip immediately
+            if _ai_cli_path and config.get("generate_content", True) and result.get("output_path"):
+                try:
+                    from services.content_generator import generate_clip_content
+                    content_result = generate_clip_content(
+                        clip=clip,
+                        transcript_segments=segments,
+                    )
+                    if content_result and content_result.get("raw_text"):
+                        # Save per-clip content to file
+                        _content_path = result["output_path"].replace(".mp4", "_content.md")
+                        with open(_content_path, "w", encoding="utf-8") as _cf:
+                            _cf.write(f"# {clip.get('title', 'Clip')}\n\n{content_result['raw_text']}")
+
+                        # Pretty-print in terminal
+                        _accent = "\033[38;2;212;135;74m"
+                        _bold = "\033[1m"
+                        _dim = "\033[2m"
+                        _yellow = "\033[33m"
+                        _reset = "\033[0m"
+
+                        print(f"\n  {'─' * 45}")
+                        print(f"  {_bold}📋 Clip {i+1}: {clip['title'][:45]}{_reset}")
+                        print(f"  {'─' * 45}")
+                        for line in content_result["raw_text"].split("\n"):
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if stripped.startswith("TITLES") or stripped.startswith("DESCRIPTION") or stripped.startswith("TAGS") or stripped.startswith("HASHTAGS") or stripped.startswith("TOP PICK"):
+                                print(f"  {_bold}{stripped}{_reset}")
+                            elif stripped[0:1].isdigit() and ". " in stripped[:4]:
+                                print(f"  {_accent}{stripped}{_reset}")
+                            elif stripped.startswith("#"):
+                                print(f"  {_yellow}{stripped}{_reset}")
+                            else:
+                                print(f"  {_dim}{stripped}{_reset}")
+                        print(f"  {_dim}Saved: {os.path.basename(_content_path)}{_reset}")
+                        print()
+                except Exception as e:
+                    print(f"                 ⚠ content: {e}")
+
+            # ── Per-clip review: open video, ask for feedback ──
+            if ok and not _skip_review and result.get("output_path") and os.path.exists(result["output_path"]):
+                _reveal_in_os(result["output_path"])
+
+                while True:
+                    import questionary as _rq
+                    from questionary import Style as _RS
+                    _rstyle = _RS([
+                        ("qmark", "fg:#d4874a bold"), ("question", "bold"),
+                        ("answer", "fg:#4ade80"), ("pointer", "fg:#d4874a bold"),
+                        ("highlighted", "fg:#d4874a bold"), ("selected", "fg:#4ade80"),
+                    ])
+                    _raction = _rq.select(
+                        f"Clip {i+1}/{len(clips)}: {clip['title'][:40]}",
+                        choices=[
+                            _rq.Choice("Looks good — next clip", value="next"),
+                            _rq.Choice("Change caption style", value="style"),
+                            _rq.Choice("Make shorter (trim 5s from end)", value="shorter"),
+                            _rq.Choice("Make longer (extend 5s)", value="longer"),
+                            _rq.Choice("Start earlier (5s)", value="earlier"),
+                            _rq.Choice("Start later (3s)", value="later"),
+                            _rq.Choice("Swap speaker (camera on wrong person)", value="swap"),
+                            _rq.Choice("Tell me what to change", value="custom"),
+                            _rq.Choice("Render the rest without asking", value="skip_review"),
+                        ],
+                        style=_rstyle,
+                        instruction="",
+                    ).ask()
+
+                    if _raction is None or _raction == "next":
+                        break
+
+                    if _raction == "skip_review":
+                        _skip_review = True
+                        break
+
+                    if _raction == "swap":
+                        # Swap speaker labels in the words for this clip's time range
+                        # so the camera follows the other person
+                        clip_speakers = sorted(set(
+                            w.get("speaker") for w in words
+                            if w.get("speaker") and w["start"] >= clip["start_second"] and w["end"] <= clip["end_second"]
+                        ))
+                        if len(clip_speakers) >= 2:
+                            swap_map = {clip_speakers[0]: clip_speakers[1], clip_speakers[1]: clip_speakers[0]}
+                            for w in words:
+                                if w["start"] >= clip["start_second"] and w["end"] <= clip["end_second"]:
+                                    sp = w.get("speaker")
+                                    if sp in swap_map:
+                                        w["speaker"] = swap_map[sp]
+                            print(f"         Swapped speakers: {clip_speakers[0]} ↔ {clip_speakers[1]}")
+                        else:
+                            print(f"         Only one speaker detected in this clip")
+                            continue
+
+                    if _raction == "custom":
+                        _feedback = _rq.text(
+                            "What should I change?",
+                            style=_rstyle,
+                        ).ask()
+                        if _feedback and _feedback.strip():
+                            fb = _feedback.strip().lower()
+                            # Parse into a known action
+                            if any(w in fb for w in ["shorter", "trim", "cut"]):
+                                _raction = "shorter"
+                            elif any(w in fb for w in ["longer", "extend", "more"]):
+                                _raction = "longer"
+                            elif any(w in fb for w in ["earlier", "before", "back"]):
+                                _raction = "earlier"
+                            elif any(w in fb for w in ["later", "forward"]):
+                                _raction = "later"
+                            elif any(w in fb for w in ["hormozi", "karaoke", "subtle", "branded"]):
+                                _raction = "style"
+                                for s in ["hormozi", "karaoke", "subtle", "branded"]:
+                                    if s in fb:
+                                        config["caption_style"] = s
+                                        break
+                            elif any(w in fb for w in ["wrong person", "swap", "other speaker", "other face", "wrong face", "wrong speaker"]):
+                                _raction = "swap"
+                            else:
+                                print(f"         Couldn't parse that. Try: 'shorter', 'longer 10', 'start earlier', 'hormozi style', 'wrong person'")
+                                continue
+                        else:
+                            continue
+
+                    # Apply change
+                    _adj = 5  # default seconds for timing adjustments
+                    if _raction == "style":
+                        _new_style = _rq.select("Style:", choices=[
+                            _rq.Choice("branded", value="branded"),
+                            _rq.Choice("hormozi", value="hormozi"),
+                            _rq.Choice("karaoke", value="karaoke"),
+                            _rq.Choice("subtle", value="subtle"),
+                        ], style=_rstyle).ask()
+                        if _new_style:
+                            config["caption_style"] = _new_style
+                    elif _raction == "shorter":
+                        clip["end_second"] -= _adj
+                        clip["duration"] = max(10, clip["duration"] - _adj)
+                        print(f"         Trimming {_adj}s from end")
+                    elif _raction == "longer":
+                        clip["end_second"] += _adj
+                        clip["duration"] += _adj
+                        print(f"         Extending {_adj}s")
+                    elif _raction == "earlier":
+                        clip["start_second"] = max(0, clip["start_second"] - _adj)
+                        print(f"         Starting {_adj}s earlier")
+                    elif _raction == "later":
+                        clip["start_second"] += 3
+                        print(f"         Starting 3s later")
+
+                    # Re-render
+                    with _Spinner(f"Re-rendering clip {i+1}..."):
+                        try:
+                            result = generate_clip(
+                                video_path=video_path,
+                                start_second=clip["start_second"],
+                                end_second=clip["end_second"],
+                                caption_style=config.get("caption_style", "branded"),
+                                crop_strategy=config.get("crop_strategy", "face"),
+                                format=config.get("format", "vertical"),
+                                transcript_words=words,
+                                title=clip.get("title", f"clip_{i+1}"),
+                                output_dir=output_dir,
+                                logo_path=config.get("logo_path") or None,
+                                outro_path=config.get("outro_path") or None,
+                                keep_segments=clip.get("segments"),
+                                face_map=face_map,
+                                allow_ass_fallback=config.get("allow_ass_fallback", False),
+                                use_ass_captions=config.get("use_ass_captions", False),
+                            )
+                            results[-1] = result
+                            print(f"         ✓ Re-rendered: {result['file_size_mb']}MB")
+                            # Open new version
+                            _reveal_in_os(result["output_path"])
+                        except Exception as _re:
+                            print(f"         ✗ {_re}")
+                            break
+    except KeyboardInterrupt:
+        interrupted = True
+        print(f"\n         ⚠ Render interrupted — keeping completed clips")
+
+    elapsed = time.time() - t0
+    success = sum(1 for r in results if "output_path" in r)
+    if interrupted:
+        print(f"\n         Interrupted with {success}/{len(clips)} completed clips in {elapsed:.1f}s")
+    else:
+        print(f"\n         {success}/{len(clips)} clips exported in {elapsed:.1f}s")
+    if _thumb_enabled:
+        print(f"         Thumbnails saved to {thumb_dir}/")
+
+    print(f"\n  Output: {output_dir}/")
+
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    if not _ai_cli_path:
+        print(f"\n  {gray}For titles, descriptions & tags: install Claude Code or Codex CLI{reset}")
+
+    # ── Post-render iteration ──
+    if _should_enter_post_render_loop(config, interrupted, results):
+        if interrupted and not config.get("post_render_review", False):
+            print(f"\n  Reviewing completed clips so you can rerender what already finished.")
+        _post_render_loop(
+            clips=clips,
+            results=results,
+            segments=segments,
+            words=words,
+            config=config,
+            video_path=video_path,
+            output_dir=output_dir,
+            face_map=face_map,
+            energy_scores=energy_scores,
+        )
+
+
+class _Spinner:
+    """Reusable terminal spinner for long-running operations."""
+
+    def __init__(self, message: str, indent: str = "         "):
+        import threading
+        self._msg = message
+        self._indent = indent
+        self._stop = threading.Event()
+        self._thread = None
+
+    def __enter__(self):
+        import threading
+        self._stop.clear()
+
+        def _run():
+            frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            i = 0
+            while not self._stop.is_set():
+                print(f"\r{self._indent}{frames[i % len(frames)]}  {self._msg[:55]:<55}", end="", flush=True)
+                i += 1
+                self._stop.wait(0.1)
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+        return self
+
+    def update(self, message: str):
+        self._msg = message
+
+    def __exit__(self, *args):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1)
+        print(f"\r{self._indent}{'':60}\r", end="")
+
+
+def _wrap_text(text: str, indent: str) -> str:
+    width = min(shutil.get_terminal_size((100, 24)).columns, 100)
+    return textwrap.fill(text, width=width, initial_indent=indent, subsequent_indent=indent)
+
+
+def _print_clips(clips: list):
+    """Print clip list in the standard format."""
+    width = min(shutil.get_terminal_size((100, 24)).columns, 100)
+    title_indent = " " * 14
+    why_indent = " " * 14
+    for i, c in enumerate(clips):
+        m_s = int(c["start_second"]) // 60
+        s_s = int(c["start_second"]) % 60
+        ctype = c.get("content_type", "")
+        score_val = c.get("score", 0)
+        score_str = f"({score_val}/20)" if isinstance(score_val, int) and score_val <= 20 else f"({score_val:.0f}pts)"
+        type_tag = f" [{ctype}]" if ctype and ctype != "unknown" else ""
+        n_segs = len(c.get("segments", [])) if c.get("segments") else 1
+        cuts_tag = f" ({n_segs} cuts)" if n_segs > 1 else ""
+        selected = c.get("_selected", True)
+        marker = "  ✓" if selected else "  ✗"
+        header = f"        {marker} {i+1}. [{m_s}:{s_s:02d} → +{c['duration']}s] {score_str}{type_tag}{cuts_tag} "
+        print(textwrap.fill(c.get("title", ""), width=width, initial_indent=header, subsequent_indent=title_indent))
+        if c.get("why"):
+            print(textwrap.fill(c["why"], width=width, initial_indent=why_indent, subsequent_indent=why_indent))
+
+
+def _find_moment_with_claude(description: str, segments: list, existing_clips: list) -> list:
+    """Use Claude/Codex to find a specific moment described by the user."""
+    from services.claude_suggest import find_moments_from_text
+
+    return find_moments_from_text(description, segments, existing_clips, max_results=3)
+
+
+def _review_clips(clips: list, segments: list, energy_scores: list | None, config: dict) -> list:
+    """Interactive clip review — user can select/deselect, ask for more, or find specific moments."""
+    # Non-interactive (piped/scripted/no TTY): skip the picker and render all
+    # suggested clips. The picker uses prompt_toolkit, which raises
+    # OSError [Errno 22] when stdin isn't a real terminal.
+    if not sys.stdin.isatty():
+        print(f"\n         Non-interactive run — rendering all {len(clips)} suggested clips.")
+        return clips
+
+    import questionary
+    from questionary import Style
+
+    accent = "\033[38;2;212;135;74m"
+    bold = "\033[1m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    # Mark all clips as selected initially
+    for c in clips:
+        c["_selected"] = True
+
+    while True:
+        selected = [c for c in clips if c.get("_selected", True)]
+        print(f"\n         {bold}{len(selected)}/{len(clips)} clips selected:{reset}")
+        _print_clips(clips)
+
+        choices = [
+            questionary.Choice(f"Render {len(selected)} selected clips", value="render"),
+            questionary.Choice("Toggle clips on/off", value="toggle"),
+            questionary.Choice("Find a specific moment", value="find"),
+            questionary.Choice("Find additional clips beyond current picks", value="more"),
+            questionary.Choice("Quit", value="quit"),
+        ]
+
+        action = questionary.select(
+            "",
+            choices=choices,
+            style=qstyle,
+            instruction="",
+        ).ask()
+
+        if action is None or action == "quit":
+            return []
+
+        if action == "render":
+            return [c for c in clips if c.get("_selected", True)]
+
+        if action == "toggle":
+            toggle_choices = [
+                questionary.Choice(
+                    f"{'✓' if c.get('_selected', True) else '✗'} {i+1}. {c['title'][:45]} (+{c['duration']}s)",
+                    value=i,
+                    checked=c.get("_selected", True),
+                )
+                for i, c in enumerate(clips)
+            ]
+            picked = questionary.checkbox(
+                "Select clips to render:",
+                choices=toggle_choices,
+                style=qstyle,
+            ).ask()
+            if picked is not None:
+                for i, c in enumerate(clips):
+                    c["_selected"] = i in picked
+
+        elif action == "find":
+            description = questionary.text(
+                "Describe the moment:",
+                style=qstyle,
+            ).ask()
+            if description and description.strip():
+                with _Spinner("Searching transcript..."):
+                    found = _find_moment_with_claude(description.strip(), segments, clips)
+                if found:
+                    for f_clip in found:
+                        print(f"\n         {bold}Found:{reset} {f_clip['title']}")
+                        m_s = int(f_clip["start_second"]) // 60
+                        s_s = int(f_clip["start_second"]) % 60
+                        print(f"         [{m_s}:{s_s:02d} → +{f_clip['duration']}s]")
+                        if f_clip.get("quote"):
+                            print(f"{dim}{_wrap_text(chr(34) + f_clip['quote'] + chr(34), '         ')}{reset}")
+                        if f_clip.get("why"):
+                            print(f"{dim}{_wrap_text(f_clip['why'], '         ')}{reset}")
+
+                    add = questionary.confirm(
+                        f"Add {len(found)} found clip{'s' if len(found) > 1 else ''} to the list?",
+                        default=True,
+                        style=qstyle,
+                    ).ask()
+                    if add:
+                        for f_clip in found:
+                            f_clip["_selected"] = True
+                            clips.append(f_clip)
+                else:
+                    print(f"         Couldn't find that moment. Try describing it differently.")
+
+        elif action == "more":
+            top_n = config.get("top_clips", 5)
+            from services.claude_suggest import suggest_more_with_claude
+            request_n = min(18, max(top_n + 4, top_n * config.get("more_suggestions_multiplier", 3)))
+            with _Spinner(f"Finding up to {request_n} additional non-overlapping clips...") as sp:
+                more_clips = suggest_more_with_claude(
+                    segments=segments,
+                    existing_clips=clips,
+                    top_n=request_n,
+                    progress_callback=lambda pct, msg: sp.update(msg) if msg else None,
+                )
+            if more_clips:
+                new_clips = _filter_duplicate_clip_suggestions(more_clips, clips)
+                for mc in new_clips:
+                    mc["_selected"] = True
+                    clips.append(mc)
+                new_count = len(new_clips)
+                print(f"         Added {new_count} new suggestions ({len(more_clips) - new_count} duplicates skipped)")
+            else:
+                print(f"         No additional suggestions found.")
+
+
+def _filter_duplicate_clip_suggestions(candidates: list, existing: list, overlap_threshold: float = 5.0) -> list:
+    """Drop suggestions that significantly overlap already-selected clips."""
+    filtered = []
+    all_existing = list(existing)
+
+    for candidate in candidates:
+        is_dup = False
+        for current in all_existing:
+            overlap_start = max(candidate["start_second"], current["start_second"])
+            overlap_end = min(candidate["end_second"], current["end_second"])
+            if overlap_end - overlap_start > overlap_threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            filtered.append(candidate)
+            all_existing.append(candidate)
+
+    return filtered
+
+
+def _post_render_loop(
+    clips: list, results: list, segments: list, words: list,
+    config: dict, video_path: str, output_dir: str, face_map, energy_scores,
+):
+    """Post-render iteration — user can re-render clips with changes or add new ones."""
+    import questionary
+    from questionary import Style
+    from services.clip_generator import generate_clip
+
+    accent = "\033[38;2;212;135;74m"
+    bold = "\033[1m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    # Build clip-to-result mapping
+    rendered = []
+    for i, (clip, result) in enumerate(zip(clips, results)):
+        if "output_path" in result:
+            rendered.append({"clip": clip, "result": result, "index": i})
+
+    def _open_clip(r):
+        """Open a rendered clip for preview."""
+        out = r["result"].get("output_path", "")
+        if out and os.path.exists(out):
+            _reveal_in_os(out)
+
+    def _rerender_clip(r):
+        """Re-render a clip with current config."""
+        clip = r["clip"]
+        ok = False
+        with _Spinner(f"Rendering: {clip['title'][:40]}..."):
+            try:
+                new_result = generate_clip(
+                    video_path=video_path,
+                    start_second=clip["start_second"],
+                    end_second=clip["end_second"],
+                    caption_style=config.get("caption_style", "branded"),
+                    crop_strategy=config.get("crop_strategy", "face"),
+                    format=config.get("format", "vertical"),
+                    transcript_words=words,
+                    title=clip.get("title", "clip"),
+                    output_dir=output_dir,
+                    logo_path=config.get("logo_path") or None,
+                    outro_path=config.get("outro_path") or None,
+                    keep_segments=clip.get("segments"),
+                    face_map=face_map,
+                    allow_ass_fallback=config.get("allow_ass_fallback", False),
+                    use_ass_captions=config.get("use_ass_captions", False),
+                )
+                r["result"] = new_result
+                ok = True
+            except Exception as e:
+                print(f"\n         ✗ {e}")
+        if ok:
+            print(f"         ✓ {new_result['file_size_mb']}MB")
+        return ok
+
+    # Review each clip one by one — open for preview, ask for feedback
+    print(f"\n  {'─' * 45}")
+    print(f"  {bold}Review clips{reset}")
+
+    for idx, r in enumerate(rendered):
+        clip = r["clip"]
+        print(f"\n  {accent}Clip {idx+1}/{len(rendered)}:{reset} {clip['title']}")
+        _open_clip(r)
+
+        while True:
+            action = questionary.select(
+                "",
+                choices=[
+                    questionary.Choice("Looks good — next", value="next"),
+                    questionary.Choice("Change caption style", value="style"),
+                    questionary.Choice("Make shorter (trim end)", value="shorter"),
+                    questionary.Choice("Make longer (extend end)", value="longer"),
+                    questionary.Choice("Shift start earlier", value="earlier"),
+                    questionary.Choice("Shift start later", value="later"),
+                    questionary.Choice("Skip this clip (delete)", value="skip"),
+                ],
+                style=qstyle,
+                instruction="",
+            ).ask()
+
+            if action is None or action == "next":
+                break
+
+            if action == "skip":
+                # Remove the output file
+                out = r["result"].get("output_path", "")
+                if out and os.path.exists(out):
+                    os.remove(out)
+                    print(f"         Removed: {os.path.basename(out)}")
+                r["_skipped"] = True
+                break
+
+            if action == "style":
+                new_style = questionary.select("Style:", choices=[
+                    questionary.Choice("hormozi — bold uppercase, yellow highlight", value="hormozi"),
+                    questionary.Choice("branded — dark pill on active word + logo", value="branded"),
+                    questionary.Choice("karaoke — sentence visible, words light up", value="karaoke"),
+                    questionary.Choice("subtle — clean small text at bottom", value="subtle"),
+                ], style=qstyle).ask()
+                if new_style:
+                    config["caption_style"] = new_style
+            elif action == "shorter":
+                clip["end_second"] = clip["end_second"] - 5
+                clip["duration"] = max(10, clip["duration"] - 5)
+            elif action == "longer":
+                clip["end_second"] = clip["end_second"] + 5
+                clip["duration"] = clip["duration"] + 5
+            elif action == "earlier":
+                clip["start_second"] = max(0, clip["start_second"] - 5)
+            elif action == "later":
+                clip["start_second"] = clip["start_second"] + 3
+
+            # Re-render and open again
+            if _rerender_clip(r):
+                _open_clip(r)
+
+    rendered = [r for r in rendered if not r.get("_skipped")]
+    kept = len(rendered)
+    print(f"\n  {bold}{kept} clips kept{reset}")
+
+    # Continue with additional actions
+    while True:
+        print(f"\n  {'─' * 45}")
+        choices = [
+            questionary.Choice("Done — open output folder", value="done"),
+            questionary.Choice("Re-review a clip", value="rerender"),
+            questionary.Choice("Find another moment to clip", value="find"),
+            questionary.Choice("Find additional clips beyond current picks", value="more"),
+        ]
+
+        action = questionary.select(
+            f"{len(rendered)} clips",
+            choices=choices,
+            style=qstyle,
+        ).ask()
+
+        if action is None or action == "done":
+            _reveal_in_os(output_dir)
+            break
+
+        if action == "rerender":
+            clip_choices = [
+                questionary.Choice(
+                    f"{i+1}. {r['clip']['title'][:40]} (+{r['clip']['duration']}s)",
+                    value=idx,
+                )
+                for idx, (i, r) in enumerate([(r["index"], r) for r in rendered])
+            ]
+            pick = questionary.select("Which clip?", choices=clip_choices, style=qstyle).ask()
+            if pick is None:
+                continue
+
+            r = rendered[pick]
+            _open_clip(r)
+
+            while True:
+                change = questionary.select("", choices=[
+                    questionary.Choice("Looks good", value="done"),
+                    questionary.Choice("Change caption style", value="style"),
+                    questionary.Choice("Make shorter", value="shorter"),
+                    questionary.Choice("Make longer", value="longer"),
+                    questionary.Choice("Shift start earlier", value="earlier"),
+                    questionary.Choice("Shift start later", value="later"),
+                ], style=qstyle, instruction="").ask()
+
+                if change is None or change == "done":
+                    break
+
+                clip = r["clip"]
+                if change == "style":
+                    new_style = questionary.select("Style:", choices=[
+                        questionary.Choice("hormozi", value="hormozi"),
+                        questionary.Choice("branded", value="branded"),
+                        questionary.Choice("karaoke", value="karaoke"),
+                        questionary.Choice("subtle", value="subtle"),
+                    ], style=qstyle).ask()
+                    if new_style:
+                        config["caption_style"] = new_style
+                elif change == "shorter":
+                    clip["end_second"] -= 5
+                    clip["duration"] = max(10, clip["duration"] - 5)
+                elif change == "longer":
+                    clip["end_second"] += 5
+                    clip["duration"] += 5
+                elif change == "earlier":
+                    clip["start_second"] = max(0, clip["start_second"] - 5)
+                elif change == "later":
+                    clip["start_second"] += 3
+
+                if _rerender_clip(r):
+                    _open_clip(r)
+
+        elif action == "find":
+            description = questionary.text("Describe the moment:", style=qstyle).ask()
+            if description and description.strip():
+                with _Spinner("Searching transcript..."):
+                    found = _find_moment_with_claude(description.strip(), segments, clips)
+                if found:
+                    for f_clip in found:
+                        print(f"\n         {bold}Found:{reset} {f_clip['title']}")
+                        m_s = int(f_clip["start_second"]) // 60
+                        s_s = int(f_clip["start_second"]) % 60
+                        print(f"         [{m_s}:{s_s:02d} → +{f_clip['duration']}s]")
+                        if f_clip.get("quote"):
+                            print(f"{dim}{_wrap_text(chr(34) + f_clip['quote'] + chr(34), '         ')}{reset}")
+
+                    render_it = questionary.confirm(
+                        f"Render {len(found)} clip{'s' if len(found) > 1 else ''}?",
+                        default=True, style=qstyle,
+                    ).ask()
+                    if render_it:
+                        for f_clip in found:
+                            ok = False
+                            with _Spinner(f"Rendering: {f_clip['title'][:40]}..."):
+                                try:
+                                    new_result = generate_clip(
+                                        video_path=video_path,
+                                        start_second=f_clip["start_second"],
+                                        end_second=f_clip["end_second"],
+                                        caption_style=config.get("caption_style", "branded"),
+                                        crop_strategy=config.get("crop_strategy", "face"),
+                                        format=config.get("format", "vertical"),
+                                        transcript_words=words,
+                                        title=f_clip.get("title", "clip"),
+                                        output_dir=output_dir,
+                                        logo_path=config.get("logo_path") or None,
+                                        outro_path=config.get("outro_path") or None,
+                                        keep_segments=f_clip.get("segments"),
+                                        face_map=face_map,
+                                        allow_ass_fallback=config.get("allow_ass_fallback", False),
+                                        use_ass_captions=config.get("use_ass_captions", False),
+                                    )
+                                    rendered.append({"clip": f_clip, "result": new_result, "index": len(clips)})
+                                    clips.append(f_clip)
+                                    ok = True
+                                except Exception as e:
+                                    print(f"\n         ✗ {e}")
+                            if ok:
+                                print(f"         ✓ {new_result['file_size_mb']}MB")
+                else:
+                    print(f"         Couldn't find that moment. Try describing it differently.")
+
+        elif action == "more":
+            top_n = config.get("top_clips", 5)
+            request_n = min(18, max(top_n + 4, top_n * config.get("more_suggestions_multiplier", 3)))
+            print(f"\n         Finding additional non-overlapping clip ideas...")
+            from services.claude_suggest import suggest_more_with_claude
+            more_clips = suggest_more_with_claude(
+                segments=segments,
+                existing_clips=clips,
+                top_n=request_n,
+                progress_callback=lambda pct, msg: print(f"         {msg}") if msg else None,
+            )
+            if more_clips:
+                new_clips = _filter_duplicate_clip_suggestions(more_clips, clips)
+
+                if new_clips:
+                    for nc in new_clips:
+                        nc["_selected"] = True
+                    print(f"         Found {len(new_clips)} new moments:")
+                    _print_clips(new_clips)
+                    render_them = questionary.confirm(
+                        f"Render {len(new_clips)} clips?",
+                        default=True, style=qstyle,
+                    ).ask()
+                    if render_them:
+                        for nc in new_clips:
+                            ok = False
+                            with _Spinner(f"Rendering: {nc['title'][:40]}..."):
+                                try:
+                                    new_result = generate_clip(
+                                        video_path=video_path,
+                                        start_second=nc["start_second"],
+                                        end_second=nc["end_second"],
+                                        caption_style=config.get("caption_style", "branded"),
+                                        crop_strategy=config.get("crop_strategy", "face"),
+                                        format=config.get("format", "vertical"),
+                                        transcript_words=words,
+                                        title=nc.get("title", "clip"),
+                                        output_dir=output_dir,
+                                        logo_path=config.get("logo_path") or None,
+                                        outro_path=config.get("outro_path") or None,
+                                        keep_segments=nc.get("segments"),
+                                        face_map=face_map,
+                                        allow_ass_fallback=config.get("allow_ass_fallback", False),
+                                        use_ass_captions=config.get("use_ass_captions", False),
+                                    )
+                                    rendered.append({"clip": nc, "result": new_result, "index": len(clips)})
+                                    clips.append(nc)
+                                    ok = True
+                                except Exception as e:
+                                    print(f"\n         ✗ {e}")
+                            if ok:
+                                print(f"         ✓ {new_result['file_size_mb']}MB")
+                else:
+                    print(f"         No new moments found (all duplicates of existing).")
+            else:
+                print(f"         No suggestions returned.")
+
+    print()
+
+
+def _suggest_clips(
+    segments: list,
+    energy_scores: list | None = None,
+    reaction_scores: list | None = None,
+    top_n: int = 5,
+    min_dur: float = MIN_CLIP_DURATION,
+    max_dur: float = MAX_CLIP_DURATION,
+) -> list:
+    """
+    Score and rank transcript segments into viral clip suggestions.
+
+    Scoring dimensions:
+    1. Hook strength — does it open with something that grabs attention?
+    2. Standalone value — does it make sense without context?
+    3. Completeness — does it start and end on sentence boundaries?
+    4. Content signals — keywords, questions, stories, bold claims
+    5. Speaker dynamics — speaker changes make clips more engaging
+    6. Audio energy — louder/more passionate = more engaging
+    7. Density — information per second (too sparse = boring)
+    """
+
+    # ── Signal keywords by category (weighted differently) ──
+
+    # Strong hooks — things people say right before a great moment
+    HOOK_PHRASES = [
+        "here's the thing", "let me tell you", "the truth is",
+        "what people don't realize", "nobody talks about",
+        "the biggest mistake", "the real reason", "here's what happened",
+        "i'll never forget", "that's when i realized", "the moment i knew",
+        "so here's the secret", "this is the part where", "what i learned",
+        "the one thing", "if i'm being honest", "the hard truth",
+    ]
+
+    # Insight signals — content that teaches or reveals
+    INSIGHT_WORDS = [
+        "because", "actually", "specifically", "the problem is",
+        "most people", "counterintuitive", "the data shows",
+        "what we found", "turns out", "the reason",
+        "in practice", "the trick", "fundamentally",
+    ]
+
+    # Story signals — narrative elements that pull people in
+    STORY_SIGNALS = [
+        "when i", "when we", "i remember", "years ago", "at that point",
+        "we decided", "we were", "i was", "the first time",
+        "that morning", "one day", "back then", "suddenly",
+    ]
+
+    # Numbers/specifics — concrete details increase credibility
+    NUMBER_PATTERN = None
+    try:
+        import re
+        NUMBER_PATTERN = re.compile(r'\$[\d,.]+[mkb]?|\d+%|\d+\.\d+[x×]|\d{2,}', re.IGNORECASE)
+    except Exception:
+        pass
+
+    # Sentence boundary detection
+    def _is_sentence_start(text):
+        """Check if text starts at a sentence boundary."""
+        t = text.strip()
+        if not t:
+            return False
+        # Starts with capital letter after nothing or after sentence-ending punct
+        return t[0].isupper()
+
+    def _is_sentence_end(text):
+        """Check if text ends at a sentence boundary."""
+        t = text.strip()
+        if not t:
+            return False
+        return t[-1] in '.!?'
+
+    def _find_sentence_boundary_start(segs, idx, max_lookback=3):
+        """Walk backwards to find the nearest sentence start."""
+        for offset in range(min(max_lookback, idx)):
+            check_idx = idx - offset
+            if check_idx <= 0:
+                return 0
+            prev_text = segs[check_idx - 1].get("text", "").strip()
+            curr_text = segs[check_idx].get("text", "").strip()
+            if prev_text and prev_text[-1] in '.!?' and curr_text and curr_text[0].isupper():
+                return check_idx
+        return idx
+
+    def _find_sentence_boundary_end(segs, idx, max_lookahead=3):
+        """Walk forward to find the nearest sentence end."""
+        for offset in range(min(max_lookahead, len(segs) - idx)):
+            check_idx = idx + offset
+            check_text = segs[check_idx].get("text", "").strip()
+            if check_text and check_text[-1] in '.!?':
+                return check_idx
+        return idx
+
+    # ── Build clips with smart windowing ──
+
+    clips = []
+    # Multiple window sizes to catch different moment lengths
+    win_sizes = [5, 7, 9, 11, 14]
+
+    for win_size in win_sizes:
+        step = max(1, int(win_size * 0.5))
+        for i in range(0, len(segments) - win_size, step):
+            # Snap window start and end to sentence boundaries
+            snap_start = _find_sentence_boundary_start(segments, i)
+            snap_end = _find_sentence_boundary_end(segments, i + win_size - 1)
+
+            win = segments[snap_start : snap_end + 1]
+            if len(win) < 3:
+                continue
+
+            text = " ".join(s.get("text", "") for s in win)
+            start = win[0].get("start", 0)
+            end = win[-1].get("end", 0)
+            dur = end - start
+
+            if dur < min_dur or dur > max_dur:
+                continue
+
+            text_lower = text.lower()
+            score = 0
+            reasons = []
+
+            # ── 1. Hook strength (0-8 pts) ──
+            # Check if clip opens with a strong hook
+            first_30_chars = " ".join(s.get("text", "") for s in win[:3]).lower()
+            for phrase in HOOK_PHRASES:
+                if phrase in first_30_chars:
+                    score += 5
+                    reasons.append("strong_hook")
+                    break
+
+            # Question as opener
+            first_seg_text = win[0].get("text", "")
+            if "?" in first_seg_text:
+                score += 3
+                reasons.append("question_hook")
+
+            # ── 2. Sentence boundary quality (0-4 pts) ──
+            starts_clean = _is_sentence_start(win[0].get("text", ""))
+            ends_clean = _is_sentence_end(win[-1].get("text", ""))
+            if starts_clean:
+                score += 2
+            if ends_clean:
+                score += 2
+                reasons.append("clean_ending")
+
+            # ── 3. Content signals (0-10 pts) ──
+            insight_count = sum(1 for kw in INSIGHT_WORDS if kw in text_lower)
+            story_count = sum(1 for kw in STORY_SIGNALS if kw in text_lower)
+
+            if insight_count >= 2:
+                score += min(insight_count * 1.5, 5)
+                reasons.append("insightful")
+            if story_count >= 2:
+                score += min(story_count * 1.5, 5)
+                reasons.append("narrative")
+
+            # Exclamation = passion/emphasis
+            exclaim_count = text.count("!")
+            if exclaim_count >= 1:
+                score += min(exclaim_count, 3)
+
+            # ── 4. Specificity — numbers, dollars, percentages (0-4 pts) ──
+            if NUMBER_PATTERN:
+                numbers = NUMBER_PATTERN.findall(text)
+                if numbers:
+                    score += min(len(numbers) * 1.5, 4)
+                    reasons.append("specific_numbers")
+
+            # ── 5. Speaker dynamics (0-5 pts) ──
+            speakers_in_window = set()
+            speaker_changes = 0
+            prev_speaker = None
+            for s in win:
+                sp = s.get("speaker")
+                if sp:
+                    speakers_in_window.add(sp)
+                    if prev_speaker and sp != prev_speaker:
+                        speaker_changes += 1
+                    prev_speaker = sp
+
+            if len(speakers_in_window) > 1:
+                # Multi-speaker clips are more dynamic
+                score += 2
+                if speaker_changes >= 2:
+                    score += min(speaker_changes, 3)
+                    reasons.append("dialogue")
+
+            # ── 6. Audio energy (0-6 pts) ──
+            if energy_scores:
+                seg_energies = energy_scores[snap_start : snap_end + 1]
+                if seg_energies:
+                    avg_e = sum(seg_energies) / len(seg_energies)
+                    max_e = max(seg_energies)
+                    # Energy variance = dynamic range (builds tension)
+                    variance = sum((e - avg_e) ** 2 for e in seg_energies) / len(seg_energies)
+                    energy_score = avg_e * 0.3 + max_e * 0.3 + (variance ** 0.5) * 0.4
+                    score += min(energy_score, 6)
+                    if max_e > 7:
+                        reasons.append("high_energy")
+
+            # ── 6b. Laughter / reactions (0-6 pts) ──
+            if reaction_scores:
+                seg_reactions = reaction_scores[snap_start : snap_end + 1]
+                if seg_reactions:
+                    max_r = max(seg_reactions)
+                    score += min(max_r, 6)
+                    if max_r > 3:
+                        reasons.append("laughter")
+
+            # ── 7. Density check — penalize sparse/rambling segments ──
+            words_per_sec = len(text.split()) / max(dur, 1)
+            if words_per_sec < 1.5:
+                score *= 0.7  # Too sparse, probably silence or filler
+            elif words_per_sec > 2.5:
+                score *= 1.1  # Dense = packed with info
+
+            # ── 8. Anti-patterns — penalize weak clips ──
+            # Clips that reference other parts of the conversation
+            if any(ref in text_lower for ref in [
+                "as i said", "like i mentioned", "going back to",
+                "earlier when", "as we discussed", "you said earlier",
+            ]):
+                score *= 0.5  # Needs context = bad short
+
+            # Mid-sentence start
+            if not starts_clean:
+                score *= 0.8
+
+            # ── Build title from the hook ──
+            # Find the first strong sentence as the title
+            title = ""
+            for s in win[:4]:
+                t = s.get("text", "").strip()
+                if t and len(t) > 15:
+                    title = t
+                    break
+            if not title:
+                title = text[:60].strip()
+            if len(title) > 55:
+                # Cut at word boundary
+                title = title[:55].rsplit(" ", 1)[0] + "..."
+
+            if score >= 5:  # Higher threshold = better clips
+                clips.append({
+                    "title": title,
+                    "start_second": round(start, 1),
+                    "end_second": round(end, 1),
+                    "duration": round(dur),
+                    "score": round(score, 2),
+                    "reasons": reasons,
+                    "preview": text[:120].strip(),
+                })
+
+    # ── Deduplicate overlapping clips (keep highest score) ──
+    clips.sort(key=lambda c: c["score"], reverse=True)
+    selected = []
+    for clip in clips:
+        overlap = False
+        for sel in selected:
+            if (clip["start_second"] < sel["end_second"] and
+                clip["end_second"] > sel["start_second"]):
+                overlap_amt = (min(clip["end_second"], sel["end_second"]) -
+                              max(clip["start_second"], sel["start_second"]))
+                if overlap_amt > min(clip["duration"], sel["duration"]) * 0.3:
+                    overlap = True
+                    break
+        if not overlap:
+            selected.append(clip)
+        if len(selected) >= top_n:
+            break
+
+    # Sort by time for natural ordering
+    selected.sort(key=lambda c: c["start_second"])
+    return selected
+
+
+def cmd_presets(args):
+    """Manage presets."""
+    from presets import list_presets, get_preset, save_preset, delete_preset
+
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    if args.presets_action == "list":
+        presets = list_presets()
+        if not presets:
+            print(f"\n  No saved presets. Create one:")
+            print(f"    {accent}podcli presets save myshow --video ep.mp4 --caption-style branded --logo mylogo{reset}\n")
+            return
+        print(f"\n  {bold}Presets ({len(presets)}){reset}\n")
+        for p in presets:
+            video_tag = f" · {gray}{os.path.basename(p['video_path'])}{reset}" if p.get("video_path") else ""
+            corr_tag = f" · {gray}{len(p['corrections'])} corrections{reset}" if p.get("corrections") else ""
+            print(f"    {accent}{p['name']}{reset}{video_tag}{corr_tag}")
+            parts = []
+            if p.get("caption_style"):
+                parts.append(p["caption_style"])
+            if p.get("crop_strategy"):
+                parts.append(p["crop_strategy"])
+            if p.get("logo_path"):
+                parts.append(f"logo: {os.path.basename(p['logo_path'])}")
+            if p.get("quality"):
+                parts.append(p["quality"])
+            if parts:
+                print(f"      {gray}{' · '.join(parts)}{reset}")
+        print()
+
+    elif args.presets_action == "save":
+        # Load existing preset to merge (so you can update one field at a time)
+        try:
+            existing = get_preset(args.name)
+            existing.pop("name", None)
+        except FileNotFoundError:
+            existing = {}
+
+        config = {**existing}
+        if args.video:
+            config["video_path"] = _clean_path(args.video)
+        if args.transcript:
+            config["transcript_path"] = _clean_path(args.transcript)
+        if args.output:
+            config["output_dir"] = _clean_path(args.output)
+        if args.caption_style:
+            config["caption_style"] = args.caption_style
+        if args.crop:
+            config["crop_strategy"] = args.crop
+        if args.logo:
+            from services.asset_store import resolve as _resolve_logo
+            config["logo_path"] = _resolve_logo(args.logo) or args.logo
+        if args.outro:
+            from services.asset_store import resolve as _resolve_outro
+            config["outro_path"] = _resolve_outro(args.outro) or args.outro
+        if args.top:
+            config["top_clips"] = args.top
+        if args.time_adjust is not None:
+            config["time_adjust"] = args.time_adjust
+        if args.quality:
+            config["quality"] = args.quality
+        if args.review_each:
+            config["review_each_clip"] = True
+        if args.post_review:
+            config["post_render_review"] = True
+        if args.no_energy:
+            config["energy_boost"] = False
+        if args.no_speakers:
+            config["no_speakers"] = True
+        if args.with_corrections:
+            from services.corrections import get_corrections
+            config["corrections"] = get_corrections()
+
+        path = save_preset(args.name, config)
+        print(f"\n  {green}✓{reset} Preset '{accent}{args.name}{reset}' saved")
+        # Show summary
+        if config.get("video_path"):
+            print(f"    video:   {gray}{config['video_path']}{reset}")
+        if config.get("caption_style"):
+            print(f"    caption: {gray}{config['caption_style']}{reset}")
+        if config.get("logo_path"):
+            print(f"    logo:    {gray}{config['logo_path']}{reset}")
+        if config.get("outro_path"):
+            print(f"    outro:   {gray}{config['outro_path']}{reset}")
+        if config.get("corrections"):
+            print(f"    corrections: {gray}{len(config['corrections'])} words{reset}")
+        print()
+
+    elif args.presets_action == "delete":
+        if delete_preset(args.name):
+            print(f"  Preset '{args.name}' deleted")
+        else:
+            print(f"  Preset '{args.name}' not found")
+
+    elif args.presets_action == "show":
+        try:
+            p = get_preset(args.name)
+            print(f"\n  {bold}Preset: {accent}{args.name}{reset}\n")
+            for k, v in sorted(p.items()):
+                if k == "name" or v == "" or v == {} or v is None:
+                    continue
+                if k == "corrections" and isinstance(v, dict):
+                    print(f"    {gray}{k}:{reset} {len(v)} words")
+                    for wrong, correct in v.items():
+                        print(f"      {gray}{wrong}{reset} → {green}{correct}{reset}")
+                else:
+                    print(f"    {gray}{k}:{reset} {v}")
+            print()
+        except FileNotFoundError:
+            print(f"  Preset '{args.name}' not found")
+
+
+def cmd_assets(args):
+    """Manage named assets (logos, intros, outros)."""
+    from services.asset_store import register, unregister, list_assets, resolve
+
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    green = "\033[38;2;74;222;128m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    if args.assets_action == "list":
+        assets = list_assets()
+        if not assets:
+            print(f"\n  No assets registered. Add one:")
+            print(f"    {accent}podcli assets add{reset} {gray}mylogo /path/to/logo.png{reset}")
+            print()
+            return
+        print(f"\n  {bold}Registered assets ({len(assets)}){reset}\n")
+        for a in assets:
+            exists = os.path.exists(a["path"])
+            status = f"{green}✓{reset}" if exists else "\033[38;2;248;113;113m✗ missing\033[0m"
+            print(f"    {accent}{a['name']}{reset}  {gray}({a['type']}){reset}  {status}")
+            print(f"      {gray}{a['path']}{reset}")
+        print()
+        print(f"  {gray}Use in commands:{reset}  {accent}--logo mylogo{reset}  {gray}or{reset}  {accent}--outro myoutro{reset}")
+        print()
+
+    elif args.assets_action == "add":
+        name = args.name
+        file_path = args.path
+        asset_type = getattr(args, "type", "auto") or "auto"
+        try:
+            asset = register(name, file_path, asset_type)
+            print(f"\n  {green}✓{reset} Registered {accent}{name}{reset} ({asset['type']})")
+            print(f"    {gray}{asset['path']}{reset}\n")
+        except FileNotFoundError as e:
+            print(f"\n  ✗ {e}\n", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.assets_action == "remove":
+        if unregister(args.name):
+            print(f"\n  ✓ Removed '{args.name}'\n")
+        else:
+            print(f"\n  '{args.name}' not found\n")
+
+    elif args.assets_action == "resolve":
+        path = resolve(args.name)
+        if path:
+            print(path)
+        else:
+            print(f"  Not found: {args.name}", file=sys.stderr)
+            sys.exit(1)
+
+
+def cmd_init_thumbnail(args):
+    """Scaffold .podcli/thumbnail-config.json from the example template.
+
+    Opting in to thumbnail generation means having this file exist. Until
+    then podcli skips the thumbnail step entirely (see crop_to_vertical
+    in cli.py (opt-in is gated on file existence).
+    """
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    yellow = "\033[38;2;250;204;21m"
+    gray = "\033[38;5;245m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    repo_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    example_path = os.path.abspath(os.path.join(repo_root, "docs", "thumbnail-config.example.json"))
+    target_dir = paths["home"]
+    target_path = os.path.join(target_dir, "thumbnail-config.json")
+
+    if not os.path.exists(example_path):
+        print(
+            f"\n  {yellow}✗ Missing {example_path}{reset}\n"
+            f"  {gray}Reinstall or pull latest from the repo.{reset}\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if os.path.exists(target_path) and not getattr(args, "force", False):
+        print(
+            f"\n  {yellow}⚠ {target_path} already exists.{reset}\n"
+            f"  {gray}Re-run with --force to overwrite, or edit the file directly.{reset}\n"
+        )
+        sys.exit(2)
+
+    os.makedirs(target_dir, exist_ok=True)
+    shutil.copyfile(example_path, target_path)
+
+    print(
+        f"\n  {green}✓ Wrote{reset} {bold}{target_path}{reset}\n"
+        f"  {gray}Next:{reset}\n"
+        f"    1. Open it and change {accent}bg_color{reset} / {accent}text_color{reset} / {accent}accent_color{reset} to your brand.\n"
+        f"    2. Tune {accent}line1_*{reset} / {accent}line2_*{reset} font sizes if needed.\n"
+        f"    3. Run {accent}podcli thumbnails \"Your test title\"{reset} to preview.\n"
+        f"  {gray}While this file exists, podcli auto-generates thumbnails on every clip.{reset}\n"
+        f"  {gray}Delete it (or set enabled: false) to disable.{reset}\n"
+    )
+
+
+def cmd_thumbnail_config(args):
+    """Show, export, import, or reset the thumbnail template config.
+
+    Resolves the same config path the renderer uses, so the Web UI (which shells
+    out to this command) and generated thumbnails never disagree on it.
+    """
+    from services.thumbnail_html import _load_config
+
+    action = getattr(args, "tc_action", None) or "show"
+    target = paths["thumbnailConfig"]
+
+    if action == "show":
+        print(json.dumps(_load_config(), indent=2, ensure_ascii=False))
+        return
+
+    if action == "export":
+        dest = os.path.abspath(os.path.expanduser(args.path))
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        # Copy the override verbatim for a clean round-trip; seed from defaults
+        # when there is none yet.
+        if os.path.exists(target):
+            shutil.copyfile(target, dest)
+        else:
+            with open(dest, "w", encoding="utf-8") as f:
+                json.dump(_load_config(), f, indent=2, ensure_ascii=False)
+        print(f"Exported thumbnail config to {dest}")
+        return
+
+    if action == "import":
+        src = os.path.abspath(os.path.expanduser(args.path))
+        with open(src, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("thumbnail config must be a JSON object")
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"Imported thumbnail config -> {target}")
+        return
+
+    if action == "reset":
+        if os.path.exists(target):
+            os.remove(target)
+        print("Reset thumbnail config — using the generic default template.")
+        return
+
+    raise ValueError(f"unknown thumbnail-config action: {action}")
+
+
+def cmd_thumbnail_options(args):
+    """Emit candidate headline text pairs and face frames for the thumbnail picker."""
+    from services.thumbnail_ai import generate_headline_variations, extract_candidate_frames
+
+    os.makedirs(args.output, exist_ok=True)
+    texts = generate_headline_variations(args.title, args.texts) or []
+    frames = []
+    if args.video:
+        frames = extract_candidate_frames(
+            args.video, args.output, count=args.frames,
+            start_second=args.start, end_second=args.end,
+        ) or []
+    print(json.dumps({"texts": [list(t) for t in texts], "frames": frames}))
+
+
+def cmd_thumbnail_render(args):
+    """Render one final thumbnail from a chosen frame + headline.
+
+    Empty line1/line2 let the AI write the text; a chosen frame is used as-is.
+    """
+    from services.thumbnail_ai import generate_thumbnail_with_template
+    from services.asset_store import resolve_logo
+
+    frame_info = json.loads(args.frame_info) if args.frame_info else None
+    out = generate_thumbnail_with_template(
+        title=args.title,
+        frame_path=args.frame,
+        output_path=args.output,
+        logo_path=resolve_logo(args.logo) if args.logo else None,
+        frame_info=frame_info,
+        line1_override=args.line1 or None,
+        line2_override=args.line2 or None,
+    )
+    if not out:
+        print("thumbnail render failed", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({"path": out}))
+
+
+def cmd_thumbnails(args):
+    """Generate thumbnail variations for a title."""
+    from services.thumbnail_ai import generate_variations
+    from services.asset_store import resolve as resolve_asset, resolve_logo
+
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    red = "\033[38;2;248;113;113m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    logo = resolve_logo(args.logo)
+
+    photo = None
+    if args.photo:
+        photo = resolve_asset(args.photo)
+
+    video = getattr(args, "video", None)
+    as_json = getattr(args, "json", False)
+
+    # Interactive callers build a bare namespace without --output's argparse
+    # default, so fall back to the same default the CLI documents.
+    if not getattr(args, "output", None):
+        args.output = "./thumbnails"
+
+    # An exact timestamp wins: extract that frame from the video and use it as the photo.
+    timestamp = getattr(args, "timestamp", None)
+    if photo is None and video and timestamp is not None:
+        if not os.path.exists(video):
+            print(f"  {red}✗{reset} Video not found: {video}", file=sys.stderr)
+            sys.exit(1)
+        import cv2
+        os.makedirs(args.output, exist_ok=True)
+        cap = cv2.VideoCapture(video)
+        cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
+        ok, frame = cap.read()
+        cap.release()
+        if ok:
+            photo = os.path.join(args.output, "_picked_frame.png")
+            cv2.imwrite(photo, frame)
+
+    if not as_json:
+        print(f"\n  {bold}Generating {args.variations} thumbnail variations...{reset}")
+        print(f"  Title: {accent}{args.title}{reset}")
+
+    paths = generate_variations(
+        title=args.title,
+        output_dir=args.output,
+        photo_path=photo,
+        video_path=video,
+        start_second=getattr(args, "start", None),
+        end_second=getattr(args, "end", None),
+        logo_path=logo,
+        config={"variations": args.variations},
+        line1=getattr(args, "line1", None),
+        line2=getattr(args, "line2", None),
+    )
+
+    if as_json:
+        print(json.dumps({"paths": paths}))
+        return
+
+    for p in paths:
+        print(f"  {green}✓{reset} {p}")
+    print(f"\n  {gray}Open the folder to preview and pick the best one.{reset}\n")
+
+
+def cmd_bake_thumbnail(args):
+    """Composite a thumbnail PNG into a clip as an opening (or closing) card, in place."""
+    import tempfile, shutil
+    from services.thumbnail_ai import thumbnail_to_video_frame
+    from services.video_processor import concat_outro, _get_media_duration_seconds
+
+    green = "\033[38;2;74;222;128m"
+    red = "\033[38;2;248;113;113m"
+    gray = "\033[38;5;245m"
+    reset = "\033[0m"
+    if not os.path.exists(args.clip):
+        print(f"  {red}✗{reset} Clip not found: {args.clip}", file=sys.stderr); sys.exit(1)
+    if not os.path.exists(args.image):
+        print(f"  {red}✗{reset} Image not found: {args.image}", file=sys.stderr); sys.exit(1)
+
+    work = tempfile.mkdtemp(prefix="bake_thumb_")
+    try:
+        clip = args.clip
+        # Strip a prior card off the start, if asked (avoids stacking on re-bake).
+        if args.strip_start and args.strip_start > 0.05:
+            total = _get_media_duration_seconds(clip, default=0.0)
+            if total > args.strip_start + 0.2:
+                from utils.proc import run as proc_run
+                trimmed = os.path.join(work, "trimmed.mp4")
+                proc_run(["ffmpeg", "-y", "-ss", str(args.strip_start), "-i", clip, "-c", "copy",
+                          "-movflags", "+faststart", trimmed], timeout=120, check=False)
+                if os.path.exists(trimmed):
+                    clip = trimmed
+
+        card = os.path.join(work, "card.mp4")
+        thumbnail_to_video_frame(args.image, card, duration=args.duration)
+        out = os.path.join(work, "baked.mp4")
+        if args.position == "start":
+            concat_outro(card, clip, out, crossfade_duration=0.0, transition="fade")
+        else:
+            concat_outro(clip, card, out, crossfade_duration=0.0, transition="fade")
+        if not os.path.exists(out):
+            print(f"  {red}✗{reset} Bake failed", file=sys.stderr); sys.exit(1)
+        shutil.move(out, args.clip)
+        print(f"  {green}✓{reset} Baked thumbnail card ({args.position}) into {os.path.basename(args.clip)}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def cmd_swap_thumbnail(args):
+    """Regenerate and swap the thumbnail on an existing rendered clip."""
+    from services.thumbnail_ai import generate_variations, thumbnail_to_video_frame
+    from services.video_processor import concat_outro, _get_media_duration_seconds
+    from services.asset_store import resolve_logo
+
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    clip_path = args.clip
+    if not os.path.exists(clip_path):
+        print(f"  Clip not found: {clip_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Thumbnail duration that was appended (default 1.5s)
+    thumb_duration = getattr(args, "thumb_duration", 1.5)
+    title = getattr(args, "title", None) or os.path.splitext(os.path.basename(clip_path))[0].replace("_", " ")
+
+    # Source video for extracting a new face frame — required to avoid
+    # pulling frames from rendered clips (which have captions burned in)
+    source_video = getattr(args, "source_video", None)
+    if not source_video:
+        print(f"  ✗ --source-video is required (rendered clips have captions burned in)", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.exists(source_video):
+        print(f"  ✗ Source video not found: {source_video}", file=sys.stderr)
+        sys.exit(1)
+
+    logo = resolve_logo(getattr(args, "logo", None))
+
+    # Step 1: Trim the old thumbnail from the clip
+    clip_duration = _get_media_duration_seconds(clip_path, default=0.0)
+    if clip_duration <= thumb_duration:
+        print(f"  Clip too short ({clip_duration:.1f}s) to trim thumbnail", file=sys.stderr)
+        sys.exit(1)
+
+    content_duration = clip_duration - thumb_duration
+    print(f"\n  {bold}Swapping thumbnail on:{reset} {os.path.basename(clip_path)}")
+    print(f"  {gray}Clip: {clip_duration:.1f}s → content: {content_duration:.1f}s + new thumbnail{reset}")
+
+    import tempfile
+    work_dir = tempfile.mkdtemp(prefix="swap_thumb_")
+
+    # Trim off old thumbnail
+    trimmed_path = os.path.join(work_dir, "trimmed.mp4")
+    from utils.proc import run as proc_run
+    trim_cmd = [
+        "ffmpeg", "-y", "-i", clip_path,
+        "-t", str(content_duration),
+        "-c", "copy", "-movflags", "+faststart",
+        trimmed_path,
+    ]
+    result = proc_run(trim_cmd, timeout=60, check=False)
+    if result.returncode != 0:
+        print(f"  Failed to trim: {result.stderr[-200:]}", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 2: Generate new thumbnail
+    thumb_dir = os.path.join(work_dir, "thumbnails")
+    print(f"  {bold}Generating new thumbnails...{reset}")
+
+    timestamp = getattr(args, "timestamp", None)
+    start_sec = getattr(args, "start", None)
+    end_sec = getattr(args, "end", None)
+
+    # A user-supplied image wins over any frame extraction.
+    frame_path = None
+    custom_image = getattr(args, "image", None)
+    if custom_image:
+        if not os.path.exists(custom_image):
+            print(f"  ✗ Image not found: {custom_image}", file=sys.stderr)
+            sys.exit(1)
+        frame_path = custom_image
+        print(f"  {green}✓{reset} Using uploaded image")
+    if frame_path is None and timestamp is not None:
+        import cv2
+        cap = cv2.VideoCapture(source_video)
+        cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
+        ret, frame = cap.read()
+        cap.release()
+        if ret:
+            frame_path = os.path.join(thumb_dir, "_manual_frame.png")
+            os.makedirs(thumb_dir, exist_ok=True)
+            cv2.imwrite(frame_path, frame)
+            print(f"  {green}✓{reset} Using frame at {timestamp}s")
+        else:
+            print(f"  ⚠ Could not read frame at {timestamp}s, falling back to auto", file=sys.stderr)
+
+    paths = generate_variations(
+        title=title,
+        output_dir=thumb_dir,
+        photo_path=frame_path,
+        video_path=source_video,
+        start_second=start_sec,
+        end_second=end_sec,
+        logo_path=logo,
+        config={"variations": getattr(args, "variations", 3)},
+    )
+
+    if not paths:
+        print(f"  Failed to generate thumbnails", file=sys.stderr)
+        sys.exit(1)
+
+    # Show variations
+    for i, p in enumerate(paths):
+        print(f"  {green}✓{reset} Variation {i+1}: {p}")
+
+    # Use first variation (or user-specified)
+    pick = getattr(args, "pick", 1) - 1
+    pick = max(0, min(pick, len(paths) - 1))
+    chosen = paths[pick]
+    print(f"  {accent}Using variation {pick + 1}{reset}")
+
+    # Step 3: Convert to video frame and append
+    thumb_video = os.path.join(work_dir, "thumb_frame.mp4")
+    thumbnail_to_video_frame(chosen, thumb_video, duration=thumb_duration)
+
+    final_path = os.path.join(work_dir, "final.mp4")
+    concat_outro(trimmed_path, thumb_video, final_path, crossfade_duration=0.0, transition="fade")
+
+    # Step 4: Replace original
+    import shutil
+    shutil.move(final_path, clip_path)
+
+    # Copy thumbnail PNGs next to the clip
+    clip_dir = os.path.dirname(clip_path)
+    for p in paths:
+        dest = os.path.join(clip_dir, os.path.basename(p))
+        shutil.copy2(p, dest)
+
+    # Cleanup
+    shutil.rmtree(work_dir, ignore_errors=True)
+
+    print(f"  {green}✓ Thumbnail swapped!{reset}")
+    print(f"  {gray}Variations saved next to clip for future swaps.{reset}\n")
+
+
+def cmd_corrections(args):
+    """Manage transcript word corrections."""
+    from services.corrections import get_corrections, save_corrections
+
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    action = getattr(args, "corrections_action", None) or "list"
+
+    if action == "list":
+        corrections = get_corrections()
+        if not corrections:
+            print(f"\n  {gray}No corrections set. Add one:{reset}")
+            print(f"  {accent}podcli corrections add \"Boxel\" \"Voxel\"{reset}\n")
+            return
+        print(f"\n  {bold}Transcript corrections{reset} ({len(corrections)}):\n")
+        for wrong, correct in sorted(corrections.items()):
+            print(f"    {gray}{wrong}{reset} → {green}{correct}{reset}")
+        print()
+    elif action == "add":
+        wrong = args.wrong
+        correct = args.correct
+        corrections = get_corrections()
+        corrections[wrong] = correct
+        save_corrections(corrections)
+        print(f"\n  {green}✓{reset} Added: {gray}{wrong}{reset} → {green}{correct}{reset}")
+        print(f"  {gray}({len(corrections)} total corrections){reset}\n")
+    elif action == "remove":
+        wrong = args.wrong
+        corrections = get_corrections()
+        if wrong in corrections:
+            del corrections[wrong]
+            save_corrections(corrections)
+            print(f"\n  {green}✓{reset} Removed: {gray}{wrong}{reset}\n")
+        else:
+            print(f"\n  {gray}Not found: {wrong}{reset}\n")
+
+
+def cmd_knowledge(args):
+    """Manage knowledge base files."""
+    kb_dir = paths["knowledge"]
+
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    green = "\033[38;2;74;222;128m"
+    red = "\033[38;2;248;113;113m"
+    bold = "\033[1m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    action = getattr(args, "knowledge_action", None) or "list"
+
+    if action == "list":
+        print(f"\n  {bold}Knowledge Base{reset}")
+        print(f"  {'─' * 45}")
+        if not os.path.isdir(kb_dir):
+            print(f"  {gray}Empty — no knowledge files{reset}\n")
+            return
+        files = sorted(f for f in os.listdir(kb_dir) if f.endswith(".md"))
+        if not files:
+            print(f"  {gray}Empty — no knowledge files{reset}\n")
+            return
+        for fname in files:
+            fpath = os.path.join(kb_dir, fname)
+            size = os.path.getsize(fpath)
+            # Read first non-empty, non-header line as preview
+            preview = ""
+            try:
+                with open(fpath, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and not line.startswith("---"):
+                            preview = line[:60]
+                            break
+            except Exception:
+                pass
+            print(f"  {accent}•{reset} {bold}{fname}{reset}  {gray}({size/1024:.1f}KB){reset}")
+            if preview:
+                print(f"    {dim}{preview}{'…' if len(preview) >= 60 else ''}{reset}")
+        print(f"  {'─' * 45}")
+        print(f"  {gray}{len(files)} files in {kb_dir}{reset}\n")
+
+    elif action == "read":
+        name = getattr(args, "filename", None)
+        if not name:
+            print(f"  {red}✗{reset} Specify a filename", file=sys.stderr)
+            return
+        if not name.endswith(".md"):
+            name += ".md"
+        fpath = os.path.join(kb_dir, name)
+        if not os.path.exists(fpath):
+            print(f"  {red}✗{reset} Not found: {name}", file=sys.stderr)
+            return
+        with open(fpath, encoding="utf-8") as f:
+            print(f.read())
+
+    elif action == "edit":
+        name = getattr(args, "filename", None)
+        content = getattr(args, "content", None)
+        if not name:
+            print(f"  {red}✗{reset} Specify a filename", file=sys.stderr)
+            return
+        if not name.endswith(".md"):
+            name += ".md"
+        os.makedirs(kb_dir, exist_ok=True)
+        fpath = os.path.join(kb_dir, name)
+        if content:
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(f"  {green}✓{reset} Written: {name}")
+        else:
+            # Open in $EDITOR
+            editor = os.environ.get("EDITOR", "nano")
+            os.system(f'{editor} "{fpath}"')
+
+    elif action == "delete":
+        name = getattr(args, "filename", None)
+        if not name:
+            print(f"  {red}✗{reset} Specify a filename", file=sys.stderr)
+            return
+        if not name.endswith(".md"):
+            name += ".md"
+        fpath = os.path.join(kb_dir, name)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+            print(f"  {green}✓{reset} Deleted: {name}")
+        else:
+            print(f"  {red}✗{reset} Not found: {name}", file=sys.stderr)
+
+
+def _print_config_result(action: str, data: dict) -> None:
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    green = "\033[38;2;74;222;128m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    if action == "status":
+        yellow = "\033[38;2;250;204;21m"
+        print(f"\n  {bold}Paths (two roots){reset}")
+        print(f"  {gray}config home{reset}: {accent}{data.get('home')}{reset}")
+        print(f"    {gray}→ knowledge, presets, assets, corrections, integrations{reset}")
+        print(f"  {gray}data cache{reset}: {data.get('cache')}")
+        print(f"    {gray}→ transcripts, remotion bundle (override with PODCLI_DATA){reset}")
+        print(f"  {gray}profile marker{reset}: {data.get('profile_marker')}")
+        if data.get("legacy_cache_pending"):
+            print(f"  {yellow}legacy cache{reset}: project/.podcli/cache still has files — run Migrate below")
+        else:
+            print(f"  {green}✓{reset} legacy cache: nothing pending under project/.podcli/cache")
+        if data.get("legacy_presets_pending"):
+            print(f"  {yellow}legacy presets{reset}: project/presets/ still has files — run Migrate below")
+        else:
+            print(f"  {green}✓{reset} legacy presets: nothing pending under project/presets/")
+        print()
+        return
+
+    if action == "migrate":
+        print(f"\n  {bold}Legacy migration{reset}")
+        home_mig = data.get("home_migration") or {}
+        if home_mig.get("imported") or home_mig.get("skipped_existing"):
+            print(f"  {gray}brand brain (presets, knowledge, assets, history, config){reset}")
+            print(f"    {gray}from{reset}: {home_mig.get('legacy_home')}")
+            print(f"    {gray}to{reset}:   {home_mig.get('target_home')}")
+            if home_mig.get("skipped_existing"):
+                print(f"    {gray}skipped{reset}: global home already has data")
+            else:
+                print(f"    {gray}imported{reset}: yes")
+        print(f"  {gray}cache{reset}")
+        print(f"    {gray}from{reset}: {data.get('legacy_dir')}")
+        print(f"    {gray}to{reset}:   {data.get('target_dir')}")
+        print(f"    {gray}moved json{reset}: {data.get('moved_json')}")
+        if data.get("skipped_json"):
+            print(f"    {gray}skipped{reset}:   {data['skipped_json']} (already in target)")
+        if data.get("moved_remotion_bundle"):
+            print(f"    {gray}remotion{reset}:  bundle moved")
+        if data.get("removed_duplicate_remotion_bundle"):
+            print(f"    {gray}remotion{reset}:  removed duplicate legacy bundle")
+        presets = data.get("presets_migration") or {}
+        if presets:
+            print(f"  {gray}presets{reset}")
+            print(f"    {gray}from{reset}: {presets.get('legacy_dir')}")
+            print(f"    {gray}to{reset}:   {presets.get('target_dir')}")
+            print(f"    {gray}moved{reset}:    {presets.get('moved')}")
+            if presets.get("skipped"):
+                print(f"    {gray}skipped{reset}:  {presets['skipped']} (already in target)")
+        env_mig = data.get("env_migration") or {}
+        if env_mig.get("copied"):
+            print(f"  {gray}.env{reset}")
+            print(f"    {gray}to{reset}:   {env_mig.get('target')}")
+        if not data.get("dry_run"):
+            print(f"\n  {green}✓{reset} Migration complete")
+        print()
+        return
+
+    if action == "export":
+        print(f"\n  {green}✓{reset} Exported config bundle")
+        print(f"    {gray}{data.get('bundle')}{reset}")
+        print(f"    {gray}assets:{reset} {data.get('asset_count')}")
+        print()
+        return
+
+    if action == "import":
+        print(f"\n  {green}✓{reset} Imported config bundle")
+        print(f"    {gray}{data.get('home')}{reset}")
+        if data.get("activated"):
+            print(f"    {gray}activated{reset}: yes")
+        if data.get("backup"):
+            print(f"    {gray}backup{reset}: {data['backup']}")
+        print()
+        return
+
+    if action == "use":
+        print(f"\n  {green}✓{reset} Activated config root")
+        print(f"    {gray}{data.get('home')}{reset}\n")
+
+
+def cmd_clips(args):
+    """Browse and edit saved clips (.podcli/history/clips.json)."""
+    from services.clips_history import (
+        list_clips,
+        get_clips_by_source,
+        find_clip,
+        update_clip,
+        delete_clip,
+    )
+
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    green = "\033[38;2;74;222;128m"
+    red = "\033[38;2;248;113;113m"
+    bold = "\033[1m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    action = getattr(args, "clips_action", None) or "list"
+
+    if action == "list":
+        source = getattr(args, "source", None)
+        limit = getattr(args, "limit", 50)
+        clips = get_clips_by_source(source)[:limit] if source else list_clips(limit)
+        if not clips:
+            print(f"\n  {gray}No clips yet — render one with{reset} {accent}podcli process{reset}\n")
+            return
+        print(f"\n  {bold}Recent clips ({len(clips)}){reset}\n")
+        for c in clips:
+            cid = str(c.get("id", "?"))[:8]
+            ctype = c.get("content_type")
+            tag = f"  {dim}{ctype}{reset}" if ctype else ""
+            dur = c.get("duration", 0)
+            print(f"    {accent}{cid}{reset}  {bold}{c.get('title', 'untitled')}{reset}{tag}")
+            print(
+                f"      {gray}{os.path.basename(c.get('source_video', '?'))}"
+                f"  ·  {dur:.0f}s  ·  {c.get('caption_style', '?')}"
+                f"  ·  {c.get('created_at', '?')[:10]}{reset}"
+            )
+        print(f"\n  {gray}Edit:{reset} {accent}podcli clips edit <id> --title \"…\"{reset}"
+              f"   {gray}Reopen:{reset} {accent}podcli clips reopen <id>{reset}\n")
+        return
+
+    if action == "edit":
+        clip = find_clip(args.clip_id)
+        if not clip:
+            print(f"\n  {red}✗{reset} Clip not found: {args.clip_id}\n", file=sys.stderr)
+            sys.exit(1)
+        title = getattr(args, "title", None)
+        caption_style = getattr(args, "caption_style", None)
+        thumb_cfg_raw = getattr(args, "thumbnail_config", None)
+        thumbnail_config = None
+        if thumb_cfg_raw:
+            try:
+                thumbnail_config = json.loads(thumb_cfg_raw)
+            except json.JSONDecodeError as e:
+                print(f"\n  {red}✗{reset} Invalid --thumbnail-config JSON: {e}\n", file=sys.stderr)
+                sys.exit(1)
+        if title is None and caption_style is None and thumbnail_config is None:
+            print(f"\n  {red}✗{reset} Nothing to change\n", file=sys.stderr)
+            sys.exit(1)
+        updated = update_clip(args.clip_id, title=title, caption_style=caption_style, thumbnail_config=thumbnail_config)
+        print(f"\n  {green}✓{reset} Updated {accent}{str(updated['id'])[:8]}{reset}  {bold}{updated.get('title')}{reset}")
+        print(f"      {gray}caption: {updated.get('caption_style')}{reset}\n")
+        return
+
+    if action == "delete":
+        clip = find_clip(args.clip_id)
+        if not clip:
+            print(f"\n  {red}✗{reset} Clip not found: {args.clip_id}\n", file=sys.stderr)
+            sys.exit(1)
+        if not getattr(args, "yes", False):
+            title = clip.get("title", "untitled")
+            try:
+                confirm = input(f"\n  Delete {bold}{title}{reset} and its rendered file? [y/N] ")
+            except EOFError:
+                confirm = ""
+            if confirm.strip().lower() not in ("y", "yes"):
+                print(f"  {gray}Cancelled.{reset}\n")
+                return
+        removed = delete_clip(args.clip_id)
+        print(f"\n  {green}✓{reset} Deleted {accent}{str(removed['id'])[:8]}{reset}  {bold}{removed.get('title')}{reset}\n")
+        return
+
+    if action == "reopen":
+        clip = find_clip(args.clip_id)
+        if not clip:
+            print(f"\n  {red}✗{reset} Clip not found: {args.clip_id}\n", file=sys.stderr)
+            sys.exit(1)
+        source_video = clip.get("source_video", "")
+        ui_state_path = paths["uiState"]
+        existing = {}
+        try:
+            if os.path.exists(ui_state_path):
+                with open(ui_state_path, encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+        except Exception:
+            existing = {}
+
+        # Preserve the loaded transcript only if it belongs to the same source video.
+        same_source = os.path.basename(existing.get("videoPath", "")) == os.path.basename(source_video)
+        transcript = existing.get("transcript") if same_source else None
+
+        suggestion = {
+            "clip_id": clip.get("id"),
+            "title": clip.get("title", "clip"),
+            "start_second": clip.get("start_second", 0),
+            "end_second": clip.get("end_second", 0),
+            "duration": clip.get("duration", 0),
+            "reasoning": "",
+            "preview_text": clip.get("transcript_slice", ""),
+            "suggested_caption_style": clip.get("caption_style"),
+            "content_type": clip.get("content_type"),
+        }
+        state = {
+            "videoPath": source_video,
+            "filePath": source_video,
+            "transcript": transcript,
+            "suggestions": [suggestion],
+            "deselectedIndices": [],
+            "settings": {"captionStyle": clip.get("caption_style"), "cropStrategy": clip.get("crop_strategy")},
+            "phase": "reviewing",
+        }
+        os.makedirs(os.path.dirname(ui_state_path), exist_ok=True)
+        with open(ui_state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+
+        print(f"\n  {green}✓{reset} Reopened {accent}{str(clip.get('id'))[:8]}{reset}  {bold}{clip.get('title')}{reset}")
+        if not transcript:
+            print(f"      {gray}Transcript not loaded — re-transcribe in the studio to edit captions.{reset}")
+        print(f"      {gray}Open the studio:{reset} {accent}http://localhost:3847/clip/{clip.get('id')}{reset}\n")
+        return
+
+
+def cmd_youtube(args):
+    """Link clips to YouTube videos and sync performance metrics."""
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    green = "\033[38;2;74;222;128m"
+    red = "\033[38;2;248;113;113m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    action = getattr(args, "youtube_action", None) or "status"
+
+    def fail(e):
+        print(f"\n  {red}✗{reset} {e}\n", file=sys.stderr)
+        sys.exit(1)
+
+    if action == "auth":
+        from services.integrations.youtube import client
+        try:
+            client.authorize()
+            print(f"\n  {green}✓{reset} Authorized — token cached.\n")
+        except Exception as e:
+            fail(e)
+        return
+
+    if action == "status":
+        from services.integrations.youtube import client
+        from services.clips_history import load_clips_history
+        clips = load_clips_history()
+        linked = [c for c in clips if c.get("youtube_video_id")]
+        synced = [c for c in clips if c.get("metrics")]
+        print(f"\n  {bold}YouTube{reset}")
+        print(f"    {gray}Authorized:{reset} {'yes' if client.is_authorized() else 'no'}")
+        print(f"    {gray}Clips linked:{reset} {len(linked)}")
+        print(f"    {gray}Clips with metrics:{reset} {len(synced)}\n")
+        return
+
+    if action == "link":
+        from services.integrations.youtube import sync
+        as_json = getattr(args, "json", False)
+        clip_id = getattr(args, "clip_id", None)
+        video_id = getattr(args, "video_id", None)
+        if clip_id and video_id:
+            ok = sync.set_link(clip_id, video_id)
+            if as_json:
+                print(json.dumps({"ok": ok, "clip_id": clip_id, "video_id": video_id}))
+            elif ok:
+                print(f"\n  {green}✓{reset} Linked {accent}{clip_id[:8]}{reset} → {video_id}\n")
+            else:
+                fail(f"clip not found: {clip_id}")
+            return
+        try:
+            proposals = sync.propose_links()
+        except Exception as e:
+            if as_json:
+                print(json.dumps({"error": str(e)}))
+                sys.exit(1)
+            fail(e)
+        if as_json:
+            print(json.dumps({"proposals": proposals}))
+            return
+        if not proposals:
+            print(f"\n  {gray}No link proposals (all clips linked, or no uploads matched).{reset}\n")
+            return
+        print(f"\n  {bold}Proposed links ({len(proposals)}){reset}  {gray}— confirm with: youtube link <clip_id> <video_id>{reset}\n")
+        for p in proposals:
+            print(f"    {accent}{p['clip_id'][:8]}{reset} {p['clip_title']}")
+            print(f"      {gray}→ {p['video_id']}  {p['video_title']}  (score {p['score']}){reset}")
+        print()
+        return
+
+    if action == "sync":
+        from services.integrations.youtube import sync
+        csv_path = getattr(args, "csv", None)
+        try:
+            if csv_path:
+                res = sync.sync_from_csv(csv_path)
+                print(f"\n  {green}✓{reset} Matched {res['matched']} clip(s) from {res['rows']} CSV row(s).")
+                for link in res.get("links", []):
+                    tone = gray if link["score"] >= 0.8 else red
+                    print(f"    {tone}{link['score']}{reset}  \"{link['clip_title']}\"  ←  \"{link['row_title']}\"")
+                if res["unmatched"]:
+                    print(f"  {gray}Unmatched: {len(res['unmatched'])}{reset}")
+                print(f"  {gray}Low scores are fuzzy title matches — verify them.{reset}\n")
+            else:
+                n = sync.sync_metrics()
+                print(f"\n  {green}✓{reset} Synced metrics onto {n} linked clip(s).\n")
+        except Exception as e:
+            fail(e)
+        return
+
+    if action == "learn":
+        from services.integrations.youtube import learnings
+        path = learnings.write_semantic_learnings()
+        if path:
+            print(f"\n  {green}✓{reset} Wrote performance analysis to {accent}{path}{reset}\n")
+        else:
+            print(f"\n  {gray}Not enough mature clips with metrics, or no AI CLI available.{reset}\n")
+        return
+
+
+def cmd_env(args):
+    """Manage secrets/settings in the global .env."""
+    from services.claude_suggest import get_ai_cli_status
+    from services.env_settings import run_env_action
+
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    yellow = "\033[38;2;250;204;21m"
+    reset = "\033[0m"
+    action = getattr(args, "env_action", None) or "list"
+    try:
+        if action == "set":
+            run_env_action("set", args.key, args.value)
+            print(f"  {green}✓{reset} {args.key} set")
+            if args.key in ("PODCLI_CLAUDE_PATH", "PODCLI_CODEX_PATH"):
+                status = get_ai_cli_status()
+                if status.get("available"):
+                    for c in status.get("candidates", []):
+                        print(f"  {gray}→{reset} {c['engine']}: {c['path']}")
+        elif action == "unset":
+            run_env_action("unset", args.key)
+            print(f"  {green}✓{reset} {args.key} removed")
+        else:
+            data = run_env_action("list")
+            print(f"\n  {gray}Settings ({data['path']}){reset}\n")
+            for s in data["settings"]:
+                mark = f"{green}set{reset}" if s["set"] else f"{gray}auto{reset}" if not s["secret"] else f"{gray}not set{reset}"
+                val = f" {gray}{s['preview']}{reset}" if s["set"] else ""
+                print(f"  {accent}{s['key']}{reset} — {s['label']}  [{mark}]{val}")
+                print(f"    {gray}{s['help']}{reset}")
+                if s.get("url"):
+                    print(f"    {gray}{s['url']}{reset}")
+                print()
+            ai = data.get("ai_cli") or {}
+            if ai.get("available"):
+                print(f"  {green}AI CLI detected{reset}")
+                for c in ai.get("candidates", []):
+                    print(f"    {accent}{c['engine']}{reset}  {c['path']}")
+            else:
+                print(f"  {yellow}AI CLI not detected{reset}")
+                print(f"    {gray}Set a path:{reset} {accent}podcli env set PODCLI_CLAUDE_PATH ~/.local/bin/claude{reset}")
+            print()
+    except ValueError as e:
+        print(f"  ✗ {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_config(args):
+    """Export, import, and activate config profiles."""
+    from config_bundle import run_config_action
+
+    yellow = "\033[38;2;250;204;21m"
+    reset = "\033[0m"
+    action = getattr(args, "config_action", None) or "status"
+
+    try:
+        data = run_config_action(
+            action,
+            bundle_path=getattr(args, "bundle", None),
+            home=getattr(args, "home", None),
+            activate=getattr(args, "activate", False),
+            dry_run=getattr(args, "dry_run", False),
+        )
+    except ValueError as e:
+        print(f"  {yellow}✗{reset} {e}", file=sys.stderr)
+        sys.exit(1)
+
+    _print_config_result(action, data)
+
+
+def cmd_cache(args):
+    """Manage transcription cache."""
+    cache_dir = paths["cache"]
+
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    green = "\033[38;2;74;222;128m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    action = getattr(args, "cache_action", None) or "status"
+
+    if action == "clear":
+        count = 0
+        if os.path.isdir(cache_dir):
+            for fname in os.listdir(cache_dir):
+                if fname.endswith(".json"):
+                    os.unlink(os.path.join(cache_dir, fname))
+                    count += 1
+        transcripts_dir = os.path.join(cache_dir, "transcripts")
+        if os.path.isdir(transcripts_dir):
+            for fname in os.listdir(transcripts_dir):
+                if fname.endswith(".json"):
+                    os.unlink(os.path.join(transcripts_dir, fname))
+                    count += 1
+        if count:
+            print(f"\n  {green}✓{reset} Cleared {count} cached transcription(s)")
+        else:
+            print(f"\n  {gray}Cache is already empty{reset}")
+        print()
+        return
+
+    # Status (default)
+    print(f"\n  {bold}Transcription Cache{reset}")
+    print(f"  {'─' * 35}")
+
+    if not os.path.exists(cache_dir):
+        print(f"  {gray}Empty — no cached transcriptions{reset}\n")
+        return
+
+    files = [f for f in os.listdir(cache_dir) if f.endswith(".json")]
+    transcripts_dir = os.path.join(cache_dir, "transcripts")
+    if os.path.isdir(transcripts_dir):
+        files.extend(
+            os.path.join("transcripts", f)
+            for f in os.listdir(transcripts_dir)
+            if f.endswith(".json")
+        )
+    if not files:
+        print(f"  {gray}Empty — no cached transcriptions{reset}\n")
+        return
+
+    total_size = 0
+    for fname in files:
+        fpath = os.path.join(cache_dir, fname)
+        size = os.path.getsize(fpath)
+        total_size += size
+
+        # Try to read the cached file to show what video it's for
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                data = json.load(f)
+            n_words = len(data.get("words", []))
+            n_segs = len(data.get("segments", []))
+            lang = data.get("language", "?")
+            mtime = os.path.getmtime(fpath)
+            import datetime
+            age = datetime.datetime.fromtimestamp(mtime).strftime("%b %d %H:%M")
+            print(f"  {accent}•{reset} {n_segs} segments, {n_words} words, {lang}  {gray}({size/1024:.0f}KB, {age}){reset}")
+        except Exception:
+            print(f"  {accent}•{reset} {fname}  {gray}({size/1024:.0f}KB){reset}")
+
+    print(f"  {'─' * 35}")
+    if total_size > 1024 * 1024:
+        print(f"  Total: {bold}{total_size / (1024*1024):.1f}MB{reset}  ({len(files)} file{'s' if len(files) != 1 else ''})")
+    else:
+        print(f"  Total: {bold}{total_size / 1024:.0f}KB{reset}  ({len(files)} file{'s' if len(files) != 1 else ''})")
+    print(f"  {gray}Run {accent}podcli cache clear{reset} {gray}to delete all{reset}\n")
+
+
+def cmd_info(args):
+    """Show system info."""
+    from services.encoder import get_encoder_info
+    from services.claude_suggest import get_ai_cli_status
+
+    green = "\033[38;2;74;222;128m"
+    yellow = "\033[38;2;250;204;21m"
+    gray = "\033[38;5;245m"
+    accent = "\033[38;2;212;135;74m"
+    reset = "\033[0m"
+
+    info = get_encoder_info()
+    ai = get_ai_cli_status()
+    candidates = ai.get("candidates") or []
+    configured = ai.get("configured") or {}
+
+    # Check HF_TOKEN
+    hf_token = os.environ.get("HF_TOKEN", "")
+    if not hf_token:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("HF_TOKEN=") and line.strip().split("=", 1)[1].strip():
+                            hf_token = line.strip().split("=", 1)[1].strip()
+                            break
+            except Exception:
+                pass
+
+    print(f"\n  podcli system info\n")
+    print(f"    Platform:     {info['system']}")
+    print(f"    Encoder:      {info['best']}")
+    print(f"    Available:    {', '.join(info['available'])}")
+    import importlib.util
+    try:
+        diarization_available = importlib.util.find_spec("pyannote.audio") is not None
+    except (ImportError, ValueError):
+        diarization_available = False
+    if not diarization_available:
+        speakers_status = f"{yellow}✗ not installed — run: podcli setup --speakers (pyannote + torch, ~2GB)"
+    elif hf_token:
+        speakers_status = f"{green}✓ configured"
+    else:
+        speakers_status = f"{yellow}✗ set a token — run: podcli env set HF_TOKEN <token>"
+
+    if candidates:
+        c0 = candidates[0]
+        ai_line = f"{green}{('Claude' if c0['engine'] == 'claude' else 'Codex')} ({c0['path']}){reset}"
+    else:
+        ai_line = f"{yellow}not found{reset}"
+    print(f"    AI CLI:       {ai_line}")
+    for engine in ("claude", "codex"):
+        manual = configured.get(engine)
+        if manual:
+            print(f"    {engine} override: {accent}{manual}{reset}")
+    if not candidates:
+        print(f"    {gray}Override:{reset} {accent}podcli env set PODCLI_CLAUDE_PATH ~/.local/bin/claude{reset}")
+    print(f"    Speakers:     {speakers_status}{reset}")
+    print()
+
+
+BANNER = """
+\033[38;2;212;135;74m  ┌─────────────────────────────────────┐
+  │                                     │
+  │   ██████╗  ██████╗ ██████╗          │
+  │   ██╔══██╗██╔═══██╗██╔══██╗         │
+  │   ██████╔╝██║   ██║██║  ██║         │
+  │   ██╔═══╝ ██║   ██║██║  ██║         │
+  │   ██║     ╚██████╔╝██████╔╝\033[0m\033[1m CLI\033[0m\033[38;2;212;135;74m     │
+  │   ╚═╝      ╚═════╝ ╚═════╝          │
+  │                                     │
+  └─────────────────────────────────────┘\033[0m"""
+
+
+def print_banner():
+    """Print startup banner with system info."""
+    from services.encoder import get_encoder_info
+
+    print(BANNER)
+
+    try:
+        info = get_encoder_info()
+        encoder = info["best"]
+        if encoder == "libx264":
+            encoder_label = "CPU"
+        else:
+            encoder_label = encoder.replace("h264_", "").upper()
+    except Exception:
+        encoder_label = "CPU"
+
+    # Count knowledge base files
+    kb_path = paths["knowledge"]
+    kb_count = len([f for f in os.listdir(kb_path) if f.endswith(".md")]) if os.path.isdir(kb_path) else 0
+
+    gray = "\033[38;5;245m"
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    yellow = "\033[38;2;250;204;21m"
+    red = "\033[38;2;248;113;113m"
+    dim = "\033[2m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    # Check HF_TOKEN for speaker diarization
+    hf_token = os.environ.get("HF_TOKEN", "")
+    if not hf_token:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().startswith("HF_TOKEN=") and line.strip().split("=", 1)[1].strip():
+                        hf_token = line.strip().split("=", 1)[1].strip()
+                        break
+
+    import importlib.util
+    try:
+        _diarization_ok = importlib.util.find_spec("pyannote.audio") is not None
+    except (ImportError, ValueError):
+        _diarization_ok = False
+    speakers_ok = bool(hf_token) and _diarization_ok
+
+    # Check AI CLI (Claude Code or Codex)
+    from services.claude_suggest import _find_ai_cli
+    ai_path, ai_engine = _find_ai_cli()
+
+    print(f"  {bold}podcli{reset} v{VERSION}")
+
+    # Cache info
+    cache_dir = paths["cache"]
+    cache_count = 0
+    if os.path.isdir(cache_dir):
+        cache_count = len([f for f in os.listdir(cache_dir) if f.endswith(".json")])
+
+    # Status — one line
+    ai_label = ("Claude" if ai_engine == "claude" else "Codex") if ai_path else "AI CLI"
+    ai_tag = f"{green}✓ {ai_label}{reset}" if ai_path else f"{yellow}✗{reset}"
+    speaker_tag = f"{green}✓{reset}" if speakers_ok else f"{yellow}✗{reset}"
+    cache_tag = f"{green}{cache_count}{reset}" if cache_count else f"{gray}0{reset}"
+    print(f"  {gray}Encoder {green}{encoder_label}{reset} {gray}· {ai_tag} {gray}· Speakers {speaker_tag} {gray}· Cache {cache_tag}{reset}")
+
+    # Assets — one line if any
+    try:
+        from services.asset_store import list_assets
+        assets = list_assets()
+        if assets:
+            parts = []
+            for a in assets:
+                if os.path.exists(a["path"]):
+                    parts.append(f"{green}✓{reset} {a['name']}")
+                else:
+                    parts.append(f"{red}✗{reset} {a['name']}")
+            print(f"  {gray}Assets{reset}  {'  '.join(parts)}")
+    except Exception:
+        pass
+
+    # Presets
+    try:
+        from presets import list_presets
+        presets = list_presets()
+        if presets:
+            names = []
+            for p in presets:
+                tag = p["name"]
+                if p.get("video_path") and os.path.exists(p["video_path"]):
+                    tag += f" {dim}({os.path.basename(p['video_path'])}){reset}{gray}"
+                names.append(tag)
+            print(f"  {gray}Presets{reset} {gray}{' · '.join(names)}{reset}")
+    except Exception:
+        pass
+
+    # Corrections count
+    try:
+        from services.corrections import get_corrections
+        corr = get_corrections()
+        if corr:
+            print(f"  {gray}Corrections{reset} {green}{len(corr)}{reset} {gray}words{reset}")
+    except Exception:
+        pass
+
+    print()
+
+    if not speakers_ok:
+        if not _diarization_ok:
+            print(f"  {yellow}⚠ Speaker detection not installed — run: podcli setup --speakers{reset}")
+        else:
+            print(f"  {yellow}⚠ Speaker detection needs a token — run: podcli env set HF_TOKEN <token>{reset}")
+
+    print()
+
+
+def print_help():
+    """Print custom help screen."""
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    green = "\033[38;2;74;222;128m"
+    bold = "\033[1m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+    ul = "\033[4m"
+
+    print(BANNER)
+    print(f"  {bold}podcli{reset} v{VERSION} — AI-powered podcast clip generator")
+    print()
+    print(f"  {bold}Usage:{reset}  podcli {accent}<command>{reset} [options]")
+    print(f"          podcli {dim}(interactive mode){reset}")
+    print()
+    print(f"  {bold}Commands:{reset}")
+    print(f"    {accent}process{reset} {gray}<video>{reset}       Transcribe + detect clips + render shorts")
+    print(f"    {accent}assets{reset}  {gray}<action>{reset}      Manage logos, intros, outros")
+    print(f"    {accent}presets{reset} {gray}<action>{reset}      Save/load rendering presets")
+    print(f"    {accent}thumbnails{reset} {gray}<title>{reset}   Generate thumbnail variations")
+    print(f"    {accent}knowledge{reset} {gray}<action>{reset}    Manage knowledge base (.podcli/knowledge/)")
+    print(f"    {accent}config{reset} {gray}<action>{reset}        Export/import/migrate config profiles")
+    print(f"    {accent}corrections{reset} {gray}<action>{reset}  Fix Whisper misheard words (Boxel→Voxel)")
+    print(f"    {accent}cache{reset}  {gray}[clear]{reset}       Show/clear transcription cache")
+    print(f"    {accent}info{reset}                 Show system info (encoder, codecs)")
+    print()
+    print(f"  {bold}Process options:{reset}")
+    print(f"    {green}-t{reset}, {green}--transcript{reset} {gray}<file>{reset}   Use existing transcript (.txt/.json)")
+    print(f"    {green}-n{reset}, {green}--top{reset} {gray}<N>{reset}            Export top N clips {dim}(default: 5){reset}")
+    print(f"    {green}-o{reset}, {green}--output{reset} {gray}<dir>{reset}        Output directory {dim}(default: ./clips){reset}")
+    print(f"    {green}-p{reset}, {green}--preset{reset} {gray}<name>{reset}       Load a saved preset")
+    print(f"    {green}--caption-style{reset} {gray}<style>{reset}  branded | hormozi | karaoke | subtle")
+    print(f"    {green}--crop{reset} {gray}<strategy>{reset}       speaker | speaker-hardcut | face | center")
+    print(f"    {green}--fast{reset}                 Draft mode: tiny Whisper, heuristic clips, low quality")
+    print(f"    {green}--logo{reset} {gray}<asset|path>{reset}     Overlay logo image")
+    print(f"    {green}--outro{reset} {gray}<asset|path>{reset}    Append outro video")
+    print(f"    {green}--quality{reset} {gray}<level>{reset}       low | medium | high | max")
+    print(f"    {green}--no-energy{reset}            Skip audio energy analysis")
+    print(f"    {green}--no-speakers{reset}          Skip speaker detection (faster)")
+    print(f"    {green}--no-cache{reset}             Force re-transcription")
+    print(f"    {green}--allow-ass-fallback{reset}   Use ASS captions if Remotion fails")
+    print()
+    print(f"  {bold}Examples:{reset}")
+    print(f"    {dim}${reset} podcli process episode.mp4")
+    print(f"    {dim}${reset} podcli process ep42.mp4 -t transcript.json --top 8 --caption-style hormozi")
+    print(f"    {dim}${reset} podcli process ep42.mp4 --preset myshow --quality max")
+    print(f"    {dim}${reset} podcli assets add mylogo ~/branding/logo.png")
+    print(f"    {dim}${reset} podcli presets save myshow --caption-style branded --logo mylogo")
+    print(f"    {dim}${reset} podcli thumbnails \"Why AI Changes Everything\" --video ep42.mp4")
+    print()
+    print(f"  {bold}PodStack{reset} {dim}(Claude Code slash commands):{reset}")
+    print(f"    {accent}/auto{reset}                  One-verb pipeline: confirm strategy → render clips")
+    print(f"    {accent}/prep-episode{reset}          Full pipeline: transcript → publish-ready")
+    print(f"    {accent}/process-transcript{reset}    Extract clip-worthy moments from transcript")
+    print(f"    {accent}/generate-titles{reset}       Generate 8 title options with verification")
+    print(f"    {accent}/generate-descriptions{reset} Descriptions + hashtags + SEO")
+    print(f"    {accent}/plan-thumbnails{reset}       Thumbnail text + layout briefs")
+    print(f"    {accent}/review-content{reset}        Brand voice & quality gate check")
+    print(f"    {accent}/publish-checklist{reset}     Pre/post-publish checklist")
+    print()
+    print(f"  {gray}Run {reset}podcli <command> --help{gray} for command-specific options{reset}")
+    print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="podcli",
+        description="AI-powered podcast clip generator",
+        add_help=False,
+    )
+    parser.add_argument("-h", "--help", action="store_true", dest="show_help")
+    parser.add_argument("--version", action="version", version=f"podcli {VERSION}")
+    parser.add_argument("--no-banner", action="store_true", help=argparse.SUPPRESS)
+    sub = parser.add_subparsers(dest="command")
+
+    # ── process ──
+    proc = sub.add_parser("process", help="Process a video into clips")
+    proc.add_argument("video", nargs="?", default=None, help="Path to podcast video file (optional if preset has video_path)")
+    proc.add_argument("-t", "--transcript", help="Path to transcript file (.txt or .json)")
+    proc.add_argument("-n", "--top", type=int, help="Number of top clips to export (default: 5)")
+    proc.add_argument("-o", "--output", help="Output directory (default: ./clips)")
+    proc.add_argument("-p", "--preset", help="Load a saved preset")
+    proc.add_argument("--engine", choices=["whisper-py", "whispercpp", "assemblyai"], help="Transcription engine (default: whisper-py; whispercpp is local; assemblyai uses ASSEMBLYAI_API_KEY)")
+    proc.add_argument("--assemblyai-api-key", help="AssemblyAI API key for --engine assemblyai. Prefer ASSEMBLYAI_API_KEY; command-line secrets can appear in process listings.")
+    proc.add_argument("--fast", action="store_true", help="Draft mode: tiny Whisper, heuristic selection, center crop, low quality")
+    proc.add_argument("--thumbnails", dest="thumbnails", action="store_true", default=None, help="Force thumbnail generation on")
+    proc.add_argument("--no-thumbnails", dest="thumbnails", action="store_false", help="Skip thumbnail generation")
+    proc.add_argument("--caption-style", choices=["branded", "hormozi", "karaoke", "subtle"])
+    proc.add_argument("--crop", choices=["center", "face", "speaker", "speaker-hardcut"])
+    proc.add_argument("--format", choices=["vertical", "horizontal", "square"], help="Output aspect ratio (default: vertical)")
+    proc.add_argument("--profile", choices=["podcast", "party", "action"], help="Detection profile: podcast (transcript-first, default), party/action (laughter/energy highlights)")
+    proc.add_argument("--logo", help="Logo image (asset name or path)")
+    proc.add_argument("--outro", help="Outro video (asset name or path)")
+    proc.add_argument("--no-outro", action="store_true", help="Do not append an outro (default for highlight profiles)")
+    proc.add_argument("--time-adjust", type=float, help="Timestamp offset in seconds")
+    proc.add_argument("--no-energy", action="store_true", help="Skip audio energy analysis")
+    proc.add_argument("--no-speakers", action="store_true", help="Skip speaker detection (faster, uses face detection only)")
+    proc.add_argument("--no-cache", action="store_true", help="Force re-transcription (ignore cached transcript)")
+    proc.add_argument("--no-resume", action="store_true", help="Ignore cached AI suggestions for this video and regenerate")
+    proc.add_argument("--quality", choices=["low", "medium", "high", "max"], help="Output quality (default: high)")
+    proc.add_argument("--allow-ass-fallback", action="store_true", help="Use ASS captions if Remotion rendering fails")
+    proc.add_argument("--review-each", action="store_true", help="Review each rendered clip interactively")
+    proc.add_argument("--post-review", action="store_true", help="Open the post-render review loop after export")
+
+    # ── reel (highlights, detect once then iterate fast) ──
+    reel_p = sub.add_parser("reel", help="Create and iterate on a highlights reel")
+    reel_sub = reel_p.add_subparsers(dest="reel_action")
+    rn = reel_sub.add_parser("new", help="Detect moments and build a reel")
+    rn.add_argument("video", help="Path to the source video")
+    rn.add_argument("--profile", choices=["auto", "party", "action"], default="auto")
+    rn.add_argument("--format", choices=["vertical", "horizontal", "square"], default="horizontal",
+                    help="Reel aspect ratio (default horizontal 1920x1080)")
+    rn.add_argument("-n", "--top", type=int, help="Number of moments (default 10)")
+    rn.add_argument("--min-dur", type=float, default=15.0, dest="min_dur",
+                    help="Shortest moment in seconds (default 15)")
+    rn.add_argument("--max-dur", type=float, default=60.0, dest="max_dur",
+                    help="Longest moment in seconds (default 60)")
+    rn.add_argument("-o", "--output", help="Output directory")
+    reel_sub.add_parser("list", help="List saved reel sessions")
+    rdel = reel_sub.add_parser("delete", help="Delete a reel session")
+    rdel.add_argument("session")
+    rsh = reel_sub.add_parser("show", help="List the moments in a reel session")
+    rsh.add_argument("session", help="Session id (printed by 'reel new')")
+    red = reel_sub.add_parser("edit", help="Adjust one moment and rebuild")
+    red.add_argument("session")
+    red.add_argument("index", type=int, help="1-based moment number")
+    red.add_argument("op", choices=["longer", "shorter", "earlier", "later", "shift", "drop", "toggle"])
+    red.add_argument("seconds", type=float, nargs="?", default=0.0)
+    rbd = reel_sub.add_parser("build", help="Rebuild the reel (re-cuts only changed moments)")
+    rbd.add_argument("session")
+
+    # ── studio ──
+    studio = sub.add_parser("studio", help="Cut a fragment + add Remotion intro/outro (follow-us) bookends")
+    studio.add_argument("video", nargs="?", default=None, help="Path to the source video (omit only with --save-brand)")
+    studio.add_argument("--start", type=float, help="Fragment start (seconds)")
+    studio.add_argument("--end", type=float, help="Fragment end (seconds)")
+    studio.add_argument("--paragraph", help="Find the fragment by matching this text in the transcript")
+    studio.add_argument("--language", help="Transcription language (e.g. es). Auto-detect if omitted.")
+    studio.add_argument("--engine", choices=["whisper-py", "whispercpp", "assemblyai"], help="Transcription engine")
+    studio.add_argument("--assemblyai-api-key", help="AssemblyAI API key for --engine assemblyai. Prefer ASSEMBLYAI_API_KEY; command-line secrets can appear in process listings.")
+    studio.add_argument("--caption-style", choices=["hormozi", "karaoke", "subtle", "branded"], default="hormozi")
+    studio.add_argument("--crop", choices=["center", "face", "speaker", "speaker-hardcut"], default="face")
+    studio.add_argument("-o", "--output", help="Final output path")
+    studio.add_argument("--intro-title", help="Intro headline (default: derived from first words)")
+    studio.add_argument("--outro-title", default=None)
+    studio.add_argument("--handle", help="Handle shown on cards, e.g. @yourbrand")
+    studio.add_argument("--platforms", default=None)
+    studio.add_argument("--intro-seconds", type=float, default=2.0)
+    studio.add_argument("--outro-seconds", type=float, default=3.0)
+    studio.add_argument("--accent", default=None)
+    studio.add_argument("--bg", default=None)
+    studio.add_argument("--no-intro", action="store_true")
+    studio.add_argument("--no-outro", action="store_true")
+    studio.add_argument("--save-brand", action="store_true",
+                        help="Save handle/platforms/outro-title/accent/bg as the default brand and exit")
+
+    # ── ui (Studio web dashboard) ──
+    sub.add_parser("ui", aliases=["webui"], help="Open the Studio web UI (http://localhost:3847)")
+
+    # ── presets ──
+    pre = sub.add_parser("presets", help="Manage presets")
+    pre_sub = pre.add_subparsers(dest="presets_action")
+
+    pre_list = pre_sub.add_parser("list", help="List all presets")
+
+    pre_save = pre_sub.add_parser("save", help="Save a preset")
+    pre_save.add_argument("name", help="Preset name")
+    pre_save.add_argument("--video", help="Default video path")
+    pre_save.add_argument("--transcript", help="Default transcript path")
+    pre_save.add_argument("--output", help="Default output directory")
+    pre_save.add_argument("--caption-style", choices=["branded", "hormozi", "karaoke", "subtle"])
+    pre_save.add_argument("--crop", choices=["center", "face", "speaker", "speaker-hardcut"])
+    pre_save.add_argument("--logo", help="Logo (asset name or path)")
+    pre_save.add_argument("--outro", help="Outro (asset name or path)")
+    pre_save.add_argument("--top", type=int, help="Default top clips count")
+    pre_save.add_argument("--time-adjust", type=float)
+    pre_save.add_argument("--quality", choices=["low", "medium", "high", "max"])
+    pre_save.add_argument("--review-each", action="store_true", help="Enable per-clip interactive review")
+    pre_save.add_argument("--post-review", action="store_true", help="Enable post-render review loop")
+    pre_save.add_argument("--no-energy", action="store_true", help="Skip audio energy analysis")
+    pre_save.add_argument("--no-speakers", action="store_true", help="Skip speaker detection")
+    pre_save.add_argument("--with-corrections", action="store_true", help="Include current global corrections in preset")
+
+    pre_show = pre_sub.add_parser("show", help="Show a preset")
+    pre_show.add_argument("name")
+
+    pre_del = pre_sub.add_parser("delete", help="Delete a preset")
+    pre_del.add_argument("name")
+
+    # ── assets ──
+    ast = sub.add_parser("assets", help="Manage named assets (logos, intros, outros)")
+    ast_sub = ast.add_subparsers(dest="assets_action")
+
+    ast_list = ast_sub.add_parser("list", help="List all registered assets")
+
+    ast_add = ast_sub.add_parser("add", help="Register a file as a named asset")
+    ast_add.add_argument("name", help="Short name (e.g., 'mylogo', 'outro')")
+    ast_add.add_argument("path", help="Path to file")
+    ast_add.add_argument("--type", choices=["logo", "video", "image", "audio", "other"], help="Asset type (default: auto-detect)")
+
+    ast_rm = ast_sub.add_parser("remove", help="Remove a named asset")
+    ast_rm.add_argument("name")
+
+    ast_resolve = ast_sub.add_parser("resolve", help="Print the path for an asset name")
+    ast_resolve.add_argument("name")
+
+    # ── thumbnails ──
+    thumb = sub.add_parser("thumbnails", help="Generate thumbnail variations for a title")
+    thumb.add_argument("title", help="Title text for the thumbnail")
+    thumb.add_argument("-o", "--output", default="./thumbnails", help="Output directory")
+    thumb.add_argument("--photo", help="Guest photo (asset name or path)")
+    thumb.add_argument("--video", help="Video to extract face frame from")
+    thumb.add_argument("--logo", help="Logo (asset name or path)")
+    thumb.add_argument("-n", "--variations", type=int, default=3, help="Number of variations")
+    thumb.add_argument("--timestamp", type=float, help="Exact second in --video to use as the frame")
+    thumb.add_argument("--start", type=float, help="Frame search window start (seconds)")
+    thumb.add_argument("--end", type=float, help="Frame search window end (seconds)")
+    thumb.add_argument("--line1", help="Explicit first thumbnail line (skips AI rewrite)")
+    thumb.add_argument("--line2", help="Explicit second thumbnail line")
+    thumb.add_argument("--json", action="store_true", help="Emit JSON {paths:[...]} to stdout")
+
+    # ── thumbnail-config ──
+    tcfg = sub.add_parser("thumbnail-config", help="Show, export, import, or reset the thumbnail template")
+    tcfg_sub = tcfg.add_subparsers(dest="tc_action")
+    tcfg_sub.add_parser("show", help="Print the effective thumbnail config (defaults + overrides) as JSON")
+    tcfg_exp = tcfg_sub.add_parser("export", help="Write the current thumbnail config to a file")
+    tcfg_exp.add_argument("path", help="Destination .json path")
+    tcfg_imp = tcfg_sub.add_parser("import", help="Replace the thumbnail config from a file")
+    tcfg_imp.add_argument("path", help="Source .json path")
+    tcfg_sub.add_parser("reset", help="Remove the override and revert to the generic default")
+
+    # ── thumbnail-options (candidate text + frames for the picker) ──
+    topt = sub.add_parser("thumbnail-options", help="Emit candidate headline texts and face frames as JSON")
+    topt.add_argument("title", help="Clip/episode title to base headlines on")
+    topt.add_argument("-o", "--output", required=True, help="Directory to write candidate frames into")
+    topt.add_argument("--video", help="Source video to extract face frames from")
+    topt.add_argument("--start", type=float, help="Frame window start (seconds)")
+    topt.add_argument("--end", type=float, help="Frame window end (seconds)")
+    topt.add_argument("--texts", type=int, default=6, help="Number of headline options")
+    topt.add_argument("--frames", type=int, default=6, help="Number of frame options")
+
+    # ── thumbnail-render (one final thumbnail from a chosen frame + headline) ──
+    trnd = sub.add_parser("thumbnail-render", help="Render one thumbnail PNG from a chosen frame + headline")
+    trnd.add_argument("title", help="Clip/episode title")
+    trnd.add_argument("--frame", required=True, help="Background frame image path")
+    trnd.add_argument("-o", "--output", required=True, help="Destination PNG path")
+    trnd.add_argument("--line1", help="Headline line 1 (empty = AI writes it)")
+    trnd.add_argument("--line2", help="Headline line 2 (empty = AI writes it)")
+    trnd.add_argument("--frame-info", dest="frame_info", help="JSON face metadata for the frame")
+    trnd.add_argument("--logo", help="Logo (asset name or path)")
+
+    # ── swap-thumbnail ──
+    st = sub.add_parser("swap-thumbnail", help="Regenerate thumbnail on an existing clip")
+    st.add_argument("clip", help="Path to rendered clip (.mp4)")
+    st.add_argument("--title", help="Title text (defaults to filename)")
+    st.add_argument("--image", help="Use this image as the thumbnail background instead of a video frame")
+    st.add_argument("--source-video", required=True, help="Original source video (required — rendered clips have captions burned in)")
+    st.add_argument("--start", type=float, help="Clip start time in source video (seconds)")
+    st.add_argument("--end", type=float, help="Clip end time in source video (seconds)")
+    st.add_argument("--timestamp", type=float, help="Exact second in source video to use as frame (skips auto-detection)")
+    st.add_argument("--logo", help="Logo (asset name or path)")
+    st.add_argument("--pick", type=int, default=1, help="Which variation to use (1-3, default 1)")
+    st.add_argument("-n", "--variations", type=int, default=3, help="Number of variations to generate")
+    st.add_argument("--thumb-duration", type=float, default=1.5, help="Duration of thumbnail end card (default 1.5s)")
+
+    # ── corrections ──
+    corr = sub.add_parser("corrections", help="Manage transcript word corrections (Whisper fixes)")
+    corr_sub = corr.add_subparsers(dest="corrections_action")
+    corr_sub.add_parser("list", help="Show all corrections")
+    corr_add = corr_sub.add_parser("add", help="Add a correction")
+    corr_add.add_argument("wrong", help="Misheard word/phrase")
+    corr_add.add_argument("correct", help="Correct replacement")
+    corr_rm = corr_sub.add_parser("remove", help="Remove a correction")
+    corr_rm.add_argument("wrong", help="Word to remove from corrections")
+
+    # ── knowledge ──
+    kb = sub.add_parser("knowledge", help="Manage knowledge base files")
+    kb_sub = kb.add_subparsers(dest="knowledge_action")
+    kb_sub.add_parser("list", help="List all knowledge files")
+    kb_read = kb_sub.add_parser("read", help="Print a knowledge file")
+    kb_read.add_argument("filename", help="File name (e.g. 01-brand-identity)")
+    kb_edit = kb_sub.add_parser("edit", help="Edit/create a knowledge file")
+    kb_edit.add_argument("filename", help="File name (e.g. 01-brand-identity)")
+    kb_edit.add_argument("--content", help="Content to write (opens $EDITOR if omitted)")
+    kb_del = kb_sub.add_parser("delete", help="Delete a knowledge file")
+    kb_del.add_argument("filename", help="File name to delete")
+
+    # ── clips ──
+    clips_p = sub.add_parser("clips", help="Browse and edit saved clips")
+    clips_sub = clips_p.add_subparsers(dest="clips_action")
+    clips_list = clips_sub.add_parser("list", help="List recent clips")
+    clips_list.add_argument("-n", "--limit", type=int, default=50, help="Max clips to show")
+    clips_list.add_argument("--source", help="Only clips from this source video (basename match)")
+    clips_edit = clips_sub.add_parser("edit", help="Edit a clip's metadata (title, caption style)")
+    clips_edit.add_argument("clip_id", help="Clip id (full or 8-char prefix)")
+    clips_edit.add_argument("--title", help="New title")
+    clips_edit.add_argument(
+        "--caption-style", choices=["branded", "hormozi", "karaoke", "subtle"], help="New caption style"
+    )
+    clips_edit.add_argument("--thumbnail-config", help="Per-clip thumbnail config as a JSON string")
+    clips_reopen = clips_sub.add_parser(
+        "reopen", help="Load a clip back into the studio editor for re-iteration"
+    )
+    clips_reopen.add_argument("clip_id", help="Clip id (full or 8-char prefix)")
+    clips_delete = clips_sub.add_parser("delete", help="Delete a clip and its rendered output")
+    clips_delete.add_argument("clip_id", help="Clip id (full or 8-char prefix)")
+    clips_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+
+    # ── bake-thumbnail ──
+    bt = sub.add_parser("bake-thumbnail", help="Composite a thumbnail PNG into a clip as an opening card")
+    bt.add_argument("clip", help="Rendered clip (.mp4) to modify in place")
+    bt.add_argument("image", help="Thumbnail PNG to bake in")
+    bt.add_argument("--duration", type=float, default=1.5, help="Card duration seconds (default 1.5)")
+    bt.add_argument("--position", choices=["start", "end"], default="start", help="Card position")
+    bt.add_argument("--strip-start", type=float, default=0.0, help="Trim this many seconds off the start first (removes a prior card)")
+
+    # ── youtube ──
+    yt = sub.add_parser("youtube", help="Link clips to YouTube videos and sync performance")
+    yt_sub = yt.add_subparsers(dest="youtube_action")
+    yt_sub.add_parser("auth", help="Authorize via Google OAuth (loopback)")
+    yt_sub.add_parser("status", help="Show auth state + linked/synced counts")
+    yt_link = yt_sub.add_parser("link", help="Propose clip↔video links, or set one explicitly")
+    yt_link.add_argument("clip_id", nargs="?", help="Clip id (omit to list proposals)")
+    yt_link.add_argument("video_id", nargs="?", help="YouTube video id to link")
+    yt_link.add_argument("--json", action="store_true", help="Emit proposals/result as JSON (for the web UI)")
+    yt_sync = yt_sub.add_parser("sync", help="Sync performance onto linked clips")
+    yt_sync.add_argument("--csv", help="Import from a YouTube Studio analytics CSV (no auth)")
+    yt_sub.add_parser("learn", help="AI pass: analyze winners vs losers into the knowledge base")
+
+    # ── config ──
+    cfg = sub.add_parser("config", help="Export, import, and activate config profiles")
+    cfg_sub = cfg.add_subparsers(dest="config_action")
+    cfg_sub.add_parser("status", help="Show the active config root")
+    cfg_migrate = cfg_sub.add_parser("migrate", help="Move legacy .podcli/cache into data/cache")
+    cfg_migrate.add_argument("--dry-run", action="store_true", help="Show what would be moved without changing files")
+    cfg_export = cfg_sub.add_parser("export", help="Export the active config root to a zip bundle")
+    cfg_export.add_argument("bundle", help="Output .zip bundle path")
+    cfg_export.add_argument("--home", help="Export from a specific config root instead of the active one")
+    cfg_import = cfg_sub.add_parser("import", help="Import a config bundle into a config root")
+    cfg_import.add_argument("bundle", help="Input .zip bundle path")
+    cfg_import.add_argument("--home", help="Import into a specific config root")
+    cfg_import.add_argument("--activate", action="store_true", help="Make the imported config root active")
+    cfg_use = cfg_sub.add_parser("use", help="Activate a config root for future runs")
+    cfg_use.add_argument("home", help="Path to the config root to activate")
+
+    # ── env (secrets / settings) ──
+    env_p = sub.add_parser("env", help="Manage .env settings (HF_TOKEN, PODCLI_CLAUDE_PATH, PODCLI_CODEX_PATH)")
+    env_sub = env_p.add_subparsers(dest="env_action")
+    env_sub.add_parser("list", help="Show known settings and whether they're set")
+    env_set = env_sub.add_parser("set", help="Set a setting")
+    env_set.add_argument("key", help="Setting key, e.g. HF_TOKEN or PODCLI_CLAUDE_PATH")
+    env_set.add_argument("value", help="Value")
+    env_unset = env_sub.add_parser("unset", help="Remove a setting")
+    env_unset.add_argument("key", help="Setting key, e.g. HF_TOKEN")
+
+    # ── cache ──
+    cache_p = sub.add_parser("cache", help="Manage transcription cache")
+    cache_sub = cache_p.add_subparsers(dest="cache_action")
+    cache_sub.add_parser("status", help="Show cache size and contents")
+    cache_sub.add_parser("clear", help="Delete all cached transcriptions")
+
+    # ── info ──
+    sub.add_parser("info", help="Show system info (encoder, etc.)")
+
+    init_thumb = sub.add_parser(
+        "init-thumbnail",
+        help="Scaffold .podcli/thumbnail-config.json so podcli generates thumbnails for you",
+    )
+    init_thumb.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing .podcli/thumbnail-config.json",
+    )
+
+    args = parser.parse_args()
+
+    _auto_migrate_cli(args)
+
+    if getattr(args, "show_help", False) and args.command is None:
+        print_help()
+        return
+
+    if args.command == "process":
+        if not getattr(args, "no_banner", False):
+            print()
+        cmd_process(args)
+    elif args.command == "studio":
+        cmd_studio(args)
+    elif args.command == "reel":
+        cmd_reel(args)
+    elif args.command == "thumbnails":
+        cmd_thumbnails(args)
+    elif args.command == "thumbnail-config":
+        cmd_thumbnail_config(args)
+    elif args.command == "thumbnail-options":
+        cmd_thumbnail_options(args)
+    elif args.command == "thumbnail-render":
+        cmd_thumbnail_render(args)
+    elif args.command == "swap-thumbnail":
+        cmd_swap_thumbnail(args)
+    elif args.command == "bake-thumbnail":
+        cmd_bake_thumbnail(args)
+    elif args.command == "presets":
+        cmd_presets(args)
+    elif args.command == "assets":
+        cmd_assets(args)
+    elif args.command == "corrections":
+        cmd_corrections(args)
+    elif args.command == "knowledge":
+        cmd_knowledge(args)
+    elif args.command == "clips":
+        cmd_clips(args)
+    elif args.command == "youtube":
+        cmd_youtube(args)
+    elif args.command == "config":
+        cmd_config(args)
+    elif args.command == "env":
+        cmd_env(args)
+    elif args.command == "cache":
+        cmd_cache(args)
+    elif args.command == "info":
+        cmd_info(args)
+    elif args.command == "init-thumbnail":
+        cmd_init_thumbnail(args)
+    elif args.command in ("ui", "webui"):
+        launch_webui()
+    else:
+        interactive_menu()
+
+
+def launch_webui():
+    """Launch the Studio web UI server (http://localhost:3847)."""
+    import subprocess as sp
+    import shutil as _shutil
+
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    yellow = "\033[38;2;250;204;21m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    port = os.environ.get("PORT", "3847")
+    node = os.environ.get("PODCLI_NODE") or _shutil.which("node")
+    studio = os.environ.get("PODCLI_STUDIO") or os.path.join(backend_dir, "..", "studio")
+    server = os.path.join(studio, "web-server.mjs")
+    repo = os.path.join(backend_dir, "..")
+
+    if node and os.path.exists(server):
+        # Bundled studio: hermetic Node serves it, rendering delegated to this
+        # same Python backend + ffmpeg via the env below.
+        env = {
+            **os.environ,
+            "PORT": str(port),
+            "PODCLI_BACKEND": backend_dir,
+            "PYTHON_PATH": sys.executable,
+            "PODCLI_HOME": paths["home"],
+            # data_dir is the cache's parent — output is now decoupled
+            # (clips render to the working dir), so don't derive it from output.
+            "PODCLI_DATA": os.path.dirname(paths["cache"]),
+            "PODCLI_OUTPUT": paths["output"],
+            "FFMPEG_PATH": os.environ.get("PODCLI_FFMPEG", "ffmpeg"),
+            "FFPROBE_PATH": os.environ.get("PODCLI_FFPROBE", "ffprobe"),
+        }
+        print(f"\n  {gray}Studio:{reset} {accent}http://localhost:{port}{reset}   {dim}(Ctrl+C to stop){reset}\n")
+        sp.run([node, server], env=env)
+    elif os.path.exists(os.path.join(repo, "package.json")) and _shutil.which("npm"):
+        # Source checkout (dev): build + serve via npm.
+        _npm_shell = sys.platform == "win32"
+        spa = os.path.join(repo, "dist", "ui", "public", "index.html")
+        ok = True
+        if not os.path.exists(spa):
+            print(f"\n  {gray}Building the studio (first run)…{reset}\n")
+            ok = sp.run(["npm", "run", "build"], cwd=repo, shell=_npm_shell).returncode == 0
+            if not ok:
+                print(f"\n  {yellow}Build failed — run 'npm install' then try again.{reset}\n")
+        if ok:
+            print(f"\n  {gray}Studio:{reset} {accent}http://localhost:{port}{reset}   {dim}(Ctrl+C to stop){reset}\n")
+            sp.run(["npm", "run", "ui:prod"], cwd=repo, shell=_npm_shell)
+    else:
+        print(f"\n  {yellow}Studio isn't provisioned yet.{reset}")
+        print(f"  {dim}Run{reset} {accent}podcli setup{reset} {dim}to fetch the bundled studio + Node.{reset}\n")
+
+
+def interactive_menu():
+    """Interactive startup — show banner then let user pick what to do."""
+
+    accent = "\033[38;2;212;135;74m"
+    gray = "\033[38;5;245m"
+    green = "\033[38;2;74;222;128m"
+    yellow = "\033[38;2;250;204;21m"
+    bold = "\033[1m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    print_banner()
+
+    # Reset terminal to sane state — fixes ^M echo from corrupted tty settings
+    try:
+        os.system("stty sane 2>/dev/null")
+    except Exception:
+        pass
+
+    import questionary
+    from questionary import Style
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    while True:
+        choice = questionary.select(
+            "What do you want to do?",
+            choices=[
+                questionary.Choice("/auto → one-verb pipeline (Claude Code)", value="auto"),
+                questionary.Choice("Process a video → shorts", value="process"),
+                questionary.Choice("Open Web UI", value="webui"),
+                questionary.Separator(),
+                questionary.Choice("Presets", value="presets"),
+                questionary.Choice("Assets", value="assets"),
+                questionary.Choice("Knowledge base", value="knowledge"),
+                questionary.Choice("Config profiles", value="config"),
+                questionary.Choice("Corrections", value="corrections"),
+                questionary.Separator(),
+                questionary.Choice("Thumbnails", value="thumbnails"),
+                questionary.Choice("Cache", value="cache"),
+                questionary.Choice("Info", value="info"),
+                questionary.Separator(),
+                questionary.Choice("Quit", value="quit"),
+            ],
+            style=qstyle,
+            instruction="",
+        ).ask()
+
+        if choice is None or choice == "quit":
+            return
+        elif choice == "auto":
+            _interactive_auto()
+            return
+        elif choice == "process":
+            _interactive_process()
+            return
+        elif choice == "webui":
+            launch_webui()
+        elif choice == "assets":
+            _interactive_assets()
+        elif choice == "presets":
+            _interactive_presets()
+        elif choice == "knowledge":
+            _interactive_knowledge()
+        elif choice == "config":
+            _interactive_config()
+        elif choice == "corrections":
+            _interactive_corrections()
+        elif choice == "thumbnails":
+            _interactive_thumbnails()
+        elif choice == "cache":
+            _interactive_cache()
+        elif choice == "info":
+            _interactive_info()
+
+
+def _clean_path(val):
+    """Clean a path that may have shell escapes or quotes from drag-drop."""
+    val = val.strip().strip("'\"")
+    # macOS Terminal adds backslash escapes when dragging files
+    val = val.replace("\\ ", " ")
+    val = val.replace("\\(", "(").replace("\\)", ")")
+    val = val.replace("\\,", ",")
+    val = val.replace("\\'", "'")
+    # Also handle generic backslash-space
+    if "\\" in val and not os.path.exists(val):
+        unescaped = val.replace("\\", "")
+        if os.path.exists(unescaped):
+            return unescaped
+    return val
+
+
+def _flush_stdin():
+    """Flush any buffered stdin (leftover newlines from previous inputs)."""
+    import select
+    try:
+        while select.select([sys.stdin], [], [], 0.0)[0]:
+            sys.stdin.readline()
+    except Exception:
+        pass
+
+
+def _ask(prompt, default=None, validate=None, required=False, is_path=False):
+    """Ask a question, retry until valid or Ctrl+C."""
+    _flush_stdin()
+    while True:
+        try:
+            val = input(prompt).strip().strip("'\"")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return default
+        if not val:
+            if default is not None:
+                return default
+            if required:
+                continue  # silently re-prompt
+            return val
+        if is_path:
+            val = _clean_path(val)
+        if validate and not validate(val):
+            continue
+        return val
+
+
+def _codex_podstack_prompt(prompt: str) -> str:
+    """Wrap a PodStack slash prompt so Codex can run the same command file."""
+    return (
+        "Run the PodStack workflow from .claude/commands/auto.md with these "
+        f"arguments, then follow that workflow exactly: {prompt}"
+    )
+
+
+def _launch_podstack_auto(prompt: str, ai_engine: str = "auto") -> int | None:
+    """Launch /auto in Claude, Codex, or auto fallback order."""
+    import shutil
+    import subprocess as _sp
+
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    yellow = "\033[38;2;250;204;21m"
+    gray = "\033[38;5;245m"
+    dim = "\033[2m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if ai_engine not in {"auto", "claude", "codex"}:
+        print()
+        print(f"  {bold}Invalid AI engine:{reset} {ai_engine}")
+        print(f"  {dim}Use PODCLI_AI=codex, PODCLI_AI=claude, or PODCLI_AI=auto.{reset}")
+        print()
+        return None
+
+    claude_bin = shutil.which("claude")
+    codex_bin = shutil.which("codex")
+
+    if ai_engine == "codex" and not codex_bin:
+        print()
+        print(f"  {bold}Codex not found in PATH.{reset}")
+        print(f"  {dim}Install Codex, then run:{reset}")
+        print(f"    {accent}codex --cd \"{project_root}\" \"{_codex_podstack_prompt(prompt)}\"{reset}")
+        print()
+        return 1
+    if ai_engine == "claude" and not claude_bin:
+        print()
+        print(f"  {bold}Claude Code not found in PATH.{reset}")
+        print(f"  {dim}Install it, then run:{reset}")
+        print(f"    {accent}claude \"{prompt}\"{reset}")
+        print()
+        return 1
+
+    if ai_engine != "codex" and claude_bin:
+        print()
+        print(f"  {green}▶{reset} Launching Claude Code with: {accent}{prompt}{reset}")
+        print(f"  {dim}cwd: {project_root}{reset}")
+        print()
+        sys.stdout.flush()
+        code = _sp.call([claude_bin, prompt], cwd=project_root)
+        if code == 0:
+            return code
+        if ai_engine == "claude":
+            return code
+        if not codex_bin:
+            return code
+        print()
+        print(f"  {yellow}⚠{reset} Claude exited with code {code}; trying Codex...")
+    elif ai_engine != "claude" and not codex_bin:
+        print()
+        print(f"  {bold}No AI agent CLI found in PATH.{reset}")
+        print(f"  {dim}Install Claude Code or Codex, then run one of:{reset}")
+        print(f"    {accent}claude \"{prompt}\"{reset}")
+        print(f"    {accent}codex --cd \"{project_root}\" \"{_codex_podstack_prompt(prompt)}\"{reset}")
+        print()
+        return None
+    else:
+        print()
+        if ai_engine == "codex":
+            print(f"  {gray}Using Codex because it was requested.{reset}")
+        else:
+            print(f"  {gray}Claude Code not found; using Codex.{reset}")
+
+    codex_prompt = _codex_podstack_prompt(prompt)
+    print()
+    print(f"  {green}▶{reset} Launching Codex with: {accent}{prompt}{reset}")
+    print(f"  {dim}cwd: {project_root}{reset}")
+    print()
+    sys.stdout.flush()
+    return _sp.call([codex_bin, "--cd", project_root, codex_prompt], cwd=project_root)
+
+
+def _interactive_auto():
+    """Pick a video (preset or new), then launch /auto in Claude or Codex."""
+    import questionary
+    from questionary import Style
+
+    accent = "\033[38;2;212;135;74m"
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    dim = "\033[2m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    from presets import list_presets, get_preset
+    presets = list_presets()
+    preset_choices = [p for p in presets if p.get("video_path")]
+
+    video_path = None
+    preset_name = None
+
+    if preset_choices:
+        options = [
+            questionary.Choice(
+                f"{p['name']} — {os.path.basename(p['video_path'])}",
+                value=p["name"],
+            )
+            for p in preset_choices
+        ]
+        options.append(questionary.Separator())
+        options.append(questionary.Choice("New video (paste path)", value="_new"))
+        options.append(questionary.Choice("Back", value="_back"))
+
+        pick = questionary.select(
+            "Which video should /auto work on?",
+            choices=options,
+            style=qstyle,
+        ).ask()
+        if pick is None or pick == "_back":
+            return
+
+        if pick != "_new":
+            config = get_preset(pick)
+            video_path = config.get("video_path")
+            preset_name = pick
+            if not video_path or not os.path.exists(video_path):
+                print(f"\n  {bold}Video not found:{reset} {video_path}\n")
+                return
+
+    if not video_path:
+        val = questionary.path(
+            "Video file:",
+            style=qstyle,
+            validate=lambda v: True if os.path.exists(_clean_path(v)) else "File not found",
+        ).ask()
+        if not val:
+            return
+        video_path = _clean_path(val)
+
+    brief = questionary.text(
+        "Brief (optional — e.g. '5 clips' or 'focus on investor pitch'):",
+        style=qstyle,
+        default="",
+    ).ask()
+    if brief is None:
+        return
+
+    # Build the prompt. Preset settings (caption style, crop, logo, outro) flow
+    # as context so /auto can honor them without a preset-aware tool schema change.
+    prompt_parts = [f"/auto {video_path}"]
+    if preset_name:
+        config = get_preset(preset_name)
+        hints = []
+        if config.get("caption_style"):
+            hints.append(f"caption: {config['caption_style']}")
+        if config.get("crop_strategy"):
+            hints.append(f"crop: {config['crop_strategy']}")
+        if config.get("logo"):
+            hints.append(f"logo: {config['logo']}")
+        if config.get("outro"):
+            hints.append(f"outro: {config['outro']}")
+        tag = f"preset '{preset_name}'"
+        if hints:
+            tag += f" ({', '.join(hints)})"
+        prompt_parts.append(f"— {tag}")
+    if brief.strip():
+        prompt_parts.append(f"— {brief.strip()}")
+    prompt = " ".join(prompt_parts)
+
+    code = _launch_podstack_auto(prompt, os.environ.get("PODCLI_AI", "auto"))
+    if code is not None:
+        sys.exit(code)
+
+
+def _interactive_process():
+    """Interactive video processing wizard using questionary."""
+    import questionary
+    from questionary import Style
+
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    # Check for presets first
+    from presets import list_presets, get_preset
+    presets = list_presets()
+    preset_choices = [p for p in presets if p.get("video_path")]
+
+    use_preset = None
+    if preset_choices:
+        preset_options = [
+            questionary.Choice(
+                f"{p['name']} — {os.path.basename(p['video_path'])}",
+                value=p["name"]
+            ) for p in preset_choices
+        ]
+        preset_options.append(questionary.Choice("New video (manual setup)", value="_new"))
+        use_preset = questionary.select(
+            "Use a preset or set up manually?",
+            choices=preset_options,
+            style=qstyle,
+        ).ask()
+        if use_preset is None:
+            return
+
+    if use_preset and use_preset != "_new":
+        # Run with preset
+        config = get_preset(use_preset)
+        video = config["video_path"]
+        if not os.path.exists(video):
+            print(f"\n  Video not found: {video}")
+            return
+
+        if questionary.confirm(
+            f"Process {os.path.basename(video)} with preset '{use_preset}'?",
+            default=True, style=qstyle,
+        ).ask():
+            cmd = [sys.executable, os.path.abspath(__file__), "process", "--preset", use_preset]
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.flush()
+            print(f"  {green}▶{reset} Starting with preset '{use_preset}'...\n")
+            import subprocess as _sp
+            sys.exit(_sp.call(cmd))
+        return
+
+    # Manual setup
+    video = questionary.path(
+        "Video file:",
+        style=qstyle,
+        validate=lambda v: True if os.path.exists(_clean_path(v)) else "File not found",
+    ).ask()
+    if not video:
+        return
+    video = _clean_path(video)
+
+    transcript = questionary.path(
+        "Transcript (Enter to auto-transcribe):",
+        style=qstyle,
+        default="",
+    ).ask()
+    transcript = _clean_path(transcript) if transcript and os.path.exists(_clean_path(transcript)) else None
+    if not transcript:
+        print(f"  {gray}→ Will auto-transcribe with Whisper{reset}")
+
+    caption_style = questionary.select(
+        "Caption style:",
+        choices=[
+            questionary.Choice("branded — dark pill on active word + logo", value="branded"),
+            questionary.Choice("hormozi — bold uppercase, yellow highlight", value="hormozi"),
+            questionary.Choice("karaoke — sentence visible, words light up", value="karaoke"),
+            questionary.Choice("subtle — clean small text at bottom", value="subtle"),
+        ],
+        default="branded",
+        style=qstyle,
+    ).ask()
+    if caption_style is None:
+        return
+
+    quality = questionary.select(
+        "Quality:",
+        choices=["low", "medium", "high", "max"],
+        default="max",
+        style=qstyle,
+    ).ask()
+    if quality is None:
+        return
+
+    top_n = questionary.text(
+        "How many clips?",
+        default="5",
+        style=qstyle,
+        validate=lambda v: True if v.isdigit() and int(v) > 0 else "Enter a number",
+    ).ask()
+    if top_n is None:
+        return
+    top_n = int(top_n)
+
+    # Logo
+    logo = None
+    try:
+        from services.asset_store import list_assets
+        logos = [a for a in list_assets() if a["type"] == "logo" and os.path.exists(a["path"])]
+        if logos:
+            logo_choices = [questionary.Choice(f"{a['name']} ({os.path.basename(a['path'])})", value=a["path"]) for a in logos]
+            logo_choices.append(questionary.Choice("None", value=None))
+            logo = questionary.select("Logo:", choices=logo_choices, default=logo_choices[0], style=qstyle).ask()
+    except Exception:
+        pass
+
+    # Outro
+    outro = None
+    try:
+        from services.asset_store import list_assets as list_assets_o
+        outros = [a for a in list_assets_o() if a["type"] == "video" and os.path.exists(a["path"])]
+        if outros:
+            outro_choices = [questionary.Choice("None", value=None)]
+            outro_choices += [questionary.Choice(f"{a['name']} ({os.path.basename(a['path'])})", value=a["path"]) for a in outros]
+            outro = questionary.select("Outro:", choices=outro_choices, style=qstyle).ask()
+    except Exception:
+        pass
+
+    # Confirm
+    print(f"\n  {'─' * 45}")
+    print(f"  Video:      {os.path.basename(video)}")
+    print(f"  Style:      {caption_style}  ·  Quality: {quality}  ·  Clips: {top_n}")
+    if logo:
+        print(f"  Logo:       ✓")
+    if outro:
+        print(f"  Outro:      ✓  {dim}{os.path.basename(outro)}{reset}")
+    print(f"  Transcript: {'auto (Whisper)' if not transcript else os.path.basename(transcript)}")
+    print()
+
+    if not questionary.confirm("Start processing?", default=True, style=qstyle).ask():
+        return
+
+    # Run
+    cmd = [sys.executable, os.path.abspath(__file__), "process", video]
+    if transcript:
+        cmd += ["--transcript", transcript]
+    cmd += ["--caption-style", caption_style]
+    cmd += ["--quality", quality]
+    cmd += ["--top", str(top_n)]
+    if logo:
+        cmd += ["--logo", logo]
+    if outro:
+        cmd += ["--outro", outro]
+
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+    print(f"  {green}▶{reset} Starting...\n")
+    sys.stderr.flush()
+    import subprocess as _sp
+    sys.exit(_sp.call(cmd))
+
+
+def _interactive_config():
+    """Interactive config profiles: status, migrate, export/import, switch home."""
+    import argparse as _ap
+    import questionary
+    from questionary import Style
+    from config_bundle import run_config_action
+
+    gray = "\033[38;5;245m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    while True:
+        _print_config_result("status", run_config_action("status"))
+
+        choices = [
+            questionary.Choice("Migrate legacy cache → data/cache", value="migrate"),
+            questionary.Choice("Export config bundle (.zip)", value="export"),
+            questionary.Choice("Import config bundle (.zip)", value="import"),
+            questionary.Choice("Switch active config home", value="use"),
+            questionary.Choice("Open Web UI config page", value="webui"),
+            questionary.Choice("← Back", value="_back"),
+        ]
+
+        action = questionary.select("Config profiles:", choices=choices, style=qstyle).ask()
+        if action is None or action == "_back":
+            return
+
+        if action == "migrate":
+            if questionary.confirm("Preview migration (dry run)?", default=True, style=qstyle).ask():
+                cmd_config(_ap.Namespace(config_action="migrate", dry_run=True))
+            if questionary.confirm("Run migration now?", default=True, style=qstyle).ask():
+                cmd_config(_ap.Namespace(config_action="migrate", dry_run=False))
+            continue
+
+        if action == "export":
+            bundle = questionary.text("Bundle path (.zip):", style=qstyle).ask()
+            if not bundle:
+                continue
+            bundle = _clean_path(bundle)
+            cmd_config(_ap.Namespace(config_action="export", bundle=bundle, home=None, activate=False, dry_run=False))
+            continue
+
+        if action == "import":
+            bundle = questionary.text("Bundle path (.zip):", style=qstyle).ask()
+            if not bundle:
+                continue
+            bundle = _clean_path(bundle)
+            home = questionary.text(
+                "Import into (leave empty = active home):",
+                style=qstyle,
+            ).ask()
+            home = _clean_path(home) if home else None
+            activate = questionary.confirm("Activate this home after import?", default=True, style=qstyle).ask()
+            cmd_config(_ap.Namespace(
+                config_action="import",
+                bundle=bundle,
+                home=home,
+                activate=bool(activate),
+                dry_run=False,
+            ))
+            continue
+
+        if action == "use":
+            home = questionary.text("Config home path:", style=qstyle).ask()
+            if not home:
+                continue
+            cmd_config(_ap.Namespace(config_action="use", bundle=None, home=_clean_path(home), activate=False, dry_run=False))
+            continue
+
+        if action == "webui":
+            import webbrowser
+
+            port = os.environ.get("PORT", "3847")
+            url = f"http://localhost:{port}/config"
+            print(f"\n  {gray}Config UI:{reset} {url}")
+            print(f"  {dim}Serve the UI first if needed: npm run build && npm run ui:prod{reset}\n")
+            webbrowser.open(url)
+            questionary.press_any_key_to_continue(style=qstyle).ask()
+            continue
+
+
+def _interactive_cache():
+    """Interactive cache management using questionary."""
+    import argparse as _ap
+    import questionary
+    from questionary import Style
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    cmd_cache(_ap.Namespace(cache_action=None))
+
+    if questionary.confirm("Clear cache?", default=False, style=qstyle).ask():
+        cmd_cache(_ap.Namespace(cache_action="clear"))
+
+
+def _interactive_assets():
+    """Interactive asset management using questionary."""
+    import questionary
+    from questionary import Style
+    from services.asset_store import register, unregister, list_assets
+
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    red = "\033[38;2;248;113;113m"
+    accent = "\033[38;2;212;135;74m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    current = list_assets()
+    if current:
+        print(f"\n  Registered assets:")
+        for a in current:
+            exists = os.path.exists(a["path"])
+            icon = f"{green}✓{reset}" if exists else f"{red}✗{reset}"
+            print(f"    {icon} {accent}{a['name']}{reset}  {gray}({a['type']}) {os.path.basename(a['path'])}{reset}")
+        print()
+
+    actions = [questionary.Choice("Add asset", value="add")]
+    if current:
+        actions.append(questionary.Choice("Remove asset", value="remove"))
+    actions.append(questionary.Choice("← Back", value="_back"))
+
+    action = questionary.select("Assets:", choices=actions, style=qstyle).ask()
+    if action is None or action == "_back":
+        return
+
+    if action == "add":
+        name = questionary.text("Asset name (e.g. mylogo, outro):", style=qstyle).ask()
+        if not name:
+            return
+        path = questionary.path("File path:", style=qstyle).ask()
+        if not path:
+            return
+        path = _clean_path(path)
+        try:
+            asset = register(name, path)
+            print(f"\n  {green}✓{reset} Registered {accent}{name}{reset} ({asset['type']})")
+            print(f"    {gray}{asset['path']}{reset}\n")
+        except FileNotFoundError as e:
+            print(f"\n  {red}✗{reset} {e}\n", file=sys.stderr)
+
+    elif action == "remove":
+        choices = [questionary.Choice(f"{a['name']} ({a['type']})", value=a["name"]) for a in current]
+        to_remove = questionary.select("Remove which?", choices=choices, style=qstyle).ask()
+        if to_remove:
+            unregister(to_remove)
+            print(f"\n  {green}✓{reset} Removed '{to_remove}'\n")
+
+
+def _interactive_presets():
+    """Interactive preset management using questionary."""
+    import questionary
+    from questionary import Style
+    from presets import list_presets, get_preset, save_preset, delete_preset
+
+    green = "\033[38;2;74;222;128m"
+    accent = "\033[38;2;212;135;74m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    presets = list_presets()
+
+    # Action menu
+    actions = [questionary.Choice("Create new preset", value="_new")]
+    if presets:
+        for p in presets:
+            label = p["name"]
+            if p.get("video_path"):
+                label += f" — {os.path.basename(p['video_path'])}"
+            actions.append(questionary.Choice(f"Edit: {label}", value=f"edit:{p['name']}"))
+        for p in presets:
+            actions.append(questionary.Choice(f"Delete: {p['name']}", value=f"del:{p['name']}"))
+    actions.append(questionary.Choice("← Back", value="_back"))
+
+    action = questionary.select("Presets:", choices=actions, style=qstyle).ask()
+    if action is None or action == "_back":
+        return
+
+    if action.startswith("del:"):
+        name = action[4:]
+        if questionary.confirm(f"Delete preset '{name}'?", default=False, style=qstyle).ask():
+            delete_preset(name)
+            print(f"  {green}✓{reset} Deleted '{name}'\n")
+        return
+
+    # Create or edit
+    if action == "_new":
+        name = questionary.text("Preset name:", style=qstyle).ask()
+        if not name:
+            return
+        existing = {}
+    else:
+        name = action[5:]  # strip "edit:"
+        try:
+            existing = get_preset(name)
+            existing.pop("name", None)
+        except FileNotFoundError:
+            existing = {}
+
+    config = {**existing}
+
+    # Video path
+    video = questionary.path(
+        "Video path (Enter to skip):",
+        default=config.get("video_path") or "",
+        style=qstyle,
+    ).ask()
+    if video is None:
+        return
+    if video:
+        config["video_path"] = _clean_path(video)
+
+    # Caption style
+    caption_style = questionary.select(
+        "Caption style:",
+        choices=["branded", "hormozi", "karaoke", "subtle"],
+        default=config.get("caption_style", "branded"),
+        style=qstyle,
+    ).ask()
+    if caption_style:
+        config["caption_style"] = caption_style
+
+    # Crop strategy
+    crop = questionary.select(
+        "Crop strategy:",
+        choices=["speaker", "face", "center"],
+        default=config.get("crop_strategy", "face"),
+        style=qstyle,
+    ).ask()
+    if crop:
+        config["crop_strategy"] = crop
+
+    # Logo from assets
+    try:
+        from services.asset_store import list_assets
+        logos = [a for a in list_assets() if a["type"] == "logo" and os.path.exists(a["path"])]
+        if logos:
+            logo_choices = [questionary.Choice(f"{a['name']} ({os.path.basename(a['path'])})", value=a["path"]) for a in logos]
+            logo_choices.append(questionary.Choice("None", value=""))
+            current_logo = config.get("logo_path", "")
+            logo = questionary.select("Logo:", choices=logo_choices, default=current_logo or logo_choices[0], style=qstyle).ask()
+            if logo is not None:
+                config["logo_path"] = logo
+    except Exception:
+        pass
+
+    # Outro from assets
+    try:
+        from services.asset_store import list_assets as list_assets_o
+        outros = [a for a in list_assets_o() if a["type"] == "video" and os.path.exists(a["path"])]
+        if outros:
+            outro_choices = [questionary.Choice("None", value="")]
+            outro_choices += [questionary.Choice(f"{a['name']} ({os.path.basename(a['path'])})", value=a["path"]) for a in outros]
+            current_outro = config.get("outro_path", "")
+            outro = questionary.select("Outro:", choices=outro_choices, default=current_outro or outro_choices[0], style=qstyle).ask()
+            if outro is not None:
+                config["outro_path"] = outro
+    except Exception:
+        pass
+
+    # Quality
+    quality = questionary.select(
+        "Quality:",
+        choices=["low", "medium", "high", "max"],
+        default=config.get("quality", "max"),
+        style=qstyle,
+    ).ask()
+    if quality:
+        config["quality"] = quality
+
+    # Top clips
+    top = questionary.text(
+        "Top clips:",
+        default=str(config.get("top_clips", 5)),
+        style=qstyle,
+        validate=lambda v: True if v.isdigit() and int(v) > 0 else "Enter a number",
+    ).ask()
+    if top:
+        config["top_clips"] = int(top)
+
+    # Corrections
+    if questionary.confirm("Include current word corrections?", default=bool(config.get("corrections")), style=qstyle).ask():
+        from services.corrections import get_corrections
+        config["corrections"] = get_corrections()
+
+    save_preset(name, config)
+    print(f"\n  {green}✓{reset} Preset '{accent}{name}{reset}' saved\n")
+
+
+def _interactive_knowledge():
+    """Interactive knowledge base management using questionary."""
+    import questionary
+    from questionary import Style
+    import argparse as _ap
+
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    accent = "\033[38;2;212;135;74m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    kb_dir = paths["knowledge"]
+    files = sorted(f for f in os.listdir(kb_dir) if f.endswith(".md")) if os.path.isdir(kb_dir) else []
+
+    # Show current files
+    cmd_knowledge(_ap.Namespace(knowledge_action="list"))
+
+    actions = [
+        questionary.Choice("Edit a file", value="edit"),
+        questionary.Choice("Create new file", value="new"),
+    ]
+    if files:
+        actions.insert(1, questionary.Choice("Read a file", value="read"))
+        actions.append(questionary.Choice("Delete a file", value="delete"))
+    actions.append(questionary.Choice("← Back", value="_back"))
+
+    action = questionary.select("Knowledge base:", choices=actions, style=qstyle).ask()
+    if action is None or action == "_back":
+        return
+
+    if action == "read":
+        choice = questionary.select("Which file?", choices=files, style=qstyle).ask()
+        if choice:
+            cmd_knowledge(_ap.Namespace(knowledge_action="read", filename=choice))
+
+    elif action == "edit":
+        if not files:
+            print(f"  {gray}No files to edit — create one first{reset}")
+            return
+        choice = questionary.select("Which file?", choices=files, style=qstyle).ask()
+        if choice:
+            cmd_knowledge(_ap.Namespace(knowledge_action="edit", filename=choice, content=None))
+
+    elif action == "new":
+        name = questionary.text("File name (e.g. my-notes):", style=qstyle).ask()
+        if name:
+            if not name.endswith(".md"):
+                name += ".md"
+            cmd_knowledge(_ap.Namespace(knowledge_action="edit", filename=name, content=None))
+
+    elif action == "delete":
+        choice = questionary.select("Delete which file?", choices=files, style=qstyle).ask()
+        if choice and questionary.confirm(f"Delete {choice}?", default=False, style=qstyle).ask():
+            cmd_knowledge(_ap.Namespace(knowledge_action="delete", filename=choice))
+
+
+def _interactive_corrections():
+    """Interactive corrections management using questionary."""
+    import questionary
+    from questionary import Style
+    from services.corrections import get_corrections, save_corrections
+
+    green = "\033[38;2;74;222;128m"
+    gray = "\033[38;5;245m"
+    reset = "\033[0m"
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    corrections = get_corrections()
+    if corrections:
+        print(f"\n  Word corrections ({len(corrections)}):")
+        for wrong, correct in sorted(corrections.items()):
+            print(f"    {gray}{wrong}{reset} → {green}{correct}{reset}")
+        print()
+
+    actions = [questionary.Choice("Add a correction", value="add")]
+    if corrections:
+        actions.append(questionary.Choice("Remove a correction", value="remove"))
+    actions.append(questionary.Choice("← Back", value="_back"))
+
+    action = questionary.select("Corrections:", choices=actions, style=qstyle).ask()
+    if action is None or action == "_back":
+        return
+
+    if action == "add":
+        wrong = questionary.text("Wrong word (what Whisper hears):", style=qstyle).ask()
+        if not wrong:
+            return
+        correct = questionary.text("Correct word:", style=qstyle).ask()
+        if not correct:
+            return
+        corrections[wrong] = correct
+        save_corrections(corrections)
+        print(f"\n  {green}✓{reset} Added: {gray}{wrong}{reset} → {green}{correct}{reset}")
+        print(f"  {gray}({len(corrections)} total corrections){reset}\n")
+
+    elif action == "remove":
+        choices = [questionary.Choice(f"{w} → {c}", value=w) for w, c in sorted(corrections.items())]
+        to_remove = questionary.select("Remove which?", choices=choices, style=qstyle).ask()
+        if to_remove:
+            del corrections[to_remove]
+            save_corrections(corrections)
+            print(f"\n  {green}✓{reset} Removed: {gray}{to_remove}{reset}\n")
+
+
+def _interactive_thumbnails():
+    """Interactive thumbnail generation using questionary."""
+    import questionary
+    from questionary import Style
+
+    qstyle = Style([
+        ("qmark", "fg:#d4874a bold"),
+        ("question", "bold"),
+        ("answer", "fg:#4ade80"),
+        ("pointer", "fg:#d4874a bold"),
+        ("highlighted", "fg:#d4874a bold"),
+        ("selected", "fg:#4ade80"),
+        ("instruction", "fg:#a1a1aa"),
+    ])
+
+    title = questionary.text("Title text:", style=qstyle).ask()
+    if not title:
+        return
+
+    video = questionary.path(
+        "Video path (Enter to skip):",
+        default="",
+        style=qstyle,
+    ).ask()
+    if video:
+        video = _clean_path(video)
+
+    args_ns = _Namespace(
+        title=title,
+        video=video or None,
+        logo=None,
+        variations=3,
+        output="./thumbnails",
+    )
+    cmd_thumbnails(args_ns)
+
+
+def _interactive_info():
+    """Show system info."""
+    args_ns = _Namespace()
+    cmd_info(args_ns)
+
+
+class _Namespace:
+    """Minimal namespace for interactive commands."""
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def __getattr__(self, name):
+        return None
+
+
+if __name__ == "__main__":
+    main()
