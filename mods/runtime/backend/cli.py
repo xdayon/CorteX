@@ -29,11 +29,18 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 
 _env_file = os.environ.get("PODCLI_ENV_FILE") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+# override=True: o launcher do podcli PRÉ-DEFINE PODCLI_FFMPEG/PODCLI_FFPROBE
+# apontando para o ffmpeg embutido (CPU-only, sem h264_nvenc). Sem override o .env
+# — que aponta para o ffmpeg do sistema COM NVENC — seria ignorado e todo o render
+# cairia no CPU (libx264). Com override o .env vence e o NVENC volta a ser detectado.
 try:
     from dotenv import load_dotenv
-    load_dotenv(_env_file)
+    load_dotenv(_env_file, override=True)
 except ImportError:
     pass
+# Fallback manual (quando python-dotenv não está instalado). As chaves de caminho de
+# ferramenta precisam vencer o valor pré-definido pelo launcher; o resto usa setdefault.
+_FORCE_FROM_ENV = {"PODCLI_FFMPEG", "PODCLI_FFPROBE"}
 if os.path.exists(_env_file):
     with open(_env_file, encoding="utf-8") as _f:
         for _line in _f:
@@ -42,7 +49,10 @@ if os.path.exists(_env_file):
                 _key, _val = _line.split("=", 1)
                 _key, _val = _key.strip(), _val.strip()
                 if _key and _val:
-                    os.environ.setdefault(_key, _val)
+                    if _key in _FORCE_FROM_ENV:
+                        os.environ[_key] = _val
+                    else:
+                        os.environ.setdefault(_key, _val)
 
 os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
 if sys.platform == "darwin":

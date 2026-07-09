@@ -22,6 +22,8 @@ def main() -> None:
     p.add_argument("--beam-size", type=int, default=5)
     p.add_argument("--no-vad", action="store_true")
     p.add_argument("--initial-prompt", default=None)
+    p.add_argument("--batch-size", type=int, default=8,
+                   help="0 disables batching (sequential decode)")
     args = p.parse_args()
 
     from faster_whisper import WhisperModel
@@ -34,8 +36,7 @@ def main() -> None:
         device, compute = "cpu", "int8"
         model = WhisperModel(args.model, device="cpu", compute_type="int8")
 
-    segments_iter, info = model.transcribe(
-        args.audio,
+    common = dict(
         language=args.language,
         beam_size=args.beam_size,
         vad_filter=not args.no_vad,
@@ -43,6 +44,27 @@ def main() -> None:
         condition_on_previous_text=False,
         initial_prompt=args.initial_prompt,
     )
+
+    # Batched decode (~3-4x on GPU): VAD splits speech into chunks decoded in
+    # parallel. transcribe() is lazy — OOM surfaces while iterating — so the
+    # segments are materialized inside the try; falls back to sequential.
+    seg_list = None
+    if args.batch_size > 0 and device == "cuda":
+        try:
+            from faster_whisper import BatchedInferencePipeline
+            batched = BatchedInferencePipeline(model=model)
+            seg_iter, info = batched.transcribe(
+                args.audio, batch_size=args.batch_size, **common,
+            )
+            seg_list = list(seg_iter)
+        except Exception as e:
+            sys.stderr.write(f"[fasterwhisper] batched decode failed ({e}); sequential\n")
+            seg_list = None
+
+    if seg_list is None:
+        seg_iter, info = model.transcribe(args.audio, **common)
+        seg_list = list(seg_iter)
+    segments_iter = seg_list
 
     segments, words = [], []
     for i, seg in enumerate(segments_iter):

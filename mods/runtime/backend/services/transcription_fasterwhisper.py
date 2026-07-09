@@ -73,6 +73,7 @@ def transcribe_file(
             "--model", model or os.environ.get("PODCLI_FASTERWHISPER_MODEL", "large-v3"),
             "--device", device or os.environ.get("PODCLI_FASTERWHISPER_DEVICE", "cuda"),
             "--compute-type", compute_type or os.environ.get("PODCLI_FASTERWHISPER_COMPUTE", "int8"),
+            "--batch-size", os.environ.get("PODCLI_FASTERWHISPER_BATCH", "8"),
         ]
         if language:
             cmd += ["--language", language]
