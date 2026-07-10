@@ -45,6 +45,31 @@ def main() -> None:
         initial_prompt=args.initial_prompt,
     )
 
+    # Keep the actual Silero speech regions for the editing engine. Whisper word
+    # timestamps alone are not a safe waveform boundary: low-confidence or
+    # untranscribed syllables can still contain voice.
+    speech_intervals = []
+    if not args.no_vad:
+        try:
+            from faster_whisper.audio import decode_audio
+            from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+            decoded = decode_audio(args.audio)
+            chunks = get_speech_timestamps(
+                decoded,
+                VadOptions(min_silence_duration_ms=250, speech_pad_ms=80),
+            )
+            speech_intervals = [
+                {
+                    "start": round(float(chunk["start"]) / 16000.0, 3),
+                    "end": round(float(chunk["end"]) / 16000.0, 3),
+                }
+                for chunk in chunks
+                if chunk.get("end", 0) > chunk.get("start", 0)
+            ]
+        except Exception as e:
+            sys.stderr.write(f"[fasterwhisper] VAD timeline unavailable ({e})\n")
+
     # Batched decode (~3-4x on GPU): VAD splits speech into chunks decoded in
     # parallel. transcribe() is lazy — OOM surfaces while iterating — so the
     # segments are materialized inside the try; falls back to sequential.
@@ -98,6 +123,7 @@ def main() -> None:
         "language": getattr(info, "language", None) or args.language or "pt",
         "device": device,
         "compute_type": compute,
+        "speech_intervals": speech_intervals,
     }
     json.dump(out, sys.stdout, ensure_ascii=False)
 

@@ -128,6 +128,66 @@ headless (ProRes 4444 com alpha) — o encode em si já é 100% NVENC. Ajustes:
   override via `PODCLI_REMOTION_CONCURRENCY`; suporte opt-in a raster na GPU via
   `PODCLI_REMOTION_GL=angle-egl` (experimental, default desligado).
 
+### 10. Motor de edição profissional (waveform + VAD + semântica)
+
+O editor antigo removia qualquer pausa acima de 0,55 s usando somente a distância
+entre timestamps do Whisper. Os pedaços eram concatenados com corte seco e um passe
+posterior tentava esconder saltos com blur. Isso podia cortar o final de fonemas,
+eliminar pausas dramáticas, produzir clicks no áudio e borrar as próprias legendas.
+
+O novo fluxo separa **limpeza de legenda** de **remoção física de áudio**:
+
+- `services/audio_editing.py`
+  - extrai somente a janela do corte como PCM mono 16 kHz;
+  - calcula RMS da waveform em janelas de 20 ms;
+  - combina energia, timestamps por palavra e regiões reais do Silero VAD;
+  - adiciona pre-roll/post-roll ao redor da fala;
+  - procura o ponto de menor energia perto de cada fronteira proposta;
+  - preserva pausas de fim de frase dentro da janela retórica do perfil;
+  - falha de forma conservadora: sem fronteira segura, não corta.
+- `fasterwhisper_worker.py` agora salva `speech_intervals` do Silero VAD junto da
+  transcrição. Assim, uma sílaba baixa ou não reconhecida continua protegida.
+- `services/video_cut.py` substitui o stream-copy entre pedaços por microdissolve
+  de vídeo e `acrossfade` equal-power no áudio, com hard-concat apenas como fallback.
+- `services/edit_quality.py` rejeita fronteiras dentro de palavras, segmentos
+  inválidos e renders sem áudio/vídeo ou com duração divergente.
+- O blur corretivo pós-render virou opt-in e fica desligado por padrão
+  (`PODCLI_TRANSITION_AUTOFIX_PASSES=0`).
+
+#### Perfis de ritmo
+
+- `dynamic`: hot takes, humor, respostas rápidas e alta densidade.
+- `balanced`: padrão profissional; remove apenas pausas claramente vazias.
+- `contemplative`: espiritualidade, filosofia, emoção e pausas com peso.
+- `auto`: classifica pelo ritmo de fala e pela energia de perguntas/exclamações.
+
+O perfil pode ser enviado em `pacing_profile` pelo MCP ou definido no preset.
+
+### 11. Hook visual e planos editoriais ordenados
+
+- Toda sugestão pode trazer `hook_text`, uma headline de 4–9 palavras que aparece
+  na safe zone superior durante os primeiros segundos. Sessões antigas usam o
+  próprio título como fallback.
+- `services/hook_overlay.py` gera o overlay em ASS com duas linhas, caixa sutil e
+  fade curto, independente do estilo das legendas.
+- `segments[].timeline_order` permite narrativa não cronológica e cold open. Sem
+  esse campo, segmentos continuam ordenados pelo tempo da fonte.
+- O prompt MCP agora exige uma microestrutura `hook → contexto mínimo → payoff`,
+  perfil de ritmo e score editorial de até 35 pontos.
+- `modify_clip` permite alterar `hook_text` e `pacing_profile` antes do export.
+
+#### Validação
+
+```bash
+python -m unittest discover -s tests -v
+node --check mods/runtime/studio/mcp-server.mjs
+python -m py_compile mods/runtime/backend/services/*.py mods/runtime/backend/cli.py
+```
+
+Os testes cobrem proteção de pausas curtas e retóricas, snapping na waveform,
+bloqueio por VAD, extensão de palavras cortadas, duração com crossfades, geração
+do hook e um render FFmpeg real com áudio + vídeo.
+
 ## Como aplicar
 
 ```bash

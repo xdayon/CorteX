@@ -1,4 +1,7 @@
 {
+  "pacing_profile": "auto",
+  "professional_editing": true,
+  "show_hook_title": true,
   "caption_style": "branded",
   "crop_strategy": "speaker",
   "logo_path": "",

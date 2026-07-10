@@ -32271,7 +32271,7 @@ async function handleJobStatus(input) {
 import { randomUUID as randomUUID2 } from "crypto";
 var suggestClipsToolDef = {
   name: "suggest_clips",
-  description: "STEP 2 \u2014 Submit your clip suggestions after analyzing the transcript.\n\nBefore calling this: read the transcript via get_ui_state(include_transcript: true) and identify the best viral moments.\n\nWhat it does: Stores your suggestions, assigns clip numbers (#1, #2, etc.), and pushes them to the Web UI for the user to review.\n\nAfter this: the user reviews in the UI. Then export with batch_create_clips(export_selected: true) or create_clip(clip_number: N).",
+  description: "STEP 2 \u2014 Submit professional clip edit plans after analyzing the transcript.\n\nBuild each clip as hook -> minimum context -> payoff. The first two spoken seconds must create tension, curiosity, emotion, or a clear promise. Prefer a coherent standalone story over an arbitrary time window.\n\nAlways provide hook_text (4-9 words) and pacing_profile. Use dynamic for hot takes/comedy, balanced by default, and contemplative for spiritual, philosophical, or emotional material. Use ordered segments only when removing a tangent or intentionally creating a cold open. Never place a segment boundary inside a sentence or word.\n\nScore 1-5 each for spoken hook, standalone clarity, emotion, quotability, payoff, compression safety, and audience relevance (max 35).\n\nAfter this: the user reviews in the UI. Then export with batch_create_clips(export_selected: true) or create_clip(clip_number: N).",
   inputSchema: {
     type: "object",
     properties: {
@@ -32283,7 +32283,16 @@ var suggestClipsToolDef = {
           properties: {
             title: {
               type: "string",
-              description: "Short catchy title for the clip"
+              description: "Internal/editorial title for the clip"
+            },
+            hook_text: {
+              type: "string",
+              description: "4-9 word on-screen retention headline. Complement the spoken hook; do not merely repeat it."
+            },
+            pacing_profile: {
+              type: "string",
+              enum: ["auto", "dynamic", "balanced", "contemplative"],
+              description: "Editing rhythm. Use contemplative for deep/emotional material and dynamic for hot takes or comedy."
             },
             start_second: {
               type: "number",
@@ -32300,7 +32309,17 @@ var suggestClipsToolDef = {
                 type: "object",
                 properties: {
                   start: { type: "number" },
-                  end: { type: "number" }
+                  end: { type: "number" },
+                  timeline_order: { type: "number" },
+                  purpose: { type: "string" },
+                  transition: {
+                    type: "object",
+                    properties: {
+                      video: { type: "string" },
+                      audio: { type: "string" },
+                      duration: { type: "number" }
+                    }
+                  }
                 },
                 required: ["start", "end"]
               }
@@ -32319,7 +32338,7 @@ var suggestClipsToolDef = {
             },
             score: {
               type: "number",
-              description: "Virality score (0-20). Sum of standalone + hook + relevance + quotability (each 1-5)."
+              description: "Editorial score (0-35). Sum hook, standalone clarity, emotion, quotability, payoff, compression safety, and relevance (1-5 each)."
             },
             suggested_caption_style: {
               type: "string",
@@ -32343,6 +32362,8 @@ async function handleSuggestClips(input) {
       clip_number: i + 1,
       clip_id: randomUUID2(),
       title: s.title,
+      hook_text: s.hook_text || s.title,
+      pacing_profile: s.pacing_profile || "auto",
       start_second: s.start_second,
       end_second: s.end_second,
       segments: segments.length > 0 ? segments : [{ start: s.start_second, end: s.end_second }],
@@ -32522,9 +32543,37 @@ var createClipToolDef = {
           }
         }
       },
+      speech_intervals: {
+        type: "array",
+        description: "Silero VAD speech regions. Auto-loaded from the transcript when available.",
+        items: {
+          type: "object",
+          properties: { start: { type: "number" }, end: { type: "number" } }
+        }
+      },
       title: {
         type: "string",
         description: "Short title for the clip. Auto-loaded from suggestion if clip_number is used."
+      },
+      hook_text: {
+        type: "string",
+        description: "Short on-screen hook shown at the top for the opening seconds. Auto-loaded from suggestion."
+      },
+      pacing_profile: {
+        type: "string",
+        enum: ["auto", "dynamic", "balanced", "contemplative"],
+        description: "Audio-aware editing rhythm. Default: auto.",
+        default: "auto"
+      },
+      professional_editing: {
+        type: "boolean",
+        description: "Use waveform-safe boundaries and professional micro transitions. Default: true.",
+        default: true
+      },
+      show_hook_title: {
+        type: "boolean",
+        description: "Burn the hook headline in the upper safe zone. Default: true.",
+        default: true
       },
       logo_path: {
         type: "string",
@@ -32532,7 +32581,7 @@ var createClipToolDef = {
       },
       clean_fillers: {
         type: "boolean",
-        description: "Remove filler words (um, uh, hmm) from captions and compress long silences. Default: true",
+        description: "Hide filler words (um, uh, hmm) in captions. Audio cuts are controlled independently by professional_editing. Default: true",
         default: true
       },
       allow_ass_fallback: {
@@ -32573,11 +32622,14 @@ async function handleCreateClip(input) {
   const startSecond = input.start_second ?? suggestion?.start_second;
   const endSecond = input.end_second ?? suggestion?.end_second;
   const title = input.title || suggestion?.title || "clip";
+  const hookText = input.hook_text || suggestion?.hook_text || title;
+  const pacingProfile = input.pacing_profile || suggestion?.pacing_profile || "auto";
   const captionStyle = input.caption_style || suggestion?.suggested_caption_style || settings.captionStyle || "hormozi";
   const cropStrategy = input.crop_strategy || settings.cropStrategy || "speaker";
   const logoPath = input.logo_path || settings.logoPath || null;
   const outroPath = input.outro_path || settings.outroPath || null;
   const transcriptWords = input.transcript_words ?? transcript?.words ?? [];
+  const speechIntervals = input.speech_intervals ?? transcript?.speech_intervals ?? [];
   const keepSegments = suggestion?.segments ?? null;
   if (!videoPath) {
     return JSON.stringify({ error: "video_path is required (no video in session state)" });
@@ -32594,7 +32646,12 @@ async function handleCreateClip(input) {
     caption_style: captionStyle,
     crop_strategy: cropStrategy,
     transcript_words: transcriptWords,
+    speech_intervals: speechIntervals,
     title,
+    hook_text: hookText,
+    pacing_profile: pacingProfile,
+    professional_editing: input.professional_editing !== false,
+    show_hook_title: input.show_hook_title !== false,
     output_dir: paths.output,
     clean_fillers: input.clean_fillers !== false,
     allow_ass_fallback: input.allow_ass_fallback === true,
@@ -32659,6 +32716,11 @@ var batchClipsToolDef = {
             start_second: { type: "number" },
             end_second: { type: "number" },
             title: { type: "string" },
+            hook_text: { type: "string" },
+            pacing_profile: {
+              type: "string",
+              enum: ["auto", "dynamic", "balanced", "contemplative"]
+            },
             caption_style: {
               type: "string",
               enum: ["hormozi", "karaoke", "subtle", "branded"]
@@ -32676,7 +32738,7 @@ var batchClipsToolDef = {
       },
       clean_fillers: {
         type: "boolean",
-        description: "Remove filler words (um, uh, hmm) from captions and compress long silences. Default: true",
+        description: "Hide filler words in captions. Audio cuts use the professional editing engine. Default: true",
         default: true
       },
       allow_ass_fallback: {
@@ -32702,6 +32764,14 @@ var batchClipsToolDef = {
           }
         }
       },
+      speech_intervals: {
+        type: "array",
+        description: "Silero VAD speech regions. Auto-loaded from session state.",
+        items: {
+          type: "object",
+          properties: { start: { type: "number" }, end: { type: "number" } }
+        }
+      },
       async_mode: {
         type: "boolean",
         description: "Return a job_id immediately and render in the background. Use for multi-clip batches so Claude can poll job_status and emit live progress to the user. Requires the Web UI to be running (npm run ui). Default: false (sync).",
@@ -32722,12 +32792,16 @@ async function handleBatchClips(input) {
     return JSON.stringify({ error: "video_path is required (no video in session state)" });
   }
   const transcriptWords = input.transcript_words ?? transcript?.words ?? [];
+  const speechIntervals = input.speech_intervals ?? transcript?.speech_intervals ?? [];
   let clips;
   const deselected = state?.deselectedIndices ?? [];
   const buildClipFromSuggestion = (s, num) => ({
     start_second: s.start_second,
     end_second: s.end_second,
     title: s.title || `clip_${num}`,
+    hook_text: s.hook_text || s.title || `clip_${num}`,
+    pacing_profile: s.pacing_profile || "auto",
+    professional_editing: true,
     caption_style: s.suggested_caption_style || settings.captionStyle || "hormozi",
     crop_strategy: settings.cropStrategy || "speaker",
     allow_ass_fallback: input.allow_ass_fallback === true,
@@ -32782,6 +32856,7 @@ async function handleBatchClips(input) {
           video_path: videoPath,
           clips,
           transcript_words: transcriptWords,
+          speech_intervals: speechIntervals,
           clean_fillers: input.clean_fillers !== false,
           logo_path: settings.logoPath || null,
           outro_path: settings.outroPath || null,
@@ -32810,6 +32885,7 @@ async function handleBatchClips(input) {
     video_path: videoPath,
     clips,
     transcript_words: transcriptWords,
+    speech_intervals: speechIntervals,
     clean_fillers: input.clean_fillers !== false,
     allow_ass_fallback: input.allow_ass_fallback === true,
     keep_caption_overlay: input.keep_caption_overlay === true,
@@ -33393,7 +33469,7 @@ async function getWorkflowGuidance() {
     lines.push(`NEXT: Transcript is ready (${wordCount} words). Time to find viral moments!
   \u2192 Use get_ui_state(include_transcript: true) to read the full transcript
   \u2192 Analyze it for the most engaging, viral-worthy moments
-  \u2192 Then call suggest_clips with your suggestions (title, start_second, end_second, reasoning)`);
+  \u2192 Then call suggest_clips with professional edit plans (title, hook_text, pacing_profile, safe segments, score, reasoning)`);
   } else if (phase === "review" && selectedCount > 0) {
     lines.push(`NEXT: ${selectedCount} clips are ready for export!
   \u2192 Use batch_create_clips(export_selected: true) to export all selected clips at once
@@ -33474,9 +33550,21 @@ function createServer() {
   server.tool(suggestClipsToolDef.name, suggestClipsToolDef.description, {
     suggestions: external_exports.array(external_exports.object({
       title: external_exports.string(),
+      hook_text: external_exports.string().optional().describe("4-9 word on-screen retention headline"),
+      pacing_profile: external_exports.enum(["auto", "dynamic", "balanced", "contemplative"]).optional().default("auto"),
       start_second: external_exports.number(),
       end_second: external_exports.number(),
-      segments: external_exports.array(external_exports.object({ start: external_exports.number(), end: external_exports.number() })).optional().describe("Multi-cut keep-ranges. Omit for a single continuous clip."),
+      segments: external_exports.array(external_exports.object({
+        start: external_exports.number(),
+        end: external_exports.number(),
+        timeline_order: external_exports.number().optional(),
+        purpose: external_exports.string().optional(),
+        transition: external_exports.object({
+          video: external_exports.string().optional(),
+          audio: external_exports.string().optional(),
+          duration: external_exports.number().optional()
+        }).optional()
+      })).optional().describe("Ordered editorial keep-ranges. timeline_order enables cold opens/non-chronological storytelling."),
       reasoning: external_exports.string(),
       preview_text: external_exports.string().optional(),
       content_type: external_exports.string().optional(),
@@ -33529,7 +33617,15 @@ ${summary}`;
       end: external_exports.number(),
       confidence: external_exports.number().optional().default(0)
     })).optional().describe("Word-level timestamps. Auto-loaded from session state if omitted."),
+    speech_intervals: external_exports.array(external_exports.object({
+      start: external_exports.number(),
+      end: external_exports.number()
+    })).optional().describe("Silero VAD speech regions. Auto-loaded from session state."),
     title: external_exports.string().optional().default("clip").describe("Clip title"),
+    hook_text: external_exports.string().optional().describe("4-9 word headline shown at the top during the opening seconds"),
+    pacing_profile: external_exports.enum(["auto", "dynamic", "balanced", "contemplative"]).optional().default("auto").describe("Audio-aware edit rhythm"),
+    professional_editing: external_exports.boolean().optional().default(true).describe("Use waveform-safe boundaries and professional micro transitions"),
+    show_hook_title: external_exports.boolean().optional().default(true).describe("Burn hook_text in the upper safe zone"),
     logo_path: external_exports.string().optional().describe("Path or registered asset name for PNG logo. Shown in top-left (branded style)."),
     outro_path: external_exports.string().optional().describe("Path to an outro video to append at the end of the clip"),
     keep_caption_overlay: external_exports.boolean().optional().default(false).describe("Keep ProRes 4444 alpha caption overlay beside the render (for DaVinci Resolve export). Returns caption_overlay_path and cropped_source_path.")
@@ -33565,6 +33661,10 @@ ${summary}`;
           params.video_path = uiState?.videoPath || uiState?.filePath || "";
         if (!params.title || params.title === "clip")
           params.title = suggestion.title || "clip";
+        if (!params.hook_text)
+          params.hook_text = suggestion.hook_text || suggestion.title || "";
+        if (!params.pacing_profile || params.pacing_profile === "auto")
+          params.pacing_profile = suggestion.pacing_profile || "auto";
         if (!params.caption_style || params.caption_style === "hormozi") {
           params.caption_style = suggestion.suggested_caption_style || settings.captionStyle || "hormozi";
         }
@@ -33573,6 +33673,8 @@ ${summary}`;
           if (transcript?.words)
             params.transcript_words = transcript.words;
         }
+        if (!params.speech_intervals && uiState?.transcript?.speech_intervals)
+          params.speech_intervals = uiState.transcript.speech_intervals;
         const segs = suggestion.segments;
         if (segs && segs.length > 0) {
           keepSegments = segs;
@@ -33604,6 +33706,10 @@ Use a different time range or style to create a new clip.`
                 start_second: params.start_second,
                 end_second: params.end_second,
                 title: params.title || "clip",
+                hook_text: params.hook_text || params.title || "clip",
+                pacing_profile: params.pacing_profile || "auto",
+                professional_editing: params.professional_editing !== false,
+                show_hook_title: params.show_hook_title !== false,
                 caption_style: params.caption_style || "hormozi",
                 crop_strategy: params.crop_strategy || "speaker",
                 allow_ass_fallback: params.allow_ass_fallback === true,
@@ -33612,6 +33718,7 @@ Use a different time range or style to create a new clip.`
               }
             ],
             transcript_words: params.transcript_words,
+            speech_intervals: params.speech_intervals,
             logo_path: params.logo_path || null,
             outro_path: params.outro_path || null,
             keep_caption_overlay: params.keep_caption_overlay === true
@@ -33677,6 +33784,9 @@ Use a different time range or style to create a new clip.`
       start_second: external_exports.number(),
       end_second: external_exports.number(),
       title: external_exports.string().optional(),
+      hook_text: external_exports.string().optional(),
+      pacing_profile: external_exports.enum(["auto", "dynamic", "balanced", "contemplative"]).optional(),
+      professional_editing: external_exports.boolean().optional(),
       caption_style: external_exports.enum(["hormozi", "karaoke", "subtle", "branded"]).optional(),
       crop_strategy: external_exports.enum(["center", "face", "speaker"]).optional(),
       allow_ass_fallback: external_exports.boolean().optional(),
@@ -33689,6 +33799,10 @@ Use a different time range or style to create a new clip.`
       end: external_exports.number(),
       confidence: external_exports.number().optional().default(0)
     })).optional().describe("Word-level timestamps. Auto-loaded from session state if omitted."),
+    speech_intervals: external_exports.array(external_exports.object({
+      start: external_exports.number(),
+      end: external_exports.number()
+    })).optional().describe("Silero VAD speech regions. Auto-loaded from session state."),
     export_selected: external_exports.boolean().optional().describe("If true, export all selected suggestions from the UI."),
     clip_numbers: external_exports.array(external_exports.number()).optional().describe("Export specific clip numbers from suggestions (e.g. [1, 3, 5])."),
     async_mode: external_exports.boolean().optional().default(false).describe("Return a job_id immediately and render in background. Use for multi-clip batches so Claude can poll job_status and emit live progress. Requires Web UI running.")
@@ -33697,6 +33811,7 @@ Use a different time range or style to create a new clip.`
       let resolvedClips = params.clips;
       let resolvedVideoPath = params.video_path;
       let resolvedTranscriptWords = params.transcript_words;
+      let resolvedSpeechIntervals = params.speech_intervals;
       if (!resolvedClips && (params.export_selected || params.clip_numbers)) {
         const uiState = await readUIState();
         const suggestions = uiState?.suggestions ?? [];
@@ -33706,14 +33821,20 @@ Use a different time range or style to create a new clip.`
           resolvedVideoPath = uiState?.videoPath || uiState?.filePath || "";
         if (!resolvedTranscriptWords) {
           const transcript = uiState?.transcript;
-          if (transcript?.words)
+          if (transcript?.words) {
             resolvedTranscriptWords = transcript.words;
+            if (!resolvedSpeechIntervals && transcript?.speech_intervals)
+              resolvedSpeechIntervals = transcript.speech_intervals;
+          }
         }
         if (params.export_selected) {
           resolvedClips = suggestions.filter((_, i) => !deselected.includes(i)).map((s, i) => ({
             start_second: s.start_second,
             end_second: s.end_second,
             title: s.title || `clip_${i + 1}`,
+            hook_text: s.hook_text || s.title || `clip_${i + 1}`,
+            pacing_profile: s.pacing_profile || "auto",
+            professional_editing: true,
             caption_style: s.suggested_caption_style || settings.captionStyle || "hormozi",
             crop_strategy: settings.cropStrategy || "speaker",
             allow_ass_fallback: false,
@@ -33726,6 +33847,9 @@ Use a different time range or style to create a new clip.`
               start_second: s.start_second,
               end_second: s.end_second,
               title: s.title || `clip_${n}`,
+              hook_text: s.hook_text || s.title || `clip_${n}`,
+              pacing_profile: s.pacing_profile || "auto",
+              professional_editing: true,
               caption_style: s.suggested_caption_style || settings.captionStyle || "hormozi",
               crop_strategy: settings.cropStrategy || "speaker",
               allow_ass_fallback: false,
@@ -33743,7 +33867,8 @@ Use a different time range or style to create a new clip.`
           body: JSON.stringify({
             video_path: resolvedVideoPath,
             clips: resolvedClips,
-            transcript_words: resolvedTranscriptWords
+            transcript_words: resolvedTranscriptWords,
+            speech_intervals: resolvedSpeechIntervals
           })
         });
         if (webRes.ok) {
@@ -34118,13 +34243,15 @@ ${guidance}`
       };
     }
   });
-  server.tool("modify_clip", "Adjust a suggested clip before exporting. Change timing, title, or caption style. Use action='delete' to remove a clip entirely. Reference clips by clip_number (from get_ui_state).", {
+  server.tool("modify_clip", "Adjust a suggested clip before exporting. Change timing, title, hook headline, pacing, or caption style. Use action='delete' to remove a clip entirely. Reference clips by clip_number (from get_ui_state).", {
     clip_number: external_exports.number().optional().describe("Clip number (1-based, from get_ui_state)"),
     clip_id: external_exports.string().optional().describe("UUID of the clip (alternative to clip_number)"),
     index: external_exports.number().optional().describe("0-based index (deprecated, use clip_number)"),
     action: external_exports.enum(["update", "delete"]).optional().default("update").describe("Action: 'update' (default) or 'delete'"),
     updates: external_exports.object({
       title: external_exports.string().optional(),
+      hook_text: external_exports.string().optional(),
+      pacing_profile: external_exports.enum(["auto", "dynamic", "balanced", "contemplative"]).optional(),
       start_second: external_exports.number().optional(),
       end_second: external_exports.number().optional(),
       reasoning: external_exports.string().optional(),
@@ -34188,7 +34315,7 @@ ${guidance}`
           content: [
             {
               type: "text",
-              text: "No updates provided. Specify at least one field: title, start_second, end_second, reasoning, preview_text, or suggested_caption_style."
+              text: "No updates provided. Specify at least one field: title, hook_text, pacing_profile, start_second, end_second, reasoning, preview_text, or suggested_caption_style."
             }
           ]
         };
@@ -34196,6 +34323,10 @@ ${guidance}`
       const clip = suggestions[targetIdx];
       if (upd.title !== void 0)
         clip.title = upd.title;
+      if (upd.hook_text !== void 0)
+        clip.hook_text = upd.hook_text;
+      if (upd.pacing_profile !== void 0)
+        clip.pacing_profile = upd.pacing_profile;
       if (upd.start_second !== void 0)
         clip.start_second = upd.start_second;
       if (upd.end_second !== void 0)
@@ -34858,8 +34989,8 @@ ${presets.map((p) => `  - ${typeof p === "string" ? p : p.name || JSON.stringify
             "Call get_ui_state(include_transcript: true) to read the full transcript.",
             "Also check if there's a knowledge base with podcast context (host names, show style, etc).",
             "",
-            "## Step 4: Analyze and suggest clips",
-            "Read through the transcript carefully. Look for:",
+            "## Step 4: Analyze and design each clip",
+            "Read through the transcript carefully. Every suggestion must form a complete micro-story: spoken hook -> minimum context -> payoff. Look for:",
             "- Controversial or surprising statements",
             "- Strong emotional moments (laughter, passion, anger)",
             "- Clear actionable advice or insights",
@@ -34867,8 +34998,10 @@ ${presets.map((p) => `  - ${typeof p === "string" ? p : p.name || JSON.stringify
             "- Quotable one-liners",
             "- Questions that hook the viewer",
             "",
-            "For each moment, note the start/end timestamps and craft a catchy title.",
-            "Aim for 15-45 second clips (target 20-35s). Then call suggest_clips with your picks.",
+            "For each moment, choose boundaries between complete thoughts, never inside a sentence. The first two seconds must already carry tension, curiosity, emotion, or a concrete promise.",
+            "Provide a 4-9 word hook_text for the upper safe zone and choose pacing_profile: dynamic, balanced, or contemplative.",
+            "Score 1-5 each for spoken hook, standalone clarity, emotion, quotability, payoff, compression safety, and audience relevance (35 total).",
+            "Aim for 15-45 second clips (target 20-35s). Use ordered segments only for a necessary tangent removal or intentional cold open. Then call suggest_clips.",
             "",
             "## Step 5: Export",
             "Call batch_create_clips(export_selected: true) to render all clips.",

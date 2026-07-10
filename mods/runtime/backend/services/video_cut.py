@@ -49,14 +49,16 @@ def cut_multi_segment(
     input_path: str,
     output_path: str,
     segments: list[dict],
+    default_crossfade: float = 0.06,
 ) -> str:
-    """Cut multiple time ranges and concatenate them seamlessly.
+    """Cut multiple ranges and join them with sample-safe micro transitions.
 
     segments: [{"start": 10.5, "end": 25.0}, {"start": 30.2, "end": 45.0}]
 
-    Each segment is cut individually with frame-accurate encoding,
-    then concatenated with stream copy (matching codecs means no
-    re-encode needed).
+    Each segment is cut individually with frame-accurate encoding. Joins use a
+    very short equal-power audio crossfade plus a matching micro dissolve. This
+    prevents waveform discontinuities/clicks and hides same-camera jump cuts.
+    A stream-copy hard concat remains as a defensive fallback.
     """
     if len(segments) == 1:
         return cut_segment(
@@ -73,21 +75,77 @@ def cut_multi_segment(
             cut_segment(input_path, part_path, seg["start"], seg["end"])
             part_paths.append(part_path)
 
-        with open(concat_file, "w", encoding="utf-8") as f:
-            for p in part_paths:
-                f.write(f"file '{os.path.abspath(p)}'\n")
+        durations = [float(s["end"]) - float(s["start"]) for s in segments]
+        transition_durations: list[float] = []
+        for i, segment in enumerate(segments[:-1]):
+            transition = segment.get("transition") or {}
+            requested = float(transition.get("duration", default_crossfade) or 0.0)
+            safe = min(max(0.025, requested), 0.18, durations[i] * 0.20, durations[i + 1] * 0.20)
+            transition_durations.append(safe)
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", concat_file,
-            "-c", "copy",
-            "-movflags", "+faststart",
-            output_path,
-        ]
-        result = proc_run(cmd, timeout=FFMPEG_TIMEOUT, check=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg concat failed: {result.stderr[-500:]}")
+        input_args = ["ffmpeg", "-y"]
+        for path in part_paths:
+            input_args.extend(["-i", path])
+
+        filters: list[str] = []
+        for i in range(len(part_paths)):
+            filters.append(f"[{i}:v]settb=AVTB,setpts=PTS-STARTPTS,format=yuv420p[v{i}]")
+            filters.append(
+                f"[{i}:a]aresample=async=1:first_pts=0,"
+                "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+                f"[a{i}]"
+            )
+
+        video_label = "v0"
+        audio_label = "a0"
+        cumulative = durations[0]
+        for i in range(1, len(part_paths)):
+            fade = transition_durations[i - 1]
+            offset = max(0.01, cumulative - fade)
+            next_video = f"vx{i}"
+            next_audio = f"ax{i}"
+            filters.append(
+                f"[{video_label}][v{i}]xfade=transition=fade:duration={fade:.3f}:"
+                f"offset={offset:.3f}[{next_video}]"
+            )
+            filters.append(
+                f"[{audio_label}][a{i}]acrossfade=d={fade:.3f}:c1=tri:c2=tri[{next_audio}]"
+            )
+            video_label = next_video
+            audio_label = next_audio
+            cumulative += durations[i] - fade
+
+        try:
+            run_ffmpeg_with_fallback(
+                [
+                    *input_args,
+                    "-filter_complex", ";".join(filters),
+                    "-map", f"[{video_label}]",
+                    "-map", f"[{audio_label}]",
+                ],
+                [
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-movflags", "+faststart",
+                ],
+                output_path,
+                label="professional_join",
+            )
+        except Exception:
+            # Keep export reliable on unusual codecs/old ffmpeg builds.
+            with open(concat_file, "w", encoding="utf-8") as f:
+                for p in part_paths:
+                    f.write(f"file '{os.path.abspath(p)}'\n")
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", concat_file,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                output_path,
+            ]
+            result = proc_run(cmd, timeout=FFMPEG_TIMEOUT, check=False)
+            if result.returncode != 0:
+                raise RuntimeError(f"FFmpeg concat failed: {result.stderr[-500:]}")
 
         return output_path
 

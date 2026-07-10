@@ -21,6 +21,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.caption_renderer import render_captions
 from services.encoder import get_video_decode_flags
 from services.media_probe import run_ffmpeg_with_fallback
+from services.audio_editing import (
+    build_professional_edit,
+    protect_segment_boundaries,
+    resolve_profile,
+    timeline_duration,
+)
+from services.edit_quality import validate_edit_plan, validate_render_file
+from services.hook_overlay import overlay_hook
 from services.video_processor import (
     cut_segment,
     cut_multi_segment,
@@ -46,6 +54,8 @@ _FILLER_WORDS = frozenset([
 _WEAK_OPENING_WORDS = frozenset([
     "so", "well", "okay", "ok", "like", "you", "know",
     "right", "yeah", "yes", "actually", "basically",
+    "então", "entao", "bom", "bem", "tipo", "assim", "né", "ne",
+    "certo", "olha", "cara", "daí", "dai", "enfim",
 ]) | _FILLER_WORDS
 
 _SCENE_TIME_RE = re.compile(r"pts_time:([0-9]+(?:\.[0-9]+)?)")
@@ -638,6 +648,7 @@ def generate_clip(
     format: str = "vertical",
     crop_keyframes: list[dict] = None,
     transcript_words: list[dict] = None,
+    speech_intervals: list[dict] = None,
     title: str = "clip",
     output_dir: Optional[str] = None,
     face_map: dict = None,
@@ -649,6 +660,11 @@ def generate_clip(
     allow_ass_fallback: bool = False,
     use_ass_captions: bool = False,
     keep_caption_overlay: bool = False,
+    pacing_profile: str = "auto",
+    professional_editing: bool = True,
+    hook_text: Optional[str] = None,
+    hook_duration: float = 3.4,
+    show_hook_title: bool = True,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> dict:
     """
@@ -693,20 +709,38 @@ def generate_clip(
     spec = get_format(format)
 
     if trim_opening is None:
-        trim_opening = not (keep_segments and len(keep_segments) > 0)
+        # Suggestions always arrive with at least one keep segment, so tying
+        # this to the presence of keep_segments silently disabled opening trim
+        # in the normal MCP workflow.
+        trim_opening = True
 
     llm_start_second, llm_end_second = start_second, end_second
     if keep_segments and len(keep_segments) > 0:
-        llm_start_second = keep_segments[0]["start"]
-        llm_end_second = keep_segments[-1]["end"]
-    llm_total = max(0.01, llm_end_second - llm_start_second)
+        llm_start_second = min(float(s["start"]) for s in keep_segments)
+        llm_end_second = max(float(s["end"]) for s in keep_segments)
+        llm_total = max(
+            0.01,
+            sum(max(0.0, float(s["end"]) - float(s["start"])) for s in keep_segments),
+        )
+    else:
+        llm_total = max(0.01, llm_end_second - llm_start_second)
+
+    edit_diagnostics = {
+        "profile": pacing_profile or "auto",
+        "waveform_used": False,
+        "cuts": 0,
+        "saved_seconds": 0.0,
+    }
 
     # Multi-segment cutting: if keep_segments provided, use those ranges.
     # Otherwise auto-detect silences/fillers and build tight segments.
     if keep_segments and len(keep_segments) > 0:
         # Validate segments from Claude
         keep_segments = [s for s in keep_segments if s["end"] > s["start"]]
-        keep_segments.sort(key=lambda s: s["start"])
+        if any(s.get("timeline_order") is not None for s in keep_segments):
+            keep_segments.sort(key=lambda s: (s.get("timeline_order", 10_000), s["start"]))
+        else:
+            keep_segments.sort(key=lambda s: s["start"])
 
         if trim_opening and transcript_words:
             trimmed_start = _trim_weak_opening(
@@ -726,19 +760,37 @@ def generate_clip(
             if snapped_end > keep_segments[-1]["end"]:
                 keep_segments[-1]["end"] = snapped_end
 
-        start_second = keep_segments[0]["start"]
-        end_second = keep_segments[-1]["end"]
+        start_second = min(float(s["start"]) for s in keep_segments)
+        end_second = max(float(s["end"]) for s in keep_segments)
 
         # If Claude returned a single segment, still auto-trim pauses within it.
         # Multiple segments means Claude made deliberate editorial cuts — trust those.
-        if len(keep_segments) == 1 and transcript_words and clean_fillers:
-            auto_segments = _build_tight_segments(
-                transcript_words, start_second, end_second,
+        if len(keep_segments) == 1 and transcript_words and professional_editing:
+            auto_segments, edit_diagnostics = build_professional_edit(
+                video_path,
+                transcript_words,
+                float(keep_segments[0]["start"]),
+                float(keep_segments[0]["end"]),
+                pacing_profile=pacing_profile,
+                speech_intervals=speech_intervals,
             )
             if len(auto_segments) > 1:
                 keep_segments = auto_segments
+        elif len(keep_segments) > 1:
+            resolved = resolve_profile(
+                pacing_profile, transcript_words or [], start_second, end_second
+            )
+            edit_diagnostics["profile"] = resolved.name
+            for index, segment in enumerate(keep_segments):
+                segment.setdefault("timeline_order", index)
+                if index < len(keep_segments) - 1:
+                    segment.setdefault("transition", {
+                        "video": "micro_dissolve",
+                        "audio": "equal_power_crossfade",
+                        "duration": resolved.crossfade,
+                    })
 
-        duration = sum(s["end"] - s["start"] for s in keep_segments)
+        duration = timeline_duration(keep_segments)
     else:
         if trim_opening and transcript_words:
             start_second = _trim_weak_opening(transcript_words, start_second, end_second)
@@ -746,14 +798,20 @@ def generate_clip(
         if transcript_words:
             end_second = _snap_to_sentence_end(transcript_words, start_second, end_second)
 
-        # Auto-build tight segments: cut long pauses and isolated fillers
-        if transcript_words and clean_fillers:
-            auto_segments = _build_tight_segments(
-                transcript_words, start_second, end_second,
+        # Build audio-aware segments. Caption filler cleanup is independent:
+        # filler text can be hidden without cutting breathing/phonemes.
+        if transcript_words and professional_editing:
+            auto_segments, edit_diagnostics = build_professional_edit(
+                video_path,
+                transcript_words,
+                start_second,
+                end_second,
+                pacing_profile=pacing_profile,
+                speech_intervals=speech_intervals,
             )
             if len(auto_segments) > 1:
                 keep_segments = auto_segments
-                duration = sum(s["end"] - s["start"] for s in keep_segments)
+                duration = timeline_duration(keep_segments)
             else:
                 keep_segments = None
                 duration = end_second - start_second
@@ -771,6 +829,37 @@ def generate_clip(
         start_second = llm_start_second
         end_second = llm_end_second
         keep_segments = None
+        duration = end_second - start_second
+
+    # Final speech-integrity gate applies to both AI-authored and automatic
+    # timelines. Unsafe edges are extended rather than allowed to clip a word.
+    resolved_profile = resolve_profile(
+        edit_diagnostics.get("profile") or pacing_profile,
+        transcript_words or [], start_second, end_second,
+    )
+    qa_segments = keep_segments or [{"start": start_second, "end": end_second}]
+    if transcript_words:
+        qa_segments = protect_segment_boundaries(
+            qa_segments, transcript_words, resolved_profile
+        )
+    quality_gate = validate_edit_plan(
+        qa_segments,
+        transcript_words or [],
+        resolved_profile,
+        hook_text or title,
+    )
+    if not quality_gate["passed"]:
+        raise ValueError(f"Unsafe edit plan rejected: {quality_gate['issues']}")
+    edit_diagnostics["quality_gate"] = quality_gate
+    edit_diagnostics["profile"] = resolved_profile.name
+    if keep_segments:
+        keep_segments = qa_segments
+        start_second = min(float(s["start"]) for s in keep_segments)
+        end_second = max(float(s["end"]) for s in keep_segments)
+        duration = timeline_duration(keep_segments, resolved_profile.crossfade)
+    else:
+        start_second = float(qa_segments[0]["start"])
+        end_second = float(qa_segments[0]["end"])
         duration = end_second - start_second
 
     if duration > spec.dur_max:
@@ -795,7 +884,16 @@ def generate_clip(
 
         segment_path = os.path.join(work_dir, "segment.mp4")
         if keep_segments and len(keep_segments) > 1:
-            cut_multi_segment(video_path, segment_path, keep_segments)
+            resolved_profile = resolve_profile(
+                edit_diagnostics.get("profile") or pacing_profile,
+                transcript_words or [], start_second, end_second,
+            )
+            cut_multi_segment(
+                video_path,
+                segment_path,
+                keep_segments,
+                default_crossfade=resolved_profile.crossfade,
+            )
         else:
             cut_segment(video_path, segment_path, start_second, end_second)
 
@@ -804,7 +902,7 @@ def generate_clip(
         if keep_segments and len(keep_segments) > 1 and transcript_words:
             remapped_words = []
             cumulative_t = 0.0
-            for seg in keep_segments:
+            for seg_index, seg in enumerate(keep_segments):
                 seg_words = [
                     w for w in transcript_words
                     if w["end"] > seg["start"] and w["start"] < seg["end"]
@@ -821,7 +919,11 @@ def generate_clip(
                             "start": round(remapped_start, 3),
                             "end": round(remapped_end, 3),
                         })
-                cumulative_t += seg_duration
+                overlap = 0.0
+                if seg_index < len(keep_segments) - 1:
+                    transition = seg.get("transition") or {}
+                    overlap = max(0.0, float(transition.get("duration", 0.0) or 0.0))
+                cumulative_t += max(0.0, seg_duration - overlap)
             crop_words = remapped_words
             crop_clip_start = 0
             caption_time_offset = 0
@@ -925,6 +1027,23 @@ def generate_clip(
         else:
             captioned_path = cropped_path
 
+        # The visual hook is intentionally separate from the file title. Existing
+        # suggestions fall back to title so old sessions gain the feature too.
+        effective_hook = (hook_text or title or "").strip() if show_hook_title else ""
+        if effective_hook:
+            with_hook_path = os.path.join(work_dir, "with_hook.mp4")
+            try:
+                overlay_hook(
+                    captioned_path,
+                    with_hook_path,
+                    effective_hook,
+                    target_dims=spec.dims,
+                    duration=hook_duration,
+                )
+                captioned_path = with_hook_path
+            except Exception as e:
+                print(f"Warning: hook title overlay skipped: {e}", file=sys.stderr)
+
         # Step 4: Normalize audio
         if progress_callback:
             progress_callback(70, f"Balancing audio levels (4/{total_steps})")
@@ -970,12 +1089,22 @@ def generate_clip(
 
         # Optional bounded QA/autofix pass for transition jumps.
         # Hard-capped to avoid any infinite rerender loop.
-        max_autofix_passes = int(os.environ.get("PODCLI_TRANSITION_AUTOFIX_PASSES", "2") or "2")
+        # Legacy blur-based smoothing is now opt-in. It ran after captions and
+        # could blur text while leaving the real audio discontinuity untouched.
+        max_autofix_passes = int(os.environ.get("PODCLI_TRANSITION_AUTOFIX_PASSES", "0") or "0")
         max_autofix_passes = max(0, min(max_autofix_passes, 2))
         if max_autofix_passes > 0:
             if progress_callback:
                 progress_callback(97, "Quality gate: checking transitions...")
             _auto_fix_transition_jumps(final_path, max_passes=max_autofix_passes)
+
+        render_gate = validate_render_file(
+            final_path,
+            expected_duration=None if (outro_path and os.path.exists(str(outro_path))) else duration,
+        )
+        if not render_gate["passed"]:
+            raise RuntimeError(f"Final render failed quality gate: {render_gate['issues']}")
+        edit_diagnostics["render_gate"] = render_gate
 
         # Sidecar .srt with the same (cleaned) words the captions show
         subtitle_path = None
@@ -1006,6 +1135,8 @@ def generate_clip(
             "caption_style": caption_style,
             "crop_strategy": crop_strategy,
             "format": spec.name,
+            "hook_text": effective_hook or None,
+            "editing": edit_diagnostics,
         }
         if subtitle_path:
             out["subtitle_path"] = subtitle_path

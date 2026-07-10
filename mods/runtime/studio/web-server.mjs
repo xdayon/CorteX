@@ -41602,7 +41602,7 @@ app.post("/api/transcribe", async (req, res) => {
   });
 });
 app.post("/api/create-clip", async (req, res) => {
-  const { video_path, start_second, end_second, caption_style = "hormozi", crop_strategy = "speaker", transcript_words = [], title = "clip", logo_path = null, outro_path = null, clean_fillers = false, allow_ass_fallback = false, content_type = null } = req.body;
+  const { video_path, start_second, end_second, caption_style = "hormozi", crop_strategy = "speaker", transcript_words = [], speech_intervals = [], title = "clip", hook_text = null, pacing_profile = "auto", professional_editing = true, show_hook_title = true, logo_path = null, outro_path = null, clean_fillers = false, allow_ass_fallback = false, content_type = null } = req.body;
   if (!video_path || !existsSync8(video_path)) {
     res.status(400).json({ error: "Video file not found" });
     return;
@@ -41659,7 +41659,12 @@ app.post("/api/create-clip", async (req, res) => {
     caption_style,
     crop_strategy,
     transcript_words,
+    speech_intervals,
     title,
+    hook_text: hook_text || title,
+    pacing_profile,
+    professional_editing: professional_editing !== false,
+    show_hook_title: show_hook_title !== false,
     output_dir: paths.output,
     logo_path,
     outro_path,
@@ -41698,6 +41703,10 @@ app.post("/api/create-clip", async (req, res) => {
         logo_path: logo_path || null,
         outro_path: outro_path || null,
         clean_fillers,
+        hook_text: hook_text || title,
+        pacing_profile,
+        professional_editing: professional_editing !== false,
+        speech_intervals,
         transcript_words: clipWords
       });
       broadcastHistoryUpdated(jobId, [rec]);
@@ -41716,7 +41725,7 @@ app.post("/api/create-clip", async (req, res) => {
   });
 });
 app.post("/api/batch-clips", async (req, res) => {
-  const { video_path, clips, transcript_words = [], logo_path = null, outro_path = null, clean_fillers = false, keep_caption_overlay = false } = req.body;
+  const { video_path, clips, transcript_words = [], speech_intervals = [], logo_path = null, outro_path = null, clean_fillers = false, keep_caption_overlay = false } = req.body;
   if (!video_path || !existsSync8(video_path)) {
     res.status(400).json({ error: "Video file not found" });
     return;
@@ -41771,6 +41780,7 @@ app.post("/api/batch-clips", async (req, res) => {
     video_path,
     clips,
     transcript_words,
+    speech_intervals,
     output_dir: paths.output,
     logo_path,
     outro_path,
@@ -42757,6 +42767,10 @@ app.post("/api/clips/:id/rerender", async (req, res) => {
       crop_strategy: "manual",
       crop_keyframes: keyframes,
       transcript_words: words,
+      speech_intervals: recipe.speech_intervals || [],
+      hook_text: recipe.hook_text || clip.title,
+      pacing_profile: recipe.pacing_profile || "auto",
+      professional_editing: recipe.professional_editing !== false,
       logo_path: recipe.logo_path ?? clip.logo_path ?? null,
       outro_path: recipe.outro_path ?? clip.outro_path ?? null,
       clean_fillers: recipe.clean_fillers !== void 0 ? recipe.clean_fillers : true,
@@ -43368,6 +43382,7 @@ app.post("/api/mcp/export", async (req, res) => {
   const videoPath = req.body.video_path || uiState.filePath || uiState.videoPath;
   const clips = req.body.clips || uiState.suggestions.filter((_, i) => !uiState.deselectedIndices.includes(i));
   const transcriptWords = req.body.transcript_words || (Array.isArray(uiState.transcript?.words) ? uiState.transcript?.words ?? [] : []);
+  const speechIntervals = req.body.speech_intervals || (Array.isArray(uiState.transcript?.speech_intervals) ? uiState.transcript?.speech_intervals ?? [] : []);
   const logoPath = req.body.logo_path || uiState.settings.logoPath || null;
   const outroPath = req.body.outro_path || uiState.settings.outroPath || null;
   const captionStyle = req.body.caption_style || uiState.settings.captionStyle || "branded";
@@ -43386,11 +43401,16 @@ app.post("/api/mcp/export", async (req, res) => {
     start_second: c.start_second,
     end_second: c.end_second,
     title: (c.title || "clip").slice(0, 40),
+    hook_text: (c.hook_text || c.title || "clip").slice(0, 72),
+    pacing_profile: c.pacing_profile || "auto",
+    professional_editing: c.professional_editing !== false,
+    show_hook_title: c.show_hook_title !== false,
     caption_style: c.caption_style || captionStyle,
     crop_strategy: c.crop_strategy || cropStrategy,
     allow_ass_fallback: c.allow_ass_fallback === true || allowAssFallback,
     // Preserve multi-cut segments from suggestions
-    ...Array.isArray(c.segments) && c.segments.length > 0 && { keep_segments: c.segments }
+    ...Array.isArray(c.segments) && c.segments.length > 0 && { keep_segments: c.segments },
+    ...Array.isArray(c.keep_segments) && c.keep_segments.length > 0 && { keep_segments: c.keep_segments }
   }));
   const jobId = v4_default();
   const job = {
@@ -43417,6 +43437,7 @@ app.post("/api/mcp/export", async (req, res) => {
     video_path: videoPath,
     clips: styledClips,
     transcript_words: transcriptWords,
+    speech_intervals: speechIntervals,
     output_dir: paths.output,
     logo_path: logoPath,
     outro_path: outroPath,
