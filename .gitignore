@@ -12,3 +12,19 @@ __pycache__/
 *.pyc
 .DS_Store
 __pycache__/
+
+# Dependencias locais
+node_modules/
+.venv/
+venv/
+env/
+
+# Caches e saidas geradas
+.cache/
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+out/
+tmp/
+*.log

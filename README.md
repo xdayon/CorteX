@@ -104,6 +104,30 @@ limpas de fillers que aparecem queimadas no vídeo, timestamps relativos ao cort
 Reels/Shorts/TikTok indexam melhor com legenda nativa, e serve de acessibilidade.
 A chave `subtitle_path` vem no dict de retorno.
 
+### 8. Output em `~/Videos/podcli-clips` + subpasta por episódio
+O launcher pré-injeta `PODCLI_OUTPUT=$HOME/podcli-clips`; agora o `.env` define
+`PODCLI_OUTPUT=~/Videos/podcli-clips` (e `PODCLI_OUTPUT` entrou no `_FORCE_FROM_ENV`
+do `cli.py`, para o fallback sem python-dotenv também respeitar o override).
+
+- `services/clip_generator.py` — `generate_clip` cria uma **subpasta por episódio**
+  (basename do vídeo fonte, sanitizado) dentro do output root; o `.mp4` e o `.srt`
+  de cada corte caem em `podcli-clips/<episodio>/`.
+- `studio/web-server.mjs` — `/api/outputs` lista `.mp4` recursivamente e
+  `/api/download` + `/api/preview` viraram rotas curinga (aceitam subcaminhos;
+  `safePath` continua bloqueando `..`). O bundle inteiro passou a ser versionado
+  em `mods/runtime/studio/web-server.mjs`.
+- Migração feita: `~/podcli-clips` → `~/Videos/podcli-clips` (clipes antigos ficam
+  soltos na raiz) e os `output_path` do `history/clips.json` foram reescritos
+  (backup em `clips.json.bak`).
+
+### 9. Remotion mais rápido (fase CPU das legendas)
+O gargalo de CPU do export é o Remotion renderizando legendas num Chromium
+headless (ProRes 4444 com alpha) — o encode em si já é 100% NVENC. Ajustes:
+
+- `remotion/render.mjs` — concurrency `min(cpus, 8)` → `min(cpus, 12)`, com
+  override via `PODCLI_REMOTION_CONCURRENCY`; suporte opt-in a raster na GPU via
+  `PODCLI_REMOTION_GL=angle-egl` (experimental, default desligado).
+
 ## Como aplicar
 
 ```bash

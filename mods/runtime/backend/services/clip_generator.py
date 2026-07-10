@@ -402,6 +402,15 @@ def _kept_caption_overlay_path(output_path: str) -> str:
     return f"{base}_captions.mov"
 
 
+def _sanitize_episode_dir(value: str) -> str:
+    """Sanitize a video basename into a safe subfolder name (alnum/-/_ only,
+    spaces -> underscore, truncated to ~80 chars)."""
+    safe = value.strip().replace(" ", "_")
+    safe = "".join(c for c in safe if c.isalnum() or c in "-_")
+    safe = safe[:80]
+    return safe or "clip"
+
+
 def _srt_timestamp(t: float) -> str:
     t = max(0.0, t)
     h = int(t // 3600)
@@ -944,8 +953,16 @@ def generate_clip(
         output_filename = f"{safe_title}_short.mp4"
 
         if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            final_path = os.path.join(output_dir, output_filename)
+            episode_name = _sanitize_episode_dir(
+                os.path.splitext(os.path.basename(video_path))[0]
+            )
+            existing_leaf = os.path.basename(os.path.normpath(output_dir))
+            if existing_leaf == episode_name:
+                episode_output_dir = output_dir
+            else:
+                episode_output_dir = os.path.join(output_dir, episode_name)
+            os.makedirs(episode_output_dir, exist_ok=True)
+            final_path = os.path.join(episode_output_dir, output_filename)
         else:
             final_path = os.path.join(work_dir, output_filename)
 

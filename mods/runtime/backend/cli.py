@@ -39,8 +39,9 @@ try:
 except ImportError:
     pass
 # Fallback manual (quando python-dotenv não está instalado). As chaves de caminho de
-# ferramenta precisam vencer o valor pré-definido pelo launcher; o resto usa setdefault.
-_FORCE_FROM_ENV = {"PODCLI_FFMPEG", "PODCLI_FFPROBE"}
+# ferramenta/output precisam vencer o valor pré-definido pelo launcher (PODCLI_OUTPUT
+# inclusive, pois o launcher pré-injeta $HOME/podcli-clips); o resto usa setdefault.
+_FORCE_FROM_ENV = {"PODCLI_FFMPEG", "PODCLI_FFPROBE", "PODCLI_OUTPUT"}
 if os.path.exists(_env_file):
     with open(_env_file, encoding="utf-8") as _f:
         for _line in _f:

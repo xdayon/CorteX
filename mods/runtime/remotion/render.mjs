@@ -217,7 +217,10 @@ async function main() {
     });
 
     const cpus = os.cpus().length;
-    const concurrency = Math.max(2, Math.min(cpus, 8));
+    const envConcurrency = parseInt(process.env.PODCLI_REMOTION_CONCURRENCY || "", 10);
+    const concurrency = Number.isInteger(envConcurrency) && envConcurrency > 0
+      ? envConcurrency
+      : Math.max(2, Math.min(cpus, 12));
     let captionOverlay;
     if (opts["keep-overlay"]) {
       const outBase = opts.output.replace(/\.[^.]+$/, "");
@@ -229,6 +232,9 @@ async function main() {
     }
 
     let lastPct = -1;
+    const chromiumOptions = process.env.PODCLI_REMOTION_GL
+      ? { gl: process.env.PODCLI_REMOTION_GL }
+      : undefined;
     await renderMedia({
       composition: {
         ...composition,
@@ -245,6 +251,7 @@ async function main() {
       outputLocation: captionOverlay,
       inputProps,
       concurrency,
+      ...(chromiumOptions ? { chromiumOptions } : {}),
       onProgress: ({ progress }) => {
         const pct = Math.round(progress * 100);
         if (pct > lastPct + 9) {
