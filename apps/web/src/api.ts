@@ -210,6 +210,51 @@ export type SceneIndexDocument = {
   };
 };
 
+export type FaceLandmarks = {
+  right_eye: [number, number];
+  left_eye: [number, number];
+  nose_tip: [number, number];
+  right_mouth_corner: [number, number];
+  left_mouth_corner: [number, number];
+};
+
+export type FaceDetection = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  score: number;
+  landmarks: FaceLandmarks;
+  track_id?: string | null;
+  embedding?: number[] | null;
+};
+
+export type FrameFaces = { time: number; faces: FaceDetection[]; shot_type: string };
+
+export type SceneFaceSummary = {
+  scene_index: number;
+  dominant_shot_type: string;
+  track_ids_present: string[];
+  sample_count: number;
+};
+
+export type FaceIndexDocument = {
+  schema_version: number;
+  scene_index_artifact_id: string;
+  duration_seconds: number;
+  frames: FrameFaces[];
+  scenes: SceneFaceSummary[];
+  frame_count: number;
+  engine: {
+    detector: string;
+    providers: string[];
+    score_threshold: number;
+    nms_threshold: number;
+    sample_fps: number;
+    ffmpeg_version: string;
+  };
+};
+
 export type RenderSettings = {
   schema_version: 1;
   encoder: "h264_nvenc" | "libx264";
@@ -386,6 +431,15 @@ export const api = {
 
   sceneIndex: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<SceneIndexDocument>>(`/api/v1/projects/${projectId}/scenes/${artifactId}`),
+
+  startFaceIndex: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string, faceSampleFps?: number) =>
+    request<ApiJob>(`/api/v1/projects/${projectId}/faces`, {
+      method: "POST",
+      body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId, face_sample_fps: faceSampleFps ?? null }),
+    }),
+
+  faceIndex: (projectId: string, artifactId: string) =>
+    request<ArtifactEnvelope<FaceIndexDocument>>(`/api/v1/projects/${projectId}/faces/${artifactId}`),
 
   editPlan: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<EditPlanDocument>>(`/api/v1/projects/${projectId}/edit-plans/${artifactId}`),

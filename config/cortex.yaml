@@ -61,8 +61,14 @@ clips:
 # Índice de cenas (cortes de câmera) via filtro scdet do FFmpeg.
 # scene_threshold: sensibilidade do scdet (0-100, escala nativa do filtro).
 #   Valor mais baixo detecta mais cortes; 10.0 é o default do próprio scdet.
+# face_sample_fps: grade esparsa do índice de faces.
+# speaker_sample_fps: amostragem densa apenas em chunks VAD para mouth motion.
+# speaker_vad_padding_seconds: contexto visual antes/depois da fala para baseline.
 analysis:
   scene_threshold: 10.0
+  face_sample_fps: 1.0
+  speaker_sample_fps: 4.0
+  speaker_vad_padding_seconds: 0.15
 
 # scene_snap_tolerance_seconds: raio (em segundos) em que uma fronteira de
 #   vídeo da EDL pode ser ajustada para o corte de cena mais próximo do

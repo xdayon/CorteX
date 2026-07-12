@@ -219,6 +219,12 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; heigh
 .scene-marker { position: absolute; top: 0; bottom: 0; width: 2px; background: #ffb454; box-shadow: 0 0 6px rgba(255,180,84,.6); }
 .scene-index-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 .scene-index-summary { color: var(--muted); font: 500 10px "IBM Plex Mono", monospace; letter-spacing: .04em; }
+.face-shot-badges { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.shot-badge { padding: 3px 8px; border-radius: 999px; font: 600 10px "IBM Plex Mono", monospace; letter-spacing: .04em; border: 1px solid rgba(255,255,255,.12); color: var(--text); background: rgba(255,255,255,.06); }
+.shot-badge.shot-close { border-color: rgba(25,230,242,.5); color: var(--cyan); }
+.shot-badge.shot-two_shot { border-color: rgba(255,180,84,.5); color: #ffb454; }
+.shot-badge.shot-wide { border-color: rgba(255,255,255,.2); color: var(--muted); }
+.shot-badge.shot-none { opacity: .5; }
 .transcript-focus { margin-top: 22px; padding: 16px; background: rgba(255,255,255,.018); border-left: 1px solid var(--cyan); }
 .transcript-focus p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }.transcript-focus p span { color: var(--text); background: rgba(25,230,242,.1); }
 .transcript-focus p .spoken-word { background: transparent; }

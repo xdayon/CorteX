@@ -27,6 +27,7 @@ transcription = [
 analysis = [
   "faster-whisper==1.2.1",
   "numpy>=1.26,<3",
+  "onnxruntime>=1.24,<2",
 ]
 youtube = ["yt-dlp>=2025.6"]
 dev = ["httpx>=0.28,<1", "pytest>=8,<9", "ruff>=0.12,<1"]

@@ -39,3 +39,15 @@ def renders_dir(config: CortexConfig, project_id: str) -> Path:
 
 def scenes_dir(config: CortexConfig, project_id: str) -> Path:
     return project_dir(config, project_id) / "scenes"
+
+
+def faces_dir(config: CortexConfig, project_id: str) -> Path:
+    return project_dir(config, project_id) / "faces"
+
+
+def speakers_dir(config: CortexConfig, project_id: str) -> Path:
+    return project_dir(config, project_id) / "speakers"
+
+
+def cameras_dir(config: CortexConfig, project_id: str) -> Path:
+    return project_dir(config, project_id) / "cameras"

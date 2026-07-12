@@ -637,3 +637,168 @@ opostos; adicionado guard de comprimento minimo (`_SCENE_SNAP_MIN_SEGMENT_SECOND
 build Vite e `git diff --check` limpos. Proximo gate da Fase 5: shot/face index
 (deteccao de faces e planos por amostragem) como fundacao para tracking de
 interlocutor e reaction shots.
+
+## Atualizacao 2026-07-12 - indice de faces e classificacao de plano (Gate 2)
+
+Gate 2 da Fase 5: deteccao de faces e classificacao heuristica de plano
+(close/two_shot/wide/none) como fundacao para tracking de interlocutor e
+reaction shots — nenhuma dessas duas capacidades foi implementada aqui.
+
+Decisao de stack (fechada pelo advisor, nao rediscutida): `onnxruntime`
+(providers `["CPUExecutionProvider"]`, nunca CUDA — a GPU e reservada para
+Whisper/NVENC) rodando o modelo YuNet ONNX (`face_detection_yunet_2023mar.onnx`,
+~227 KB, MIT, OpenCV Zoo) versionado em `src/cortex/models/` junto da licenca
+(`FACE_DETECTION_YUNET_LICENSE`). Zero dependencias Python novas alem de
+`onnxruntime` (ja transitiva do `faster-whisper`, agora declarada explicita no
+extra `analysis` do `pyproject.toml`) e `numpy` (ja presente).
+
+Detector (`src/cortex/analyze/face_detect.py`):
+
+- pre/pos-processamento em numpy puro, porta linha-a-linha do decode/NMS de
+  `FaceDetectorYNImpl::postProcess` do proprio OpenCV
+  (`modules/objdetect/src/face_detect.cpp`) — grade por stride (8/16/32),
+  score `sqrt(cls*obj)`, decode de bbox+5 landmarks, NMS por IoU;
+- o grafo ONNX do YuNet 2023mar tem entrada **fixa** 640x640 (sem eixos
+  dinamicos), diferente do demo `yunet.py` do Zoo (que so funciona porque
+  `cv.FaceDetectorYN` reconstroi a rede a cada `setInputSize`). Por isso o
+  frame extraido e letterboxed (resize proporcional + padding com zero,
+  ancorado no canto superior esquerdo) para o canvas 640x640 antes da
+  inferencia, e as coordenadas decodificadas sao divididas pelo mesmo fator de
+  escala para voltar ao espaco de pixels do frame original — exatamente o
+  "bug de escala que desloca bbox silenciosamente" que a spec pedia cuidado,
+  coberto por teste dedicado (`test_letterbox_downscales_tall_frame_uniformly`);
+- bboxes/landmarks reportados normalizados (0-1), independentes da resolucao
+  de extracao.
+
+Amostragem de frames (`src/cortex/analyze/face_service.py`):
+
+- exige `scene_index` existente (precondicao 404/409 clara, tanto na API
+  quanto no `FaceIndexService`, se o artifact ou seu arquivo nao existir);
+- amostra: ponto medio de cada `SceneSegment`, `cut_time + 0.3s` apos cada
+  corte, e grade uniforme a `analysis.face_sample_fps` (novo knob, default
+  1.0, `config/cortex.yaml`);
+- extracao via `ffmpeg` do sistema (mesmo padrao de `render/service.py`), com
+  `scale=640:-2` (nunca decodifica 4K inteiro) e saida `rgb24` num muxer PPM
+  (`-f image2pipe -vcodec ppm`) — o header PPM ja informa a largura/altura
+  exatas que o `-2` do swscale escolheu, entao nao ha suposicao sobre
+  arredondamento par/impar do ffmpeg.
+
+Classificacao de plano e identidade (`src/cortex/analyze/face_classify.py`),
+tudo com thresholds nomeados e testavel sem o modelo (deteccoes sinteticas):
+
+- `close`/`two_shot`/`wide`/`none` por razao area do bbox / area do frame,
+  proximidade do centro e comparacao de tamanho entre as duas maiores faces;
+- identidade **sem embeddings**: clustering 1-D (split no maior gap) dos
+  centroides x de todas as deteccoes do episodio em slots estaveis
+  (`person_left`/`person_right`/`person`), assumindo camera fixa; cada
+  deteccao herda o slot mais proximo. `FaceDetection.embedding` fica
+  reservado (default `None`) para um upgrade futuro com ArcFace;
+- agregacao por `SceneSegment`: tipo de plano dominante e slots presentes por
+  cena, guardados em `FaceIndexDocument.scenes`.
+
+API e worker: `JobType.FACE_ANALYSIS` com handler real (progresso/cancelamento
+identicos ao `SCENE_ANALYSIS`), `POST /api/v1/projects/{id}/faces` (mesmas
+validacoes de seguranca/precondicao do `scenes`, mais a exigencia de
+`scene_index_artifact_id` valido) e `GET /api/v1/projects/{id}/faces/{artifact_id}`.
+`FaceIndexDocument`/`face_index` seguem o mesmo molde de `scene_index`: schema
+versionado (v1), hash de input (fonte + `scene_index` + sample_fps + versao do
+algoritmo), cache por hash, escrita atomica `.tmp` -> `replace`.
+
+Curadoria (frontend): botao "Detectar rostos/planos" ao lado de "Detectar
+cenas" na etapa Curadoria, acompanhando o job por SSE (`watchJob`, mesmo
+padrao); ao concluir, badges com o tipo de plano dominante por cena aparecem
+abaixo da waveform (`FaceShotBadges` em `apps/web/src/App.tsx`) para as cenas
+que caem no intervalo do corte ativo. Sem desenho de bbox sobre o video neste
+gate (fica para um gate futuro).
+
+Este gate **nao** integra faces na EDL — sem rodar a deteccao, nada muda no
+pipeline existente (`edit_plan` continua ignorando `face_index` por completo).
+
+Validacao: golden test com foto real (retrato oficial de dominio publico,
+`tests/fixtures/face_golden_portrait.jpg`, ver `tests/fixtures/README.md` para
+proveniencia/licenca) confirma deteccao de 1 rosto com score > 0.8 e bbox
+dentro de tolerancia; testes unitarios de decode/NMS com fixtures sinteticas
+deterministicas (`tests/test_face_detect.py`); heuristicas de plano/identidade
+com deteccoes sinteticas (`tests/test_face_classify.py`); cache hit e
+precondicao de `scene_index` ausente, servico e API (`tests/test_face_index.py`).
+Suite completa: 126 testes (96 anteriores + 30 novos) passando; Ruff,
+`compileall` e build do `apps/web` (`tsc --noEmit` + `vite build`) limpos;
+`git diff --check` sem trailing whitespace.
+
+Proximo gate da Fase 5: tracking de interlocutor (continuidade de identidade
+alem do slot heuristico por posicao), reaction shots semanticamente coerentes
+e J/L-cut editaveis continuam pendentes.
+
+## Atualizacao 2026-07-12 - speaker timeline visual (Gate 3)
+
+Gate 3 da Fase 5: novo stage artifact `speaker_timeline`, separado do
+`face_index`, porque faces sao observacoes esparsas e atribuicao de fala e uma
+inferencia temporal com cache, confianca e proveniencia proprios.
+
+- inputs obrigatorios e explicitos: fonte, `scene_index`, `face_index` e
+  `analysis`/VAD; o servico valida pelo conteudo dos documentos que toda a cadeia
+  corresponde a mesma fonte e inclui IDs + input hashes no hash canonico;
+- dentro do VAD, frames RGB a 320 px/4 fps sao extraidos em streams PPM por
+  chunks coalescidos (padding default 150 ms, gaps ate 2 s), sem um subprocesso
+  FFmpeg por frame e com memoria constante; YuNet nao roda novamente;
+- bbox/landmarks do `face_index` sao interpolados somente dentro da mesma cena e
+  com distancia maxima conservadora; a ROI labial e normalizada em numpy, o
+  motion desconta uma ROI facial de controle e usa baseline robusta por
+  track/cena nos frames de padding fora do VAD;
+- o vencedor exige limiar absoluto e margem; baixa cobertura/motion vira
+  `unknown`, scores proximos viram `overlap`, e fora do VAD vira `no_speech`;
+  close de camera sozinho nunca e prova de quem fala;
+- schema v1 usa microssegundos inteiros, observations por track, segmentos
+  contiguos e engine info com requested/effective FPS, largura, decoder/device e
+  versao/caminho FFmpeg; persistencia atomica e cache seguem os gates anteriores;
+- `JobType.SPEAKER_ANALYSIS`, worker e endpoints `POST /speakers` +
+  `GET /speakers/{artifact_id}` estao conectados. O artifact ainda nao participa
+  da EDL nem dispara automaticamente no Studio.
+
+Limite deliberado: `person_left`/`person_right` continua sendo slot visual, nao
+identidade global confirmada entre cameras. ArcFace/embeddings, diarizacao
+acustica, timeline de cameras, reaction shots, listening posture, camera planner
+e J/L-cut permanecem para gates futuros. Reaction shot deve recusar `unknown` e
+nao pode tratar este artifact sozinho como diarizacao acustica.
+
+Validacao focada: 10 testes speaker sem o endpoint `TestClient` passaram,
+incluindo decode FFmpeg streaming real com video sintetico, mouth motion,
+persistencia/cache, cadeia upstream e caminho visual positivo. Ruff, compileall,
+build Vite e `git diff --check` passaram. O teste endpoint API -> worker -> GET e
+a suite completa reproduziram o hang historico de finalizacao do `TestClient` no
+sandbox sem reportar assertion; repetir `.venv/bin/pytest -q` no host antes do
+merge. Nenhuma validacao CUDA/NVENC foi feita ou necessaria neste gate CPU-only.
+
+## Atualizacao 2026-07-12 - camera timeline conservadora (Gate 4a)
+
+Novo stage artifact `camera_timeline`, derivado exclusivamente de
+`scene_index` + `face_index` + `speaker_timeline`. Ele agrega cada cena em
+microssegundos com plano dominante, tracks visiveis, speaker dominante,
+cobertura de fala, alinhamento e um role de camera conservador:
+
+- `speaker_close` somente quando ha um unico track visivel no close e o speaker
+  visual dominante coincide com ele acima do limiar de 55%;
+- `two_shot`, `wide` e `no_face` sao roles puramente visuais;
+- close com speaker ausente, ambiguo ou incompativel vira `unknown`, nunca
+  listener/reaction por inferencia de camera;
+- `layout_id` e hash deterministico de shot type + slots visiveis. Ele permite
+  agrupar layouts repetidos, mas NAO identifica uma camera fisica nem confirma
+  a mesma pessoa entre cameras;
+- hash de cache inclui IDs e input hashes dos tres artifacts, versao do
+  algoritmo, limiar e escopo de identidade; o servico valida toda a cadeia pelo
+  conteudo, persiste JSON atomico e registra `identity_scope=layout_track_only`;
+- `JobType.CAMERA_ANALYSIS`, worker e endpoints `POST /cameras` e
+  `GET /cameras/{artifact_id}` estao conectados. A EDL e o Studio ainda nao
+  consomem automaticamente este artifact.
+
+Validacao focada: 5 testes cobrem speaker close confirmado, mismatch fail-safe,
+two-shot/wide, persistencia/cache, cadeia upstream invalida e job processado pelo
+worker real ate um artifact persistido. Reaction shots permanecem bloqueados:
+identidade cross-camera confirmada, quality index de freeze/blur/oclusao e o
+planner que preserva audio continuo ainda nao existem.
+
+Verificacao integrada desta entrega: 62 testes fora dos arquivos que usam
+`TestClient` e 15 testes focados camera/speaker passaram; Ruff, compileall,
+OpenAPI das rotas de camera, build Vite e `git diff --check` passaram. A suite
+integral com `TestClient` continua pendente de repeticao no host pelo hang de
+sandbox ja registrado no Gate 3.

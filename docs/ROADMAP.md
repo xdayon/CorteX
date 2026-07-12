@@ -59,8 +59,22 @@
   `scdet` do FFmpeg, cacheado por hash, com job/endpoints proprios;
 - [x] Gate 1: scene snapping opcional na EDL (`edit_plan`), sempre subordinado
   a regra de preservar fala/pausa, com nota `scene_snapped` no quality report;
-- deteccao de faces e planos (shot boundaries alem do corte de camera);
-- tracking do interlocutor e timeline de cameras;
+- [x] Gate 2: indice de faces (`face_index`) via YuNet ONNX (onnxruntime CPU,
+  zero deps novas), amostragem de frames por cena/corte/grade uniforme
+  (`face_sample_fps`), classificacao heuristica de plano (close/two_shot/
+  wide/none) e identidade por slot heuristico (clustering 1-D de centroide
+  x, sem embeddings - campo `embedding` reservado para upgrade ArcFace
+  futuro); `face_index` ainda NAO participa da EDL (gate futuro);
+- [x] Gate 3: `speaker_timeline` visual conservadora, cacheada por hash e
+  derivada explicitamente de fonte + `scene_index` + `face_index` + VAD;
+  mouth motion CPU em frames FFmpeg streaming/coalescidos, com baseline robusta,
+  estados `speaker`/`unknown`/`overlap`/`no_speech` e sem alegar identidade global
+  quando o slot heuristico por posicao nao e suficiente;
+- [x] Gate 4a: `camera_timeline` deterministica por cena, alinhando plano,
+  tracks visiveis e speaker dominante em roles conservadores (`speaker_close`,
+  `two_shot`, `wide`, `no_face`, `unknown`), com `layout_id` explicitamente
+  limitado ao layout/slot e sem alegar identidade fisica cross-camera;
+- continuidade de identidade cross-camera confirmada;
 - reaction shots semanticamente coerentes;
 - J-cut, L-cut e punch-in editaveis;
 - deteccao de frames pretos, congelados ou borrados (alem do gate visual ja

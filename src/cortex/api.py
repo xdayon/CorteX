@@ -9,6 +9,8 @@ from typing import Any
 from fastapi import UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from cortex.analyze.camera_schemas import CameraTimelineDocument
+from cortex.analyze.speaker_schemas import SpeakerTimelineDocument
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind
 from cortex.domain.store import (
@@ -77,6 +79,32 @@ class SceneIndexRequest(BaseModel):
 
     source_asset_id: str
     scene_threshold: float | None = Field(default=None, ge=0.0, le=100.0)
+
+
+class FaceIndexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str
+    scene_index_artifact_id: str
+    face_sample_fps: float | None = Field(default=None, gt=0.0, le=10.0)
+
+
+class SpeakerTimelineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str
+    scene_index_artifact_id: str
+    face_index_artifact_id: str
+    analysis_artifact_id: str
+    sample_fps: float | None = Field(default=None, ge=1.0, le=10.0)
+
+
+class CameraTimelineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scene_index_artifact_id: str
+    face_index_artifact_id: str
+    speaker_timeline_artifact_id: str
 
 
 class RenderRequest(BaseModel):
@@ -326,6 +354,189 @@ def create_app(config: CortexConfig | None = None):
             "artifact": artifact,
             "document": json.loads(path.read_text(encoding="utf-8")),
         }
+
+    @app.post(f"{router_prefix}/projects/{{project_id}}/faces", status_code=201)
+    def create_face_index_job(project_id: str, request: FaceIndexRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        try:
+            asset = domain.get_source_asset(request.source_asset_id)
+        except SourceAssetNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Fonte não encontrada") from exc
+        if asset.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Fonte não pertence a este projeto")
+        source_path = settings.paths.data_dir / asset.stored_path
+        if not source_path.exists():
+            raise HTTPException(
+                status_code=409, detail="Arquivo da fonte não está disponível para detecção de faces"
+            )
+        try:
+            scene_index = domain.get_stage_artifact(request.scene_index_artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Índice de cenas não encontrado; execute a detecção de cenas antes das faces",
+            ) from exc
+        if scene_index.project_id != project_id or scene_index.stage != "scene_index":
+            raise HTTPException(status_code=400, detail="Índice de cenas não pertence a este projeto")
+        if not Path(scene_index.path).exists():
+            raise HTTPException(
+                status_code=409, detail="Arquivo do índice de cenas não está disponível para detecção de faces"
+            )
+        return jobs.create(JobCreate(
+            type=JobType.FACE_ANALYSIS,
+            project_id=project_id,
+            payload={
+                "source_asset_id": asset.id,
+                "scene_index_artifact_id": scene_index.id,
+                "face_sample_fps": request.face_sample_fps,
+            },
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/faces/{{artifact_id}}")
+    def get_face_index(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Índice de faces não encontrado") from exc
+        if artifact.project_id != project_id or artifact.stage != "face_index":
+            raise HTTPException(status_code=404, detail="Índice de faces não encontrado")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo do índice de faces não está disponível")
+        return {
+            "artifact": artifact,
+            "document": json.loads(path.read_text(encoding="utf-8")),
+        }
+
+    @app.post(f"{router_prefix}/projects/{{project_id}}/speakers", status_code=201)
+    def create_speaker_timeline_job(project_id: str, request: SpeakerTimelineRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        try:
+            asset = domain.get_source_asset(request.source_asset_id)
+        except SourceAssetNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Fonte não encontrada") from exc
+        if asset.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Fonte não pertence a este projeto")
+        if not (settings.paths.data_dir / asset.stored_path).exists():
+            raise HTTPException(
+                status_code=409,
+                detail="Arquivo da fonte não está disponível para tracking de interlocutor",
+            )
+
+        upstream_specs = (
+            (request.scene_index_artifact_id, "scene_index", "Índice de cenas"),
+            (request.face_index_artifact_id, "face_index", "Índice de faces"),
+            (request.analysis_artifact_id, "analysis", "Análise"),
+        )
+        upstreams = {}
+        for artifact_id, expected_stage, label in upstream_specs:
+            try:
+                upstream = domain.get_stage_artifact(artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=f"{label} não encontrado") from exc
+            if upstream.project_id != project_id or upstream.stage != expected_stage:
+                raise HTTPException(status_code=400, detail=f"{label} não pertence a este projeto")
+            if not Path(upstream.path).exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Arquivo de {label.lower()} não está disponível para tracking de interlocutor",
+                )
+            upstreams[expected_stage] = upstream
+
+        return jobs.create(JobCreate(
+            type=JobType.SPEAKER_ANALYSIS,
+            project_id=project_id,
+            payload={
+                "source_asset_id": asset.id,
+                "scene_index_artifact_id": upstreams["scene_index"].id,
+                "face_index_artifact_id": upstreams["face_index"].id,
+                "analysis_artifact_id": upstreams["analysis"].id,
+                "sample_fps": request.sample_fps,
+            },
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/speakers/{{artifact_id}}")
+    def get_speaker_timeline(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Timeline de interlocutores não encontrada") from exc
+        if artifact.project_id != project_id or artifact.stage != "speaker_timeline":
+            raise HTTPException(status_code=404, detail="Timeline de interlocutores não encontrada")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(
+                status_code=410,
+                detail="Arquivo da timeline de interlocutores não está disponível",
+            )
+        try:
+            document = SpeakerTimelineDocument.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=410,
+                detail="Arquivo da timeline de interlocutores não está disponível",
+            ) from exc
+        return {"artifact": artifact, "document": document}
+
+    @app.post(f"{router_prefix}/projects/{{project_id}}/cameras", status_code=201)
+    def create_camera_timeline_job(project_id: str, request: CameraTimelineRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        upstream_specs = (
+            (request.scene_index_artifact_id, "scene_index", "Índice de cenas"),
+            (request.face_index_artifact_id, "face_index", "Índice de faces"),
+            (request.speaker_timeline_artifact_id, "speaker_timeline", "Timeline de interlocutores"),
+        )
+        upstreams = {}
+        for artifact_id, expected_stage, label in upstream_specs:
+            try:
+                upstream = domain.get_stage_artifact(artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=f"{label} não encontrado") from exc
+            if upstream.project_id != project_id or upstream.stage != expected_stage:
+                raise HTTPException(status_code=400, detail=f"{label} não pertence a este projeto")
+            if not Path(upstream.path).exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Arquivo de {label.lower()} não está disponível para timeline de cameras",
+                )
+            upstreams[expected_stage] = upstream
+        return jobs.create(JobCreate(
+            type=JobType.CAMERA_ANALYSIS,
+            project_id=project_id,
+            payload={
+                "scene_index_artifact_id": upstreams["scene_index"].id,
+                "face_index_artifact_id": upstreams["face_index"].id,
+                "speaker_timeline_artifact_id": upstreams["speaker_timeline"].id,
+            },
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/cameras/{{artifact_id}}")
+    def get_camera_timeline(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Timeline de cameras não encontrada") from exc
+        if artifact.project_id != project_id or artifact.stage != "camera_timeline":
+            raise HTTPException(status_code=404, detail="Timeline de cameras não encontrada")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo da timeline de cameras não disponível")
+        try:
+            document = CameraTimelineDocument.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=410, detail="Arquivo da timeline de cameras não disponível"
+            ) from exc
+        return {"artifact": artifact, "document": document}
 
     @app.post(f"{router_prefix}/projects/{{project_id}}/edit-plans", status_code=201)
     def create_edit_plan_job(project_id: str, request: EditPlanRequest):

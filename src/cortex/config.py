@@ -74,6 +74,9 @@ class AnalysisConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scene_threshold: float = Field(default=10.0, ge=0.0, le=100.0)
+    face_sample_fps: float = Field(default=1.0, gt=0.0, le=10.0)
+    speaker_sample_fps: float = Field(default=4.0, ge=1.0, le=10.0)
+    speaker_vad_padding_seconds: float = Field(default=0.15, ge=0.0, le=2.0)
 
 
 class EditConfig(BaseModel):
