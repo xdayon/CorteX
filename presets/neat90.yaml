@@ -1,0 +1,252 @@
+schema_version: "1.0"
+id: neat90
+name: Neat 90
+description: Corte editorial vertical, legivel e dinamico, com duracao alvo de 50 a 90 segundos.
+
+transcription:
+  engine: faster-whisper
+  model: large-v3-turbo
+  language: pt-BR
+  device: cuda
+  compute_type: int8
+  batch_size: 8
+  beam_size: 5
+  word_timestamps: true
+  vad:
+    enabled: true
+    min_silence_ms: 250
+    speech_pad_ms: 100
+  diarization:
+    enabled: true
+    provider: pyannote
+    expected_speakers: null
+  initial_prompt: "Podcast em portugues do Brasil. Preserve nomes proprios, termos biblicos, pontuacao e acentuacao."
+  gpu_fallback: fail
+
+selection:
+  prompt: prompts/clip_selection.pt-BR.md
+  output_schema: prompts/clip_selection.schema.json
+  clip_count: 10
+  clip_count_limits:
+    min: 1
+    max: 25
+  duration_seconds:
+    min: 50
+    target: 75
+    max: 90
+  ui_duration_limits:
+    min_clip:
+      min: 15
+      max: 90
+    max_clip:
+      min: 30
+      max: 180
+  topic_direction: "Encontre falas autonomas, relevantes e compartilháveis."
+  require_spoken_hook: true
+  require_payoff: true
+  minimum_score: 24
+  deduplicate_overlap_ratio: 0.35
+
+editing:
+  enabled: true
+  pacing: auto
+  pacing_profiles:
+    dynamic:
+      max_cuts_per_30s: 7
+      preserve_rhetorical_pause_up_to_ms: 1200
+    balanced:
+      max_cuts_per_30s: 5
+      preserve_rhetorical_pause_up_to_ms: 1650
+    contemplative:
+      max_cuts_per_30s: 3
+      preserve_rhetorical_pause_up_to_ms: 2450
+  boundary_analysis:
+    waveform: true
+    vad: true
+    word_alignment: true
+    rms_window_ms: 20
+    search_radius_ms: 300
+    pre_roll_ms: 120
+    post_roll_ms: 210
+    snap_to_low_energy: true
+    forbid_inside_word: true
+    forbid_inside_speech: true
+  pauses:
+    preserve_sentence_end: true
+    preserve_semantic_weight: true
+    minimum_removal_ms: 420
+    minimum_total_saving_ms: 700
+  transitions:
+    default_visual: hard_cut
+    same_camera_jump_cut: punch_in
+    audio_join: equal_power_crossfade
+    audio_crossfade_ms: 60
+    j_cut:
+      enabled: true
+      lead_ms: 180
+      max_lead_ms: 450
+    l_cut:
+      enabled: true
+      tail_ms: 180
+      max_tail_ms: 450
+    dissolve:
+      enabled: false
+      use_only_for_time_or_mood_change: true
+  room_tone:
+    enabled: true
+    minimum_clean_sample_ms: 500
+  filler_policy:
+    hide_in_captions: true
+    remove_audio_only_when_safe: true
+
+captions:
+  enabled: true
+  preset: neat90
+  renderer: remotion
+  position: lower-third
+  safe_margin_percent:
+    horizontal: 8
+    bottom: 16
+  font:
+    family: Montserrat
+    fallback: sans-serif
+    size_px: 72
+    weight: 800
+    italic: false
+  text:
+    color: "#FFFFFF"
+    transform: none
+    max_words_per_chunk: 5
+    max_lines: 2
+    balance_lines: true
+    orphan_word_protection: true
+  karaoke:
+    enabled: true
+    mode: word
+    highlight_color: "#20E3C2"
+    inactive_color: "#FFFFFF"
+    animation: color-pop
+    pop_scale: 1.04
+  outline:
+    enabled: true
+    color: "#071014"
+    width_px: 4
+  shadow:
+    enabled: true
+    color: "#000000B3"
+    blur_px: 8
+    offset_x_px: 0
+    offset_y_px: 4
+  background:
+    enabled: false
+  timing:
+    minimum_word_ms: 100
+    hold_between_chunks_ms: 120
+
+headline:
+  enabled: true
+  preset: Editorial Quote
+  source_reference: headline model.jpeg
+  text_source: ai_suggestion_or_manual_override
+  duration_seconds: 3.4
+  max_words: 12
+  max_lines: 2
+  line_break: balanced
+  position:
+    anchor: top-left
+    x_percent: 5.5
+    y_percent: 18
+    max_width_percent: 82
+  typography:
+    family: Montserrat
+    fallback: sans-serif
+    size_px: 94
+    weight: 900
+    italic: false
+    color: "#101719"
+    line_height: 0.98
+    letter_spacing_em: -0.025
+  line_plates:
+    enabled: true
+    one_plate_per_line: true
+    color: "#FFFFFF"
+    opacity: 1.0
+    corner_radius_px: 0
+    padding_x_px: 30
+    padding_y_px: 13
+    line_gap_px: 10
+    fit_content: true
+  quote_badge:
+    enabled: true
+    position: above-left
+    width_px: 180
+    height_px: 112
+    background_color: "#18CBBB"
+    background_opacity: 0.9
+    glyph: "\u201c"
+    glyph_color: "#FFFFFF"
+    glyph_weight: 900
+    glyph_size_px: 94
+    corner_radius_px: 0
+    gap_to_headline_px: 28
+  animation:
+    enter: staggered-slide-up
+    enter_ms: 260
+    line_stagger_ms: 80
+    exit: fade
+    exit_ms: 180
+
+camera:
+  aspect_ratio: "9:16"
+  strategy: speaker-aware
+  subject_identity: primary_guest
+  face_tracking: true
+  active_speaker_tracking: true
+  shot_change_detection: true
+  punch_in:
+    enabled: true
+    scale: 1.08
+    alternate_on_jump_cut: true
+  interviewer_reactions:
+    enabled: true
+    minimum_per_clip: 1
+    preferred_duration_ms:
+      min: 700
+      max: 1600
+    require_silent_listener: true
+    require_face_visible: true
+    require_temporal_proximity_seconds: 90
+    mute_reaction_source_audio: true
+    preserve_primary_audio: true
+    reject_visible_speech: true
+  fallback_order:
+    - speaker-aware
+    - face-track
+    - center
+
+output:
+  container: mp4
+  video_codec: h264
+  encoder_preference:
+    - h264_nvenc
+    - libx264
+  resolution:
+    width: 1080
+    height: 1920
+  fps: source
+  pixel_format: yuv420p
+  quality:
+    mode: constant_quality
+    nvenc_cq: 18
+    x264_crf: 18
+  audio:
+    codec: aac
+    bitrate_kbps: 192
+    sample_rate_hz: 48000
+    channels: 2
+    loudness_lufs: -14
+    true_peak_dbtp: -1.5
+  faststart: true
+  subtitle_sidecar: srt
+  preserve_edit_manifest: true
+

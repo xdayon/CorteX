@@ -1,207 +1,135 @@
-# CorteX — mods do podcli (transcrição + render na GPU)
+# CorteX
 
-Repositório que versiona **todas as modificações** feitas por cima do
-[podcli](https://github.com/nmbrthirteen/podcli) nesta máquina, para gerar cortes
-de reels com transcrição e legendas em **pt-br**, usando a **GTX 1060** tanto na
-transcrição quanto no render.
+Editor local, GPU-first e retomavel da HiTechX para transformar episodios de
+podcast em cortes profissionais para Reels e TikTok.
 
-O podcli em si **não** vive aqui — ele fica instalado em
-`~/.local/share/podcli`. Este repo guarda só os arquivos que a gente mexeu
-(espelhando os caminhos originais) mais os scripts para reaplicar tudo. Assim os
-commits ficam salvos e dá pra reproduzir o setup se o podcli for reinstalado.
+> Estado: P0 de ingestao e transcricao standalone concluido. Upload/YouTube,
+> worker local, faster-whisper CUDA, artifacts, SSE e Studio possuem fonte
+> propria neste repositorio. A selecao editorial ja possui job real via Codex
+> CLI autenticado pela assinatura, fallback Claude, JSON Schema, cache e
+> provenance. Analise
+> audiovisual, edicao e render ainda estao sendo portados e nao devem ser
+> considerados prontos para producao.
 
-## O que foi mudado
+## Produto
 
-### 1. Engine de transcrição na GPU (faster-whisper / CTranslate2)
-O install nativo do podcli só traz **whisper.cpp (CPU)**. Adicionamos um engine
-novo, `fasterwhisper`, que roda o modelo na GPU (CUDA, `int8` — a 1060 é Pascal
-`sm_61`, então `int8` rende melhor que `float16`).
+O fluxo do CorteX e deliberadamente explicito:
 
-Para não contaminar o python do runtime do podcli com torch/ctranslate2, o modelo
-roda num **venv separado** (`~/Projects/transcription/venv`) via subprocess:
+1. selecione um arquivo local ou link do YouTube;
+2. configure e clique em **Iniciar transcricao**;
+3. defina tema, duracoes e quantidade de sugestoes;
+4. revise transcript, waveform, narrativa, headline e plano de camera;
+5. configure legenda, headline, ritmo e output;
+6. clique em **Iniciar renderizacao** e acompanhe a fila.
 
-- `mods/runtime/backend/services/fasterwhisper_worker.py` — roda **dentro** do
-  venv CUDA; só importa `faster_whisper` + stdlib; emite JSON no stdout no formato
-  que o podcli espera (segments + timings por palavra).
-- `mods/runtime/backend/services/transcription_fasterwhisper.py` — adapter que
-  roda no python do podcli; extrai o wav 16k, injeta `LD_LIBRARY_PATH` com as libs
-  CUDA do venv (`nvidia/*/lib`) e chama o worker. A injeção do `LD_LIBRARY_PATH`
-  **precisa** ser no exec do subprocess — o CTranslate2 faz `dlopen()` de
-  libcublas/libcudnn em runtime.
-- `services/engines.py` — `normalize_engine()` reconhece `fasterwhisper`/`gpu`.
-- `services/transcription.py` — roteamento: quando `PODCLI_ENGINE=fasterwhisper`,
-  usa o adapter; se o venv/worker sumir, cai pro whisper.cpp em vez de quebrar.
-  Diarização é pulada (sem torch aqui), face analysis (OpenCV) continua.
+Selecionar um arquivo nunca inicia a transcricao. Alterar um preset nunca inicia
+o render.
 
-### 2. Modelo padrão large-v3-turbo / large-v3
-- `services/transcription_whispercpp.py` — preset de alinhamento **DTW** escolhido
-  pelo modelo (`_dtw_preset_for_model`); o turbo tem 4 camadas de decoder, então
-  precisa de `large.v3.turbo`, senão o whisper.cpp quebra.
-- `cli.py` — default do `whisper_model` passou pra `large-v3-turbo`.
-- `studio/public/assets/index-*.js` e `studio/mcp-server.mjs` — opção
-  **Large v3 Turbo** adicionada e marcada como default na UI.
-- `presets/Neat.json`, `presets/Neat90.json` — modelo atualizado.
+## Estrutura atual
 
-### 3. Legendas menos frenéticas + agrupamento inteligente
-- `config/caption_styles.py` — `words_per_chunk` do estilo `branded` de 3 → 5.
-- `services/caption_renderer.py` — no estilo `branded`:
-  - `_group_words_smart()`: agrupa os chunks quebrando em fim de frase (`. ! ? …`) e
-    **nunca deixa uma palavra sozinha** no último chunk (o clássico "é"/"a" solto).
-  - `_split_balanced()`: divide o chunk em duas linhas pela **largura equilibrada**
-    (minimiza a linha mais larga e a diferença entre elas) em vez do preenchimento
-    guloso, que jogava uma palavrinha sozinha na segunda linha.
-
-### 4. Render na GPU (NVENC)
-O `.env` aponta `PODCLI_FFMPEG=/usr/bin/ffmpeg` (o ffmpeg do sistema tem `h264_nvenc`;
-o embutido em `runtime/ffmpeg` é **CPU-only**). Mas o launcher `podcli` **pré-injeta**
-`PODCLI_FFMPEG` apontando pro ffmpeg embutido, e o `python-dotenv` por padrão **não
-sobrescreve** variáveis já presentes no ambiente — então o `.env` era ignorado e todo
-o export caía no `libx264` (CPU).
-
-- `cli.py` — o carregamento do `.env` passou a usar `load_dotenv(..., override=True)`
-  (e o fallback manual força `PODCLI_FFMPEG`/`PODCLI_FFPROBE`). Assim o `.env` vence o
-  valor pré-injetado pelo launcher, o `encoder.py` detecta `h264_nvenc` e o render
-  volta pra GPU. Ver `.env.example`.
-
-> Se ainda aparecer `libx264`, apague os caches de detecção
-> (`data/cache/encoder.json` e `runtime/data/cache/encoder.json`) e reinicie o podcli.
-
-### 5. Render 100% na GPU (NVENC em todos os passes + decode NVDEC)
-A rodada anterior só pegava o encode dos passes que já usavam `get_video_encode_flags()`.
-Vários caminhos ainda tinham `libx264` **hardcoded** — inclusive o encode final do fluxo
-padrão de legendas (composite do Remotion). Agora:
-
-- `services/encoder.py` — flags NVENC com `-rc-lookahead 20 -spatial-aq 1
-  -temporal-aq 1 -bf 3` (qualidade visivelmente melhor no mesmo `-cq`, a 1060 suporta
-  tudo); nova `get_video_decode_flags()` → `-hwaccel cuda` (decode NVDEC) quando NVENC
-  está ativo; fingerprint do cache virou `v2:` para invalidar caches antigos sozinho.
-- `services/video_cut.py` — `cut_segment`/`cut_multi_segment` (o **primeiro passe de
-  todo corte**) saíram do libx264 hardcoded para NVENC com fallback + NVDEC.
-- `services/video_processor.py` — crop dinâmico com tracking de speaker, split-screen
-  e as cadeias de xfade saíram do libx264 hardcoded; decode NVDEC injetado nos passes
-  de reframe.
-- `services/reel.py` — modo reel (era 100% CPU) para NVENC com fallback.
-- `services/clip_generator.py` — passe de suavização de transição (gblur) para NVENC.
-- `runtime/remotion/render.mjs` — o composite final (overlay ProRes das legendas sobre
-  o vídeo) usava `ffmpeg` do PATH com `libx264` hardcoded; agora usa `PODCLI_FFMPEG`,
-  tenta `h264_nvenc` + `-hwaccel cuda` e cai para libx264 se falhar.
-
-Todo passe usa `run_ffmpeg_with_fallback`: se o NVENC falhar, cai para libx264 em vez
-de quebrar. O overlay ProRes continua em decode de software (NVDEC não decodifica
-ProRes) — só o vídeo principal usa NVDEC.
-
-### 6. Transcrição em batch (~3-4x mais rápida)
-`fasterwhisper_worker.py` agora usa o `BatchedInferencePipeline` do faster-whisper:
-o VAD separa os trechos de fala e a GPU decodifica vários em paralelo.
-`PODCLI_FASTERWHISPER_BATCH=8` cabe nos 6 GB da 1060 com `large-v3-turbo` int8;
-`0` desliga. Se der OOM ou qualquer erro, cai sozinho para o decode sequencial
-(a materialização dos segments acontece dentro do try — o `transcribe()` é lazy e
-um OOM só estoura na iteração).
-
-### 7. Legenda `.srt` junto de cada corte
-`generate_clip` agora grava um `.srt` ao lado do `.mp4` final (mesmas palavras já
-limpas de fillers que aparecem queimadas no vídeo, timestamps relativos ao corte).
-Reels/Shorts/TikTok indexam melhor com legenda nativa, e serve de acessibilidade.
-A chave `subtitle_path` vem no dict de retorno.
-
-### 8. Output em `~/Videos/podcli-clips` + subpasta por episódio
-O launcher pré-injeta `PODCLI_OUTPUT=$HOME/podcli-clips`; agora o `.env` define
-`PODCLI_OUTPUT=~/Videos/podcli-clips` (e `PODCLI_OUTPUT` entrou no `_FORCE_FROM_ENV`
-do `cli.py`, para o fallback sem python-dotenv também respeitar o override).
-
-- `services/clip_generator.py` — `generate_clip` cria uma **subpasta por episódio**
-  (basename do vídeo fonte, sanitizado) dentro do output root; o `.mp4` e o `.srt`
-  de cada corte caem em `podcli-clips/<episodio>/`.
-- `studio/web-server.mjs` — `/api/outputs` lista `.mp4` recursivamente e
-  `/api/download` + `/api/preview` viraram rotas curinga (aceitam subcaminhos;
-  `safePath` continua bloqueando `..`). O bundle inteiro passou a ser versionado
-  em `mods/runtime/studio/web-server.mjs`.
-- Migração feita: `~/podcli-clips` → `~/Videos/podcli-clips` (clipes antigos ficam
-  soltos na raiz) e os `output_path` do `history/clips.json` foram reescritos
-  (backup em `clips.json.bak`).
-
-### 9. Remotion mais rápido (fase CPU das legendas)
-O gargalo de CPU do export é o Remotion renderizando legendas num Chromium
-headless (ProRes 4444 com alpha) — o encode em si já é 100% NVENC. Ajustes:
-
-- `remotion/render.mjs` — concurrency `min(cpus, 8)` → `min(cpus, 12)`, com
-  override via `PODCLI_REMOTION_CONCURRENCY`; suporte opt-in a raster na GPU via
-  `PODCLI_REMOTION_GL=angle-egl` (experimental, default desligado).
-
-### 10. Motor de edição profissional (waveform + VAD + semântica)
-
-O editor antigo removia qualquer pausa acima de 0,55 s usando somente a distância
-entre timestamps do Whisper. Os pedaços eram concatenados com corte seco e um passe
-posterior tentava esconder saltos com blur. Isso podia cortar o final de fonemas,
-eliminar pausas dramáticas, produzir clicks no áudio e borrar as próprias legendas.
-
-O novo fluxo separa **limpeza de legenda** de **remoção física de áudio**:
-
-- `services/audio_editing.py`
-  - extrai somente a janela do corte como PCM mono 16 kHz;
-  - calcula RMS da waveform em janelas de 20 ms;
-  - combina energia, timestamps por palavra e regiões reais do Silero VAD;
-  - adiciona pre-roll/post-roll ao redor da fala;
-  - procura o ponto de menor energia perto de cada fronteira proposta;
-  - preserva pausas de fim de frase dentro da janela retórica do perfil;
-  - falha de forma conservadora: sem fronteira segura, não corta.
-- `fasterwhisper_worker.py` agora salva `speech_intervals` do Silero VAD junto da
-  transcrição. Assim, uma sílaba baixa ou não reconhecida continua protegida.
-- `services/video_cut.py` substitui o stream-copy entre pedaços por microdissolve
-  de vídeo e `acrossfade` equal-power no áudio, com hard-concat apenas como fallback.
-- `services/edit_quality.py` rejeita fronteiras dentro de palavras, segmentos
-  inválidos e renders sem áudio/vídeo ou com duração divergente.
-- O blur corretivo pós-render virou opt-in e fica desligado por padrão
-  (`PODCLI_TRANSITION_AUTOFIX_PASSES=0`).
-
-#### Perfis de ritmo
-
-- `dynamic`: hot takes, humor, respostas rápidas e alta densidade.
-- `balanced`: padrão profissional; remove apenas pausas claramente vazias.
-- `contemplative`: espiritualidade, filosofia, emoção e pausas com peso.
-- `auto`: classifica pelo ritmo de fala e pela energia de perguntas/exclamações.
-
-O perfil pode ser enviado em `pacing_profile` pelo MCP ou definido no preset.
-
-### 11. Hook visual e planos editoriais ordenados
-
-- Toda sugestão pode trazer `hook_text`, uma headline de 4–9 palavras que aparece
-  na safe zone superior durante os primeiros segundos. Sessões antigas usam o
-  próprio título como fallback.
-- `services/hook_overlay.py` gera o overlay em ASS com duas linhas, caixa sutil e
-  fade curto, independente do estilo das legendas.
-- `segments[].timeline_order` permite narrativa não cronológica e cold open. Sem
-  esse campo, segmentos continuam ordenados pelo tempo da fonte.
-- O prompt MCP agora exige uma microestrutura `hook → contexto mínimo → payoff`,
-  perfil de ritmo e score editorial de até 35 pontos.
-- `modify_clip` permite alterar `hook_text` e `pacing_profile` antes do export.
-
-#### Validação
-
-```bash
-python -m unittest discover -s tests -v
-node --check mods/runtime/studio/mcp-server.mjs
-python -m py_compile mods/runtime/backend/services/*.py mods/runtime/backend/cli.py
+```text
+apps/web/             Studio React/TypeScript da HiTechX
+src/cortex/           configuracao, contratos, jobs, telemetria e API
+config/cortex.yaml    defaults do runtime, GPU-first e sem fallback silencioso
+presets/neat90.yaml   preset autocontido de conteudo, visual e output
+prompts/              prompt editorial PT-BR e JSON Schema da resposta
+docs/                 arquitetura, motor de edicao e roadmap
+mods/                  implementacao legada usada como referencia de migracao
+tests/                 testes da fundacao e do motor legado validado
 ```
 
-Os testes cobrem proteção de pausas curtas e retóricas, snapping na waveform,
-bloqueio por VAD, extensão de palavras cortadas, duração com crossfades, geração
-do hook e um render FFmpeg real com áudio + vídeo.
+`mods/`, `reference/` e `apply.sh` nao sao mais a arquitetura alvo. Permanecem
+temporariamente para portar os ativos testados sem perder o baseline.
 
-## Como aplicar
+## Backend
+
+Requer Python 3.11 a 3.14. Python 3.12 e o alvo recomendado para compatibilidade
+com CUDA e bibliotecas de ML.
 
 ```bash
-./apply.sh            # copia mods/ para ~/.local/share/podcli (faz backup .bak)
-cp .env.example ~/.local/share/podcli/.env   # e edite: HF_TOKEN + paths
+python3.12 -m venv .venv
+.venv/bin/pip install -e '.[dev,transcription,youtube]'
+.venv/bin/cortex-api
 ```
 
-Depois **reinicie o podcli** para carregar o `.env` (encoder passa de "CPU" pra
-"nvenc" e o engine novo entra em uso).
+A API local fica em `http://127.0.0.1:8787`:
 
-## Referência
-`reference/` guarda os scripts originais que provaram a transcrição na GPU
-(`transcribe.py`, `run_transcribe.sh`), de onde veio a receita de `LD_LIBRARY_PATH`.
+- `GET /api/v1/health`
+- `GET /api/v1/hardware`
+- `POST /api/v1/jobs`
+- `GET /api/v1/jobs`
+- `GET /api/v1/jobs/{id}/events` (SSE)
+- `POST /api/v1/jobs/{id}/cancel`
+- `POST /api/v1/projects/{id}/renders`
+- `GET /api/v1/projects/{id}/renders/{artifact_id}`
+- `GET /api/v1/projects/{id}/renders/{artifact_id}/media`
+- `POST /api/v1/projects/{id}/analyze`
+- `GET /api/v1/projects/{id}/analysis/{artifact_id}`
+- `GET /api/v1/projects/{id}/transcripts/{artifact_id}`
 
-## Diarização (depois)
-Identificação de quem fala (pyannote) fica pra uma fase 2 — roda na 1060, mas puxa
-torch e precisa de mais integração. Hoje está desligada de propósito.
+O worker local processa ingestao YouTube, transcricao faster-whisper, analise
+Silero/waveform/loudness, selecao editorial via Codex CLI, planejamento de EDL e
+render FFmpeg multi-segmento. O caminho padrao usa
+a assinatura ChatGPT configurada
+no `codex`, sem exigir API key. Claude CLI e o fallback configurado; a troca fica
+explicita na provenance do artifact. Limites dos planos continuam valendo.
+O render inicial persiste MP4 e manifesto com streams/duracao validados; captions,
+headline Remotion e quality gate audiovisual completo ainda nao estao conectados.
+
+Detalhes e diagnostico: [Providers de IA](docs/AI_PROVIDERS.md).
+
+## Frontend
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+Depois da primeira instalacao, backend e frontend podem ser iniciados juntos:
+
+```bash
+./scripts/dev.sh
+```
+
+Abra `http://127.0.0.1:5173`. A documentacao interativa da API fica em
+`http://127.0.0.1:8787/docs`.
+
+O Vite encaminha `/api` para `127.0.0.1:8787`. O Studio possui seis etapas,
+preview limpo/TikTok/Reels, editor de legenda/headline e Compute Deck. Enquanto a
+API nao esta ativa, a UI deixa isso visivel como modo local; dados de exemplo nao
+devem ser interpretados como telemetria real.
+
+## Validacao
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q src
+python3 -m json.tool prompts/clip_selection.schema.json >/dev/null
+```
+
+Os testes atuais cobrem configuracao, jobs, ausencia explicita de GPU, protecao
+de pausas, snapping na waveform, VAD, fronteiras de palavras, headline ASS e um
+render FFmpeg curto com audio e video. Ainda faltam gates E2E de CUDA, NVENC,
+Remotion, diarizacao, J/L-cut e planejamento de cameras.
+
+## GPU
+
+O default solicita faster-whisper `large-v3-turbo` em CUDA `int8`, decode NVDEC e
+encode `h264_nvenc`. `allow_cpu_fallback` e `false`: uma falha de GPU deve aparecer
+no job, nao virar processamento em CPU silenciosamente.
+
+A existencia de um encoder na listagem do FFmpeg nao garante que o driver esta
+funcional. O CorteX deve registrar sempre engine solicitada e engine efetiva.
+
+Para testar driver e um encode H.264 NVENC real de um segundo:
+
+```bash
+./scripts/check_gpu.sh
+```
+
+## Documentacao
+
+- [Arquitetura](docs/ARCHITECTURE.md)
+- [Motor de edicao](docs/EDITING_ENGINE.md)
+- [Roadmap](docs/ROADMAP.md)

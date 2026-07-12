@@ -1,0 +1,56 @@
+app:
+  name: CorteX
+  api_prefix: /api/v1
+  host: 127.0.0.1
+  port: 8787
+
+paths:
+  data_dir: data
+  projects_dir: data/projects
+  cache_dir: data/cache
+  output_dir: data/output
+  database: data/cortex.sqlite3
+
+transcription:
+  model: large-v3-turbo
+  language: pt
+  device: cuda
+  compute_type: int8
+  batch_size: 8
+  vad: true
+  allow_cpu_fallback: false
+
+ingest:
+  max_upload_bytes: 10737418240
+  allowed_extensions: [mp4, mov, mkv, webm, mp3, wav, m4a, aac, flac]
+  youtube_format: "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+
+render:
+  ffmpeg: /usr/bin/ffmpeg
+  ffprobe: /usr/bin/ffprobe
+  encoder: h264_nvenc
+  allow_cpu_fallback: false
+  width: 1080
+  height: 1920
+  fps: 30
+  loudness_target_lufs: -14.0
+  loudness_tolerance_lu: 1.0
+  true_peak_limit_dbfs: -1.0
+
+clips:
+  minimum_seconds: 50
+  maximum_seconds: 120
+  count: 10
+  pacing_profile: auto
+
+ai:
+  provider: codex_cli
+  fallback_provider: claude_cli
+  codex_binary: codex
+  codex_model: gpt-5.5
+  codex_reasoning_effort: medium
+  claude_binary: claude
+  claude_model: fable
+  claude_effort: low
+  timeout_seconds: 300
+  max_input_chars: 800000

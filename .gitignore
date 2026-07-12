@@ -28,3 +28,9 @@ build/
 out/
 tmp/
 *.log
+*.tsbuildinfo
+apps/web/vite.config.js
+apps/web/vite.config.d.ts
+
+# Runtime local do CorteX
+data/

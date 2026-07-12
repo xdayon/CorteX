@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cortex-studio"
+version = "0.1.0"
+description = "CorteX local-first podcast clip editing engine"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "jsonschema>=4.23,<5",
+  "nvidia-ml-py>=13,<14",
+  "psutil>=7,<8",
+  "pydantic>=2.11,<3",
+  "python-multipart>=0.0.9,<1",
+  "PyYAML>=6,<7",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+transcription = [
+  "faster-whisper==1.2.1",
+  "nvidia-cublas-cu12==12.9.2.10; platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "nvidia-cudnn-cu12==9.23.2.1; platform_system == 'Linux' and platform_machine == 'x86_64'",
+]
+analysis = [
+  "faster-whisper==1.2.1",
+  "numpy>=1.26,<3",
+]
+youtube = ["yt-dlp>=2025.6"]
+dev = ["httpx>=0.28,<1", "pytest>=8,<9", "ruff>=0.12,<1"]
+
+[project.scripts]
+cortex-api = "cortex.api:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cortex"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
