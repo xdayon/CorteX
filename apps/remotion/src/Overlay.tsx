@@ -8,8 +8,8 @@ const safeInterpolate = (
   outputRange: [number, number],
   options?: Parameters<typeof interpolate>[3],
 ) => {
-  if (inputRange[0] === inputRange[1]) {
-    return outputRange[0];
+  if (inputRange[0] >= inputRange[1]) {
+    return value < inputRange[1] ? outputRange[0] : outputRange[1];
   }
   return interpolate(value, inputRange, outputRange, options);
 };
@@ -52,7 +52,10 @@ export const Overlay = ({caption, headline, words}: OverlayPayload) => {
       time,
       [
         Math.max(0, cue.words[0]?.start ?? 0),
-        Math.min(cue.words[cue.words.length - 1]?.end ?? 0, headline.durationSeconds),
+        Math.min(
+          cue.words[cue.words.length - 1]?.end ?? 0,
+          (cue.words[0]?.start ?? 0) + caption.animation.durationSeconds,
+        ),
       ],
       [0.4, 1],
       {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'},

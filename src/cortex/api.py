@@ -10,7 +10,11 @@ from fastapi import UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from cortex.analyze.camera_schemas import CameraTimelineDocument
+from cortex.analyze.identity_schemas import IdentityIndexDocument
+from cortex.analyze.multicam_sync_schemas import MulticamSyncDocument
+from cortex.analyze.multicam_visual_schemas import MulticamVisualIndexDocument
 from cortex.analyze.speaker_schemas import SpeakerTimelineDocument
+from cortex.analyze.visual_quality_schemas import VisualQualityDocument
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind
 from cortex.domain.store import (
@@ -20,6 +24,7 @@ from cortex.domain.store import (
     StageArtifactNotFoundError,
     TranscriptArtifactNotFoundError,
 )
+from cortex.edit.camera_plan_schemas import CameraEditPlanDocument
 from cortex.hardware import collect_hardware_snapshot
 from cortex.ingest.ffprobe import FFprobeError, probe_media
 from cortex.ingest.upload import UploadValidationError, store_upload_stream
@@ -107,14 +112,65 @@ class CameraTimelineRequest(BaseModel):
     speaker_timeline_artifact_id: str
 
 
+class VisualQualityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str
+    scene_index_artifact_id: str
+    face_index_artifact_id: str
+    sample_fps: float | None = Field(default=None, gt=0.0, le=10.0)
+
+
+class IdentityIndexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    face_index_artifact_id: str
+    camera_timeline_artifact_id: str
+
+
+class CameraEditPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    edit_plan_artifact_id: str
+    camera_timeline_artifact_id: str
+    identity_index_artifact_id: str
+    visual_quality_artifact_id: str
+    multicam_visual_artifact_id: str | None = None
+
+
+class MulticamSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    primary_source_asset_id: str
+    alternate_source_asset_ids: list[str] = Field(min_length=1, max_length=8)
+    max_offset_seconds: float | None = Field(default=None, gt=0.0, le=3600.0)
+    analysis_seconds: float | None = Field(default=None, ge=10.0, le=7200.0)
+
+    @model_validator(mode="after")
+    def validate_sources(self) -> "MulticamSyncRequest":
+        if len(set(self.alternate_source_asset_ids)) != len(self.alternate_source_asset_ids):
+            raise ValueError("alternate_source_asset_ids must be unique")
+        if self.primary_source_asset_id in self.alternate_source_asset_ids:
+            raise ValueError("primary source cannot also be an alternate")
+        return self
+
+
+class MulticamVisualRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    multicam_sync_artifact_id: str
+
+
 class RenderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     edit_plan_artifact_id: str
+    camera_edit_plan_artifact_id: str | None = None
     encoder: str | None = None
     headline: str | None = Field(default=None, max_length=120)
     render_settings: RenderSettings | None = None
     render_settings_override: RenderSettingsPatch | None = None
+    export_directory: str | None = Field(default=None, max_length=4096)
 
     @model_validator(mode="after")
     def reject_mixed_settings(self) -> RenderRequest:
@@ -538,6 +594,287 @@ def create_app(config: CortexConfig | None = None):
             ) from exc
         return {"artifact": artifact, "document": document}
 
+    @app.post(f"{router_prefix}/projects/{{project_id}}/visual-quality", status_code=201)
+    def create_visual_quality_job(project_id: str, request: VisualQualityRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        try:
+            asset = domain.get_source_asset(request.source_asset_id)
+        except SourceAssetNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Fonte não encontrada") from exc
+        if asset.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Fonte não pertence a este projeto")
+        if not (settings.paths.data_dir / asset.stored_path).exists():
+            raise HTTPException(
+                status_code=409,
+                detail="Arquivo da fonte não está disponível para qualidade visual",
+            )
+        upstream_specs = (
+            (request.scene_index_artifact_id, "scene_index", "Índice de cenas"),
+            (request.face_index_artifact_id, "face_index", "Índice de faces"),
+        )
+        upstreams = {}
+        for artifact_id, expected_stage, label in upstream_specs:
+            try:
+                upstream = domain.get_stage_artifact(artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=f"{label} não encontrado") from exc
+            if upstream.project_id != project_id or upstream.stage != expected_stage:
+                raise HTTPException(status_code=400, detail=f"{label} não pertence a este projeto")
+            if not Path(upstream.path).exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Arquivo de {label.lower()} não está disponível para qualidade visual",
+                )
+            upstreams[expected_stage] = upstream
+        return jobs.create(JobCreate(
+            type=JobType.VISUAL_QUALITY_ANALYSIS,
+            project_id=project_id,
+            payload={
+                "source_asset_id": asset.id,
+                "scene_index_artifact_id": upstreams["scene_index"].id,
+                "face_index_artifact_id": upstreams["face_index"].id,
+                "sample_fps": request.sample_fps,
+            },
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/visual-quality/{{artifact_id}}")
+    def get_visual_quality(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Índice de qualidade visual não encontrado") from exc
+        if artifact.project_id != project_id or artifact.stage != "visual_quality_index":
+            raise HTTPException(status_code=404, detail="Índice de qualidade visual não encontrado")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo da qualidade visual não disponível")
+        try:
+            document = VisualQualityDocument.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=410, detail="Arquivo da qualidade visual não disponível"
+            ) from exc
+        return {"artifact": artifact, "document": document}
+
+    @app.post(f"{router_prefix}/projects/{{project_id}}/identities", status_code=201)
+    def create_identity_index_job(project_id: str, request: IdentityIndexRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        upstream_specs = (
+            (request.face_index_artifact_id, "face_index", "Índice de faces"),
+            (request.camera_timeline_artifact_id, "camera_timeline", "Timeline de cameras"),
+        )
+        upstreams = {}
+        for artifact_id, expected_stage, label in upstream_specs:
+            try:
+                upstream = domain.get_stage_artifact(artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=f"{label} não encontrado") from exc
+            if upstream.project_id != project_id or upstream.stage != expected_stage:
+                raise HTTPException(status_code=400, detail=f"{label} não pertence a este projeto")
+            if not Path(upstream.path).exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Arquivo de {label.lower()} não está disponível para identidade",
+                )
+            upstreams[expected_stage] = upstream
+        return jobs.create(JobCreate(
+            type=JobType.IDENTITY_ANALYSIS,
+            project_id=project_id,
+            payload={
+                "face_index_artifact_id": upstreams["face_index"].id,
+                "camera_timeline_artifact_id": upstreams["camera_timeline"].id,
+            },
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/identities/{{artifact_id}}")
+    def get_identity_index(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Índice de identidade não encontrado") from exc
+        if artifact.project_id != project_id or artifact.stage != "identity_index":
+            raise HTTPException(status_code=404, detail="Índice de identidade não encontrado")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo do índice de identidade não disponível")
+        try:
+            document = IdentityIndexDocument.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=410, detail="Arquivo do índice de identidade não disponível"
+            ) from exc
+        return {"artifact": artifact, "document": document}
+
+    @app.post(f"{router_prefix}/projects/{{project_id}}/multicam-sync", status_code=201)
+    def create_multicam_sync_job(project_id: str, request: MulticamSyncRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        source_ids = [request.primary_source_asset_id, *request.alternate_source_asset_ids]
+        sources = []
+        for source_id in source_ids:
+            try:
+                source = domain.get_source_asset(source_id)
+            except SourceAssetNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Fonte multicamera não encontrada") from exc
+            if source.project_id != project_id:
+                raise HTTPException(status_code=400, detail="Fonte multicamera não pertence ao projeto")
+            if not (settings.paths.data_dir / source.stored_path).exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail="Arquivo de fonte multicamera não está disponível",
+                )
+            sources.append(source)
+        return jobs.create(JobCreate(
+            type=JobType.MULTICAM_SYNC,
+            project_id=project_id,
+            payload={
+                "primary_source_asset_id": sources[0].id,
+                "alternate_source_asset_ids": [source.id for source in sources[1:]],
+                "max_offset_seconds": request.max_offset_seconds,
+                "analysis_seconds": request.analysis_seconds,
+            },
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/multicam-sync/{{artifact_id}}")
+    def get_multicam_sync(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Sincronização multicamera não encontrada") from exc
+        if artifact.project_id != project_id or artifact.stage != "multicam_sync":
+            raise HTTPException(status_code=404, detail="Sincronização multicamera não encontrada")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo multicamera não disponível")
+        try:
+            document = MulticamSyncDocument.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValidationError) as exc:
+            raise HTTPException(status_code=410, detail="Arquivo multicamera não disponível") from exc
+        return {"artifact": artifact, "document": document}
+
+    @app.post(f"{router_prefix}/projects/{{project_id}}/multicam-visual", status_code=201)
+    def create_multicam_visual_job(project_id: str, request: MulticamVisualRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        try:
+            sync_artifact = domain.get_stage_artifact(request.multicam_sync_artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Sincronização multicamera não encontrada") from exc
+        if sync_artifact.project_id != project_id or sync_artifact.stage != "multicam_sync":
+            raise HTTPException(status_code=400, detail="Sincronização multicamera não pertence ao projeto")
+        if not Path(sync_artifact.path).exists():
+            raise HTTPException(status_code=409, detail="Arquivo multicamera não está disponível")
+        return jobs.create(JobCreate(
+            type=JobType.MULTICAM_VISUAL_INDEX,
+            project_id=project_id,
+            payload={"multicam_sync_artifact_id": sync_artifact.id},
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/multicam-visual/{{artifact_id}}")
+    def get_multicam_visual(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Índices visuais multicamera não encontrados") from exc
+        if artifact.project_id != project_id or artifact.stage != "multicam_visual_index":
+            raise HTTPException(status_code=404, detail="Índices visuais multicamera não encontrados")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo visual multicamera não disponível")
+        try:
+            document = MulticamVisualIndexDocument.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValidationError) as exc:
+            raise HTTPException(status_code=410, detail="Arquivo visual multicamera não disponível") from exc
+        return {"artifact": artifact, "document": document}
+
+    @app.post(f"{router_prefix}/projects/{{project_id}}/camera-plans", status_code=201)
+    def create_camera_edit_plan_job(project_id: str, request: CameraEditPlanRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        upstream_specs = (
+            (request.edit_plan_artifact_id, "edit_plan", "Plano de edição"),
+            (request.camera_timeline_artifact_id, "camera_timeline", "Timeline de cameras"),
+            (request.identity_index_artifact_id, "identity_index", "Índice de identidade"),
+            (request.visual_quality_artifact_id, "visual_quality_index", "Qualidade visual"),
+        )
+        upstreams = {}
+        for artifact_id, expected_stage, label in upstream_specs:
+            try:
+                upstream = domain.get_stage_artifact(artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=f"{label} não encontrado") from exc
+            if upstream.project_id != project_id or upstream.stage != expected_stage:
+                raise HTTPException(status_code=400, detail=f"{label} não pertence a este projeto")
+            if not Path(upstream.path).exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Arquivo de {label.lower()} não está disponível para camera plan",
+                )
+            upstreams[expected_stage] = upstream
+        multicam_visual = None
+        if request.multicam_visual_artifact_id is not None:
+            try:
+                multicam_visual = domain.get_stage_artifact(request.multicam_visual_artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(
+                    status_code=404, detail="Índices visuais multicamera não encontrados"
+                ) from exc
+            if (
+                multicam_visual.project_id != project_id
+                or multicam_visual.stage != "multicam_visual_index"
+            ):
+                raise HTTPException(
+                    status_code=400, detail="Índices visuais multicamera não pertencem ao projeto"
+                )
+            if not Path(multicam_visual.path).exists():
+                raise HTTPException(
+                    status_code=409, detail="Arquivo visual multicamera não disponível"
+                )
+        return jobs.create(JobCreate(
+            type=JobType.CAMERA_PLANNING,
+            project_id=project_id,
+            payload={
+                "edit_plan_artifact_id": upstreams["edit_plan"].id,
+                "camera_timeline_artifact_id": upstreams["camera_timeline"].id,
+                "identity_index_artifact_id": upstreams["identity_index"].id,
+                "visual_quality_artifact_id": upstreams["visual_quality_index"].id,
+                "multicam_visual_artifact_id": (
+                    multicam_visual.id if multicam_visual is not None else None
+                ),
+            },
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/camera-plans/{{artifact_id}}")
+    def get_camera_edit_plan(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Camera edit plan não encontrado") from exc
+        if artifact.project_id != project_id or artifact.stage != "camera_edit_plan":
+            raise HTTPException(status_code=404, detail="Camera edit plan não encontrado")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo do camera edit plan não disponível")
+        try:
+            document = CameraEditPlanDocument.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=410, detail="Arquivo do camera edit plan não disponível"
+            ) from exc
+        return {"artifact": artifact, "document": document}
+
     @app.post(f"{router_prefix}/projects/{{project_id}}/edit-plans", status_code=201)
     def create_edit_plan_job(project_id: str, request: EditPlanRequest):
         try:
@@ -604,11 +941,20 @@ def create_app(config: CortexConfig | None = None):
             raise HTTPException(status_code=404, detail="Plano de edição não encontrado") from exc
         if edit_plan.project_id != project_id or edit_plan.stage != "edit_plan":
             raise HTTPException(status_code=400, detail="Plano de edição não pertence ao projeto")
+        camera_plan = None
+        if request.camera_edit_plan_artifact_id is not None:
+            try:
+                camera_plan = domain.get_stage_artifact(request.camera_edit_plan_artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Plano de câmera não encontrado") from exc
+            if camera_plan.project_id != project_id or camera_plan.stage != "camera_edit_plan":
+                raise HTTPException(status_code=400, detail="Plano de câmera não pertence ao projeto")
         return jobs.create(JobCreate(
             type=JobType.RENDER,
             project_id=project_id,
             payload={
                 "edit_plan_artifact_id": edit_plan.id,
+                "camera_edit_plan_artifact_id": camera_plan.id if camera_plan else None,
                 "encoder": request.encoder,
                 "headline": request.headline,
                 "render_settings": (
@@ -619,6 +965,7 @@ def create_app(config: CortexConfig | None = None):
                     request.render_settings_override.model_dump(mode="json", exclude_none=True)
                     if request.render_settings_override is not None else None
                 ),
+                "export_directory": request.export_directory,
             },
         ))
 

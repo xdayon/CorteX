@@ -63,8 +63,8 @@
   zero deps novas), amostragem de frames por cena/corte/grade uniforme
   (`face_sample_fps`), classificacao heuristica de plano (close/two_shot/
   wide/none) e identidade por slot heuristico (clustering 1-D de centroide
-  x, sem embeddings - campo `embedding` reservado para upgrade ArcFace
-  futuro); `face_index` ainda NAO participa da EDL (gate futuro);
+  x); no schema v2 os slots continuam locais, enquanto embeddings SFace sao
+  persistidos para o Gate 4c; `face_index` ainda NAO participa da EDL;
 - [x] Gate 3: `speaker_timeline` visual conservadora, cacheada por hash e
   derivada explicitamente de fonte + `scene_index` + `face_index` + VAD;
   mouth motion CPU em frames FFmpeg streaming/coalescidos, com baseline robusta,
@@ -74,11 +74,28 @@
   tracks visiveis e speaker dominante em roles conservadores (`speaker_close`,
   `two_shot`, `wide`, `no_face`, `unknown`), com `layout_id` explicitamente
   limitado ao layout/slot e sem alegar identidade fisica cross-camera;
-- continuidade de identidade cross-camera confirmada;
-- reaction shots semanticamente coerentes;
+- [x] Gate 4b: `visual_quality_index` persistido por frame/cena, com preto,
+  blur, congelamento e proxy explicita de oclusao facial por contato com borda;
+  decoder CPU solicitado/efetivo, cache por hash e cadeia fonte/cenas/faces;
+- [x] Gate 4c: continuidade de identidade entre cortes/layouts via embeddings
+  SFace ONNX CPU, complete-link conservador, margem de ambiguidade e confirmacao
+  somente quando a mesma identidade aparece em layouts distintos;
+- [x] indices de cenas, faces, speaker visual, identidade e qualidade para o
+  master unico ja comutado pelo estudio/OBS;
+- banco persistido de aparicoes seguras do entrevistador no proprio master:
+  identidade distinta do convidado, boca sem fala, imagem utilizavel e duracao
+  suficiente, com origem temporal e confianca auditaveis;
+- planner single-source que prioriza aparicoes naturais do entrevistador dentro
+  do corte e, quando necessario, permite reutilizacao temporal controlada de um
+  reaction shot silencioso de outro ponto do episodio;
+- render de reaction shot com video emprestado do mesmo master e audio continuo
+  do trecho editorial, sem reutilizar o audio do reaction;
+- regra de diversidade: evitar cortes mostrando somente o convidado quando
+  existir imagem segura do entrevistador, sem fabricar reaction em baixa confianca;
 - J-cut, L-cut e punch-in editaveis;
-- deteccao de frames pretos, congelados ou borrados (alem do gate visual ja
-  existente no render).
+- remover o ramo experimental de fontes ISO (`multicam_sync`,
+  `multicam_visual_index` e caminhos v2 associados) apos portar os testes uteis
+  de continuidade de audio para o planner single-source.
 
 ## Fase 6 - Producao
 

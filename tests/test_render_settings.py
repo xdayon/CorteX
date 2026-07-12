@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from cortex.api import RenderRequest
+from cortex.config import load_config
 from cortex.render.schemas import RenderSettings, RenderSettingsPatch
-from cortex.render.service import _merge_render_settings
+from cortex.render.service import _export_render_files, _merge_render_settings
 
 
 def _payload() -> dict:
@@ -55,6 +58,38 @@ def test_render_request_rejects_mixed_legacy_and_versioned_settings() -> None:
             encoder="libx264",
             render_settings=RenderSettings.model_validate(_payload()),
         )
+
+
+def test_render_request_accepts_explicit_export_directory() -> None:
+    request = RenderRequest(
+        edit_plan_artifact_id="plan",
+        render_settings=RenderSettings.model_validate(_payload()),
+        export_directory="cortes/aprovados",
+    )
+    assert request.export_directory == "cortes/aprovados"
+
+
+def test_export_render_files_copies_video_and_subtitles_atomically(tmp_path: Path) -> None:
+    base = load_config()
+    config = base.model_copy(update={
+        "paths": base.paths.model_copy(update={"output_dir": tmp_path / "exports"}),
+    })
+    video = tmp_path / "render.mp4"
+    subtitles = tmp_path / "render.srt"
+    video.write_bytes(b"video")
+    subtitles.write_text("subtitle", encoding="utf-8")
+
+    exported = _export_render_files(
+        config,
+        output_path=video,
+        subtitles_path=subtitles,
+        export_directory="cliente-a",
+        input_hash="a" * 64,
+    )
+
+    assert Path(exported["export_path"]).read_bytes() == b"video"
+    assert Path(exported["export_subtitles_path"]).read_text(encoding="utf-8") == "subtitle"
+    assert Path(exported["export_path"]).parent == (tmp_path / "exports" / "cliente-a").resolve()
 
 
 def test_render_settings_validate_colors_and_animation_enums() -> None:

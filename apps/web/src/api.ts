@@ -444,13 +444,14 @@ export const api = {
   editPlan: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<EditPlanDocument>>(`/api/v1/projects/${projectId}/edit-plans/${artifactId}`),
 
-  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, renderSettingsOverride?: RenderSettingsPatch) =>
+  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, renderSettingsOverride?: RenderSettingsPatch, exportDirectory?: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/renders`, {
       method: "POST",
       body: JSON.stringify({
         edit_plan_artifact_id: editPlanArtifactId,
         render_settings: renderSettings,
         render_settings_override: renderSettingsOverride,
+        export_directory: exportDirectory?.trim() || null,
       }),
     }),
 

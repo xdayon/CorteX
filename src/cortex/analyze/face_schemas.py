@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-FACE_INDEX_SCHEMA_VERSION = 1
+FACE_INDEX_SCHEMA_VERSION = 2
 
 
 class FaceLandmarks(BaseModel):
@@ -62,6 +62,11 @@ class FaceIndexEngineInfo(BaseModel):
     sample_fps: float
     ffmpeg_path: str
     ffmpeg_version: str
+    recognizer: str | None = None
+    recognition_model_path: str | None = None
+    recognition_model_sha256: str | None = None
+    embedding_dimension: int | None = Field(default=None, gt=0)
+    cosine_match_threshold: float | None = Field(default=None, ge=-1, le=1)
 
 
 class FaceIndexDocument(BaseModel):

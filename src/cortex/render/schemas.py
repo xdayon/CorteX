@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-RENDER_SCHEMA_VERSION = 5
+RENDER_SCHEMA_VERSION = 6
 RENDER_SETTINGS_SCHEMA_VERSION = 1
 OVERLAY_SCHEMA_VERSION = 1
 
@@ -203,6 +203,15 @@ class RenderEngineInfo(BaseModel):
     fps: int
 
 
+class RenderSourceInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str
+    sha256: str
+    video_used: bool
+    audio_used: bool
+
+
 class RenderQualityReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -300,6 +309,8 @@ class RenderDocument(BaseModel):
     project_id: str
     source_asset_id: str
     edit_plan_artifact_id: str
+    camera_edit_plan_artifact_id: str | None = None
+    sources: list[RenderSourceInfo] = Field(default_factory=list)
     input_hash: str
     output_path: str
     output_sha256: str

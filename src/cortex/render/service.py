@@ -12,7 +12,12 @@ from pathlib import Path
 
 from cortex.config import CortexConfig
 from cortex.domain.models import StageArtifact
-from cortex.domain.store import DomainStore, TranscriptArtifactNotFoundError
+from cortex.domain.store import (
+    DomainStore,
+    SourceAssetNotFoundError,
+    TranscriptArtifactNotFoundError,
+)
+from cortex.edit.camera_plan_schemas import CameraEditPlanDocument, CameraEditShot
 from cortex.edit.schemas import EditPlanDocument
 from cortex.ingest.ffprobe import duration_seconds, probe_media
 from cortex.paths import renders_dir
@@ -28,6 +33,7 @@ from cortex.render.schemas import (
     RenderHeadlineSettings,
     RenderSettings,
     RenderSettingsPatch,
+    RenderSourceInfo,
     RenderSubtitleSettings,
     RenderTemplateSettings,
 )
@@ -60,6 +66,44 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _export_render_files(
+    config: CortexConfig,
+    *,
+    output_path: Path,
+    subtitles_path: Path | None,
+    export_directory: str | None,
+    input_hash: str,
+) -> dict[str, str]:
+    if export_directory is None or not export_directory.strip():
+        return {}
+    if "\x00" in export_directory:
+        raise RenderPreconditionError("diretório de exportação inválido")
+    destination = Path(export_directory.strip()).expanduser()
+    if not destination.is_absolute():
+        destination = config.paths.output_dir / destination
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        destination = destination.resolve()
+        if not destination.is_dir():
+            raise OSError("destino não é um diretório")
+        exported_video = destination / f"cortex-render-{input_hash[:16]}.mp4"
+        temporary_video = destination / f".{exported_video.name}.tmp"
+        shutil.copyfile(output_path, temporary_video)
+        temporary_video.replace(exported_video)
+        result = {"export_path": str(exported_video)}
+        if subtitles_path is not None and subtitles_path.is_file():
+            exported_subtitles = destination / f"cortex-render-{input_hash[:16]}.srt"
+            temporary_subtitles = destination / f".{exported_subtitles.name}.tmp"
+            shutil.copyfile(subtitles_path, temporary_subtitles)
+            temporary_subtitles.replace(exported_subtitles)
+            result["export_subtitles_path"] = str(exported_subtitles)
+        return result
+    except OSError as exc:
+        raise RenderExecutionError(
+            f"não foi possível exportar o render para {destination}: {exc}"
+        ) from exc
 
 
 def _encoder_args(encoder: str) -> list[str]:
@@ -151,20 +195,49 @@ def _filtergraph(
     headline_font_size: int = 42,
     headline_duration_seconds: float = 3.4,
     overlay_input_index: int | None = None,
+    camera_plan: CameraEditPlanDocument | None = None,
+    source_input_indices: dict[str, int] | None = None,
 ) -> tuple[str, str, str]:
     video_parts: list[str] = []
     audio_parts: list[str] = []
     durations: list[float] = []
+    shots_by_segment: dict[int, list[CameraEditShot]] = {}
+    if camera_plan is not None:
+        for shot in camera_plan.shots:
+            shots_by_segment.setdefault(shot.edit_segment_order, []).append(shot)
+    source_input_indices = source_input_indices or {plan.source_asset_id: 0}
     for index, segment in enumerate(plan.segments):
         duration = segment.end - segment.start
         if duration <= 0:
             raise RenderPreconditionError(f"segmento {index} possui duração inválida")
         durations.append(duration)
-        video_parts.append(
-            f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},"
-            f"setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p[v{index}]"
-        )
+        segment_shots = shots_by_segment.get(segment.timeline_order)
+        if segment_shots:
+            shot_labels: list[str] = []
+            for shot_index, shot in enumerate(segment_shots):
+                input_index = source_input_indices[shot.video_source_asset_id]
+                label = f"[vs{index}_{shot_index}]"
+                shot_labels.append(label)
+                video_parts.append(
+                    f"[{input_index}:v]trim=start={shot.source_start_us / 1_000_000:.6f}:"
+                    f"end={shot.source_end_us / 1_000_000:.6f},setpts=PTS-STARTPTS,"
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
+                    f"format=yuv420p{label}"
+                )
+            if len(shot_labels) == 1:
+                video_parts.append(f"{shot_labels[0]}null[v{index}]")
+            else:
+                video_parts.append(
+                    f"{''.join(shot_labels)}concat=n={len(shot_labels)}:v=1:a=0[v{index}]"
+                )
+        else:
+            video_parts.append(
+                f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},"
+                f"setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
+                f"format=yuv420p[v{index}]"
+            )
         audio_parts.append(
             f"[0:a]atrim=start={segment.start:.6f}:end={segment.end:.6f},"
             f"asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:"
@@ -482,12 +555,14 @@ class RenderService:
         self,
         *,
         edit_plan_artifact: StageArtifact,
+        camera_edit_plan_artifact: StageArtifact | None = None,
         encoder: str | None,
         headline: str | None,
         progress_cb: Callable[[float, str], None],
         should_cancel: Callable[[], bool],
         render_settings: RenderSettings | None = None,
         render_settings_override: RenderSettingsPatch | None = None,
+        export_directory: str | None = None,
     ) -> dict:
         if edit_plan_artifact.stage != "edit_plan":
             raise RenderPreconditionError("artifact informado não é um EditPlanArtifact")
@@ -503,6 +578,88 @@ class RenderService:
         source_path = self._config.paths.data_dir / source.stored_path
         if not source_path.exists():
             raise RenderPreconditionError("arquivo fonte não está disponível")
+
+        camera_plan: CameraEditPlanDocument | None = None
+        render_sources = {source.id: source}
+        source_paths = {source.id: source_path}
+        if camera_edit_plan_artifact is not None:
+            if camera_edit_plan_artifact.stage != "camera_edit_plan":
+                raise RenderPreconditionError(
+                    "artifact informado não é um CameraEditPlanArtifact"
+                )
+            camera_plan_path = Path(camera_edit_plan_artifact.path)
+            if not camera_plan_path.is_file():
+                raise RenderPreconditionError(
+                    "arquivo do CameraEditPlanArtifact não está disponível"
+                )
+            camera_plan = CameraEditPlanDocument.model_validate_json(
+                camera_plan_path.read_text(encoding="utf-8")
+            )
+            if (
+                camera_plan.schema_version != 2
+                or camera_edit_plan_artifact.schema_version != 2
+                or camera_plan.project_id != plan.project_id
+                or camera_edit_plan_artifact.project_id != plan.project_id
+                or camera_plan.source_asset_id != source.id
+                or camera_plan.edit_plan_artifact_id != edit_plan_artifact.id
+                or camera_plan.edit_plan_input_hash != edit_plan_artifact.input_hash
+                or camera_plan.engine.audio_continuity_mode != "primary_source_continuous"
+            ):
+                raise RenderPreconditionError(
+                    "CameraEditPlanArtifact não corresponde ao plano de edição primário"
+                )
+
+            segment_orders = {segment.timeline_order for segment in plan.segments}
+            if any(shot.edit_segment_order not in segment_orders for shot in camera_plan.shots):
+                raise RenderPreconditionError("camera plan referencia segmento inexistente")
+            normalized_shots: list[CameraEditShot] = []
+            for segment in plan.segments:
+                shots = sorted(
+                    (
+                        shot for shot in camera_plan.shots
+                        if shot.edit_segment_order == segment.timeline_order
+                    ),
+                    key=lambda shot: (shot.audio_source_start_us, shot.audio_source_end_us),
+                )
+                expected_start = round(segment.start * 1_000_000)
+                expected_end = round(segment.end * 1_000_000)
+                cursor = expected_start
+                for shot in shots:
+                    if shot.audio_source_asset_id != source.id:
+                        raise RenderPreconditionError(
+                            "camera plan não mantém áudio contínuo da fonte primária"
+                        )
+                    if shot.audio_source_start_us != cursor:
+                        raise RenderPreconditionError(
+                            "camera plan possui gap ou sobreposição na cobertura do segmento"
+                        )
+                    cursor = shot.audio_source_end_us
+                if not shots or cursor != expected_end:
+                    raise RenderPreconditionError(
+                        "camera plan não cobre integralmente o segmento da EDL"
+                    )
+                normalized_shots.extend(shots)
+            camera_plan = camera_plan.model_copy(update={"shots": normalized_shots})
+            for source_id in sorted({shot.video_source_asset_id for shot in camera_plan.shots}):
+                if source_id in render_sources:
+                    continue
+                try:
+                    video_source = self._domain.get_source_asset(source_id)
+                except SourceAssetNotFoundError as exc:
+                    raise RenderPreconditionError(
+                        f"fonte de vídeo do camera plan não encontrada: {source_id}"
+                    ) from exc
+                if video_source.project_id != plan.project_id:
+                    raise RenderPreconditionError(
+                        "fonte de vídeo do camera plan não pertence ao projeto"
+                    )
+                video_path = self._config.paths.data_dir / video_source.stored_path
+                if not video_path.is_file():
+                    raise RenderPreconditionError(
+                        f"arquivo da fonte de vídeo não está disponível: {source_id}"
+                    )
+                render_sources[source_id] = video_source
+                source_paths[source_id] = video_path
 
         requested_settings = render_settings or _default_render_settings(
             self._config, encoder=encoder, headline=headline
@@ -585,6 +742,13 @@ class RenderService:
             "schema_version": RENDER_SCHEMA_VERSION,
             "edit_plan_sha256": _sha256(plan_path),
             "source_sha256": source.sha256,
+            "camera_edit_plan_sha256": (
+                _sha256(Path(camera_edit_plan_artifact.path))
+                if camera_edit_plan_artifact is not None else None
+            ),
+            "render_sources": {
+                source_id: asset.sha256 for source_id, asset in sorted(render_sources.items())
+            },
             "encoder": requested_encoder,
             "render_settings": effective_settings.model_dump(mode="json"),
             "render_settings_override": (
@@ -625,18 +789,43 @@ class RenderService:
                 )
             )
             if Path(cached_doc.output_path).exists() and subtitles_available and overlay_available:
+                exports = _export_render_files(
+                    self._config,
+                    output_path=Path(cached_doc.output_path),
+                    subtitles_path=(
+                        Path(cached_doc.subtitles_path) if cached_doc.subtitles_path else None
+                    ),
+                    export_directory=export_directory,
+                    input_hash=input_hash,
+                )
                 progress_cb(100.0, "Render em cache reutilizado")
                 return {"cached": True, "render_artifact_id": cached.id,
                         "render_path": cached_doc.output_path,
-                        "schema_version": cached.schema_version}
+                        "schema_version": cached.schema_version, **exports}
 
         if should_cancel():
             raise RenderJobCancelled()
         progress_cb(10.0, "Validando fonte e plano")
-        source_probe = source.probe or probe_media(self._config.render.ffprobe, source_path)
-        stream_types = {stream.get("codec_type") for stream in source_probe.get("streams", [])}
+        source_probes = {
+            source_id: asset.probe or probe_media(self._config.render.ffprobe, source_paths[source_id])
+            for source_id, asset in render_sources.items()
+        }
+        stream_types = {
+            stream.get("codec_type") for stream in source_probes[source.id].get("streams", [])
+        }
         if not {"video", "audio"}.issubset(stream_types):
             raise RenderPreconditionError("render requer fonte com streams de áudio e vídeo")
+        for source_id, source_probe in source_probes.items():
+            types = {stream.get("codec_type") for stream in source_probe.get("streams", [])}
+            if "video" not in types:
+                raise RenderPreconditionError(f"fonte de câmera sem stream de vídeo: {source_id}")
+        if camera_plan is not None:
+            for shot in camera_plan.shots:
+                available_us = round(duration_seconds(source_probes[shot.video_source_asset_id]) * 1_000_000)
+                if shot.source_end_us > available_us:
+                    raise RenderPreconditionError(
+                        f"shot excede duração da fonte de vídeo: {shot.video_source_asset_id}"
+                    )
 
         output_path = output_dir / f"render-{input_hash[:16]}.mp4"
         temporary_path = output_path.with_suffix(".tmp.mp4")
@@ -644,6 +833,10 @@ class RenderService:
         temporary_subtitles_path = output_dir / f".render-{input_hash[:16]}.tmp.srt"
         if cues:
             temporary_subtitles_path.write_text(render_srt(cues), encoding="utf-8")
+        ordered_source_ids = [source.id, *sorted(set(render_sources) - {source.id})]
+        source_input_indices = {
+            source_id: index for index, source_id in enumerate(ordered_source_ids)
+        }
         filtergraph, video_label, audio_label = _filtergraph(
             plan,
             effective_settings.canvas.width,
@@ -651,11 +844,13 @@ class RenderService:
             effective_settings.canvas.fps,
             self._config.render.loudness_target_lufs,
             self._config.render.true_peak_limit_dbfs,
-            overlay_input_index=1 if overlay_manifest is not None else None,
+            overlay_input_index=(len(ordered_source_ids) if overlay_manifest is not None else None),
+            camera_plan=camera_plan,
+            source_input_indices=source_input_indices,
         )
-        command = [
-            str(self._config.render.ffmpeg), "-y", "-v", "error", "-i", str(source_path),
-        ]
+        command = [str(self._config.render.ffmpeg), "-y", "-v", "error"]
+        for source_id in ordered_source_ids:
+            command.extend(["-i", str(source_paths[source_id])])
         if overlay_manifest is not None:
             command.extend(["-c:v", "libvpx-vp9", "-i", overlay_manifest.output_path])
         command.extend([
@@ -802,6 +997,25 @@ class RenderService:
             document = RenderDocument(
                 project_id=plan.project_id, source_asset_id=source.id,
                 edit_plan_artifact_id=edit_plan_artifact.id, input_hash=input_hash,
+                camera_edit_plan_artifact_id=(
+                    camera_edit_plan_artifact.id
+                    if camera_edit_plan_artifact is not None else None
+                ),
+                sources=[
+                    RenderSourceInfo(
+                        source_asset_id=source_id,
+                        sha256=render_sources[source_id].sha256,
+                        video_used=(
+                            camera_plan is None and source_id == source.id
+                            or camera_plan is not None and any(
+                                shot.video_source_asset_id == source_id
+                                for shot in camera_plan.shots
+                            )
+                        ),
+                        audio_used=source_id == source.id,
+                    )
+                    for source_id in ordered_source_ids
+                ],
                 output_path=str(output_path), output_sha256=_sha256(output_path),
                 output_size_bytes=output_path.stat().st_size,
                 subtitles_path=(
@@ -882,6 +1096,11 @@ class RenderService:
                 project_id=plan.project_id, stage="render", schema_version=RENDER_SCHEMA_VERSION,
                 path=str(manifest_path), input_hash=input_hash,
                 metadata={"edit_plan_artifact_id": edit_plan_artifact.id,
+                          "camera_edit_plan_artifact_id": (
+                              camera_edit_plan_artifact.id
+                              if camera_edit_plan_artifact is not None else None
+                          ),
+                          "source_asset_ids": ordered_source_ids,
                           "requested_encoder": requested_encoder,
                           "effective_encoder": requested_encoder,
                           "quality_passed": True, "output_path": str(output_path),
@@ -893,5 +1112,15 @@ class RenderService:
             temporary_path.unlink(missing_ok=True)
             temporary_subtitles_path.unlink(missing_ok=True)
         progress_cb(100.0, "Render concluído")
+        exports = _export_render_files(
+            self._config,
+            output_path=output_path,
+            subtitles_path=(
+                subtitles_path if cues and effective_settings.subtitles.sidecar_srt else None
+            ),
+            export_directory=export_directory,
+            input_hash=input_hash,
+        )
         return {"cached": False, "render_artifact_id": artifact.id,
-                "render_path": str(output_path), "schema_version": artifact.schema_version}
+                "render_path": str(output_path), "schema_version": artifact.schema_version,
+                **exports}

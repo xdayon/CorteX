@@ -113,7 +113,8 @@ def test_face_index_service_detects_and_caches(tmp_path: Path) -> None:
     assert progress == sorted(progress) and progress[-1] == 100.0
 
     document = FaceIndexDocument.model_validate_json(Path(first["face_index_path"]).read_text())
-    assert document.schema_version == 1
+    assert document.schema_version == 2
+    assert document.engine.recognizer == "sface_2021dec"
     assert document.scene_index_artifact_id == scene_artifact.id
     assert document.frame_count > 0
     assert len(document.scenes) > 0

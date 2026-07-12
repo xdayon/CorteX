@@ -1,17 +1,16 @@
-"""Heuristic shot-type classification and identity slotting — no embeddings.
+"""Heuristic shot-type classification and local visual slotting.
 
 Everything here operates on plain dicts/floats (normalized 0-1 bbox
 coordinates and centroids), so it's testable against synthetic detections
 without loading the ONNX model. All thresholds are named constants, meant
 to be easy to recalibrate against real footage.
 
-Identity in this gate is a per-episode heuristic, not real face recognition:
+The slot IDs in this module remain a per-episode heuristic, not face recognition:
 with a fixed camera, a person's horizontal position stays roughly constant,
 so we cluster the x-centroids of all detections in the episode into stable
-"slots" (1-D split on the largest gap) and label each detection by its
-nearest slot. This is what "posição x do centroide identifica a pessoa" and
-"clustering 1-D" mean in the spec — an upgrade to real per-face embeddings
-(ArcFace) is a future gate; ``FaceDetection.embedding`` is reserved for it.
+"slots" (1-D split on the largest gap) and label each detection by its nearest
+slot. SFace embeddings are generated separately by ``face_service`` and resolved
+across layouts by ``identity_service``; they never change these local slot IDs.
 """
 
 from __future__ import annotations

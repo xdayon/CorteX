@@ -24,12 +24,20 @@ from typing import Any
 
 from cortex.analyze.camera_service import CameraTimelineJobCancelled, CameraTimelineService
 from cortex.analyze.face_service import FaceIndexJobCancelled, FaceIndexService
+from cortex.analyze.identity_service import IdentityIndexJobCancelled, IdentityIndexService
+from cortex.analyze.multicam_sync_service import MulticamSyncJobCancelled, MulticamSyncService
+from cortex.analyze.multicam_visual_service import (
+    MulticamVisualIndexService,
+    MulticamVisualJobCancelled,
+)
 from cortex.analyze.scene_service import SceneIndexJobCancelled, SceneIndexService
 from cortex.analyze.service import AnalysisJobCancelled, AnalysisService
 from cortex.analyze.speaker_service import SpeakerTimelineJobCancelled, SpeakerTimelineService
+from cortex.analyze.visual_quality_service import VisualQualityJobCancelled, VisualQualityService
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind
 from cortex.domain.store import DomainStore
+from cortex.edit.camera_plan_service import CameraEditPlanJobCancelled, CameraEditPlanService
 from cortex.edit.service import EditPlanJobCancelled, EditPlanService
 from cortex.ingest.ffprobe import FFprobeError, probe_media
 from cortex.ingest.youtube import YoutubeDownloadError, download_youtube_source
@@ -488,6 +496,267 @@ def run_camera_analysis_job(
     )
 
 
+def run_visual_quality_analysis_job(
+    job: Job,
+    config: CortexConfig,
+    jobs: JobStore,
+    domain: DomainStore,
+) -> None:
+    source_asset_id = job.payload.get("source_asset_id")
+    if not source_asset_id:
+        raise ValueError("payload do job de qualidade visual sem source_asset_id")
+    source_asset = domain.get_source_asset(source_asset_id)
+    if source_asset.project_id != job.project_id:
+        raise ValueError("fonte do job de qualidade visual não pertence ao projeto")
+    if not (config.paths.data_dir / source_asset.stored_path).exists():
+        raise ValueError("arquivo da fonte do job de qualidade visual não está disponível")
+    upstream_specs = (
+        ("scene_index_artifact_id", "scene_index", "SceneIndexArtifact"),
+        ("face_index_artifact_id", "face_index", "FaceIndexArtifact"),
+    )
+    upstreams = {}
+    for payload_key, expected_stage, label in upstream_specs:
+        artifact_id = job.payload.get(payload_key)
+        if not artifact_id:
+            raise ValueError(f"payload do job de qualidade visual sem {payload_key}")
+        artifact = domain.get_stage_artifact(artifact_id)
+        if artifact.project_id != job.project_id or artifact.stage != expected_stage:
+            raise ValueError(f"{label} da qualidade visual não pertence ao projeto")
+        if not Path(artifact.path).exists():
+            raise ValueError(f"arquivo do {label} da qualidade visual não está disponível")
+        upstreams[expected_stage] = artifact
+
+    service = VisualQualityService(config, domain)
+
+    def progress_cb(progress_percent: float, message: str) -> None:
+        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.QUALITY)
+
+    def should_cancel() -> bool:
+        return _job_is_cancelled(jobs, job.id)
+
+    try:
+        result = service.run(
+            source_asset=source_asset,
+            scene_index_artifact=upstreams["scene_index"],
+            face_index_artifact=upstreams["face_index"],
+            sample_fps=job.payload.get("sample_fps"),
+            progress_cb=progress_cb,
+            should_cancel=should_cancel,
+        )
+    except VisualQualityJobCancelled:
+        return
+    jobs.update(
+        job.id,
+        JobUpdate(
+            status=JobStatus.SUCCEEDED,
+            stage=PipelineStage.COMPLETE,
+            message="Índice de qualidade visual concluído",
+            result=result,
+        ),
+    )
+
+
+def run_identity_analysis_job(
+    job: Job,
+    config: CortexConfig,
+    jobs: JobStore,
+    domain: DomainStore,
+) -> None:
+    upstream_specs = (
+        ("face_index_artifact_id", "face_index", "FaceIndexArtifact"),
+        ("camera_timeline_artifact_id", "camera_timeline", "CameraTimelineArtifact"),
+    )
+    upstreams = {}
+    for payload_key, expected_stage, label in upstream_specs:
+        artifact_id = job.payload.get(payload_key)
+        if not artifact_id:
+            raise ValueError(f"payload do job de identidade sem {payload_key}")
+        artifact = domain.get_stage_artifact(artifact_id)
+        if artifact.project_id != job.project_id or artifact.stage != expected_stage:
+            raise ValueError(f"{label} do índice de identidade não pertence ao projeto")
+        if not Path(artifact.path).exists():
+            raise ValueError(f"arquivo do {label} do índice de identidade não está disponível")
+        upstreams[expected_stage] = artifact
+
+    service = IdentityIndexService(config, domain)
+
+    def progress_cb(progress_percent: float, message: str) -> None:
+        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.ANALYZE)
+
+    def should_cancel() -> bool:
+        return _job_is_cancelled(jobs, job.id)
+
+    try:
+        result = service.run(
+            face_index_artifact=upstreams["face_index"],
+            camera_timeline_artifact=upstreams["camera_timeline"],
+            progress_cb=progress_cb,
+            should_cancel=should_cancel,
+        )
+    except IdentityIndexJobCancelled:
+        return
+    jobs.update(
+        job.id,
+        JobUpdate(
+            status=JobStatus.SUCCEEDED,
+            stage=PipelineStage.COMPLETE,
+            message="Índice de identidade concluído",
+            result=result,
+        ),
+    )
+
+
+def run_camera_planning_job(
+    job: Job,
+    config: CortexConfig,
+    jobs: JobStore,
+    domain: DomainStore,
+) -> None:
+    upstream_specs = (
+        ("edit_plan_artifact_id", "edit_plan", "EditPlanArtifact"),
+        ("camera_timeline_artifact_id", "camera_timeline", "CameraTimelineArtifact"),
+        ("identity_index_artifact_id", "identity_index", "IdentityIndexArtifact"),
+        ("visual_quality_artifact_id", "visual_quality_index", "VisualQualityArtifact"),
+    )
+    upstreams = {}
+    for payload_key, expected_stage, label in upstream_specs:
+        artifact_id = job.payload.get(payload_key)
+        if not artifact_id:
+            raise ValueError(f"payload do camera plan sem {payload_key}")
+        artifact = domain.get_stage_artifact(artifact_id)
+        if artifact.project_id != job.project_id or artifact.stage != expected_stage:
+            raise ValueError(f"{label} do camera plan não pertence ao projeto")
+        if not Path(artifact.path).exists():
+            raise ValueError(f"arquivo do {label} do camera plan não está disponível")
+        upstreams[expected_stage] = artifact
+
+    multicam_visual = None
+    multicam_visual_id = job.payload.get("multicam_visual_artifact_id")
+    if multicam_visual_id:
+        multicam_visual = domain.get_stage_artifact(multicam_visual_id)
+        if (
+            multicam_visual.project_id != job.project_id
+            or multicam_visual.stage != "multicam_visual_index"
+            or not Path(multicam_visual.path).exists()
+        ):
+            raise ValueError("MulticamVisualIndexArtifact do camera plan não pertence ao projeto")
+
+    service = CameraEditPlanService(config, domain)
+
+    def progress_cb(progress_percent: float, message: str) -> None:
+        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.EDIT)
+
+    def should_cancel() -> bool:
+        return _job_is_cancelled(jobs, job.id)
+
+    try:
+        result = service.run(
+            edit_plan_artifact=upstreams["edit_plan"],
+            camera_timeline_artifact=upstreams["camera_timeline"],
+            identity_index_artifact=upstreams["identity_index"],
+            visual_quality_artifact=upstreams["visual_quality_index"],
+            multicam_visual_artifact=multicam_visual,
+            progress_cb=progress_cb,
+            should_cancel=should_cancel,
+        )
+    except CameraEditPlanJobCancelled:
+        return
+    jobs.update(
+        job.id,
+        JobUpdate(
+            status=JobStatus.SUCCEEDED,
+            stage=PipelineStage.COMPLETE,
+            message="Camera edit plan concluído",
+            result=result,
+        ),
+    )
+
+
+def run_multicam_sync_job(
+    job: Job,
+    config: CortexConfig,
+    jobs: JobStore,
+    domain: DomainStore,
+) -> None:
+    primary_id = job.payload.get("primary_source_asset_id")
+    alternate_ids = job.payload.get("alternate_source_asset_ids")
+    if not primary_id or not isinstance(alternate_ids, list) or not alternate_ids:
+        raise ValueError("payload do job multicamera incompleto")
+    primary = domain.get_source_asset(primary_id)
+    alternates = [domain.get_source_asset(str(asset_id)) for asset_id in alternate_ids]
+    if primary.project_id != job.project_id or any(
+        asset.project_id != job.project_id for asset in alternates
+    ):
+        raise ValueError("fontes do job multicamera não pertencem ao projeto")
+    service = MulticamSyncService(config, domain)
+
+    def progress_cb(progress_percent: float, message: str) -> None:
+        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.ANALYZE)
+
+    def should_cancel() -> bool:
+        return _job_is_cancelled(jobs, job.id)
+
+    try:
+        result = service.run(
+            primary_source=primary,
+            alternate_sources=alternates,
+            max_offset_seconds=job.payload.get("max_offset_seconds"),
+            analysis_seconds=job.payload.get("analysis_seconds"),
+            progress_cb=progress_cb,
+            should_cancel=should_cancel,
+        )
+    except MulticamSyncJobCancelled:
+        return
+    jobs.update(
+        job.id,
+        JobUpdate(
+            status=JobStatus.SUCCEEDED,
+            stage=PipelineStage.COMPLETE,
+            message="Sincronização multicamera concluída",
+            result=result,
+        ),
+    )
+
+
+def run_multicam_visual_index_job(
+    job: Job,
+    config: CortexConfig,
+    jobs: JobStore,
+    domain: DomainStore,
+) -> None:
+    sync_id = job.payload.get("multicam_sync_artifact_id")
+    if not sync_id:
+        raise ValueError("payload do job de índices ISO sem multicam_sync_artifact_id")
+    sync_artifact = domain.get_stage_artifact(sync_id)
+    if sync_artifact.project_id != job.project_id or sync_artifact.stage != "multicam_sync":
+        raise ValueError("MulticamSyncArtifact não pertence ao projeto")
+    service = MulticamVisualIndexService(config, domain)
+
+    def progress_cb(progress_percent: float, message: str) -> None:
+        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.ANALYZE)
+
+    def should_cancel() -> bool:
+        return _job_is_cancelled(jobs, job.id)
+
+    try:
+        result = service.run(
+            multicam_sync_artifact=sync_artifact,
+            progress_cb=progress_cb,
+            should_cancel=should_cancel,
+        )
+    except MulticamVisualJobCancelled:
+        return
+    jobs.update(
+        job.id,
+        JobUpdate(
+            status=JobStatus.SUCCEEDED,
+            stage=PipelineStage.COMPLETE,
+            message="Índices visuais multicamera concluídos",
+            result=result,
+        ),
+    )
+
+
 def run_edit_plan_job(
     job: Job,
     config: CortexConfig,
@@ -560,6 +829,12 @@ def run_render_job(
     edit_plan = domain.get_stage_artifact(edit_plan_artifact_id)
     if edit_plan.project_id != job.project_id or edit_plan.stage != "edit_plan":
         raise ValueError("EditPlanArtifact do render não pertence ao projeto")
+    camera_plan = None
+    camera_plan_id = job.payload.get("camera_edit_plan_artifact_id")
+    if camera_plan_id is not None:
+        camera_plan = domain.get_stage_artifact(camera_plan_id)
+        if camera_plan.project_id != job.project_id or camera_plan.stage != "camera_edit_plan":
+            raise ValueError("CameraEditPlanArtifact do render não pertence ao projeto")
     service = RenderService(config, domain)
 
     def progress_cb(progress_percent: float, message: str) -> None:
@@ -569,6 +844,7 @@ def run_render_job(
     try:
         result = service.run(
             edit_plan_artifact=edit_plan,
+            camera_edit_plan_artifact=camera_plan,
             encoder=job.payload.get("encoder"),
             headline=job.payload.get("headline"),
             progress_cb=progress_cb,
@@ -581,6 +857,7 @@ def run_render_job(
                 RenderSettingsPatch.model_validate(job.payload["render_settings_override"])
                 if job.payload.get("render_settings_override") is not None else None
             ),
+            export_directory=job.payload.get("export_directory"),
         )
     except RenderJobCancelled:
         return
@@ -597,6 +874,11 @@ _HANDLERS: dict[JobType, Any] = {
     JobType.FACE_ANALYSIS: run_face_analysis_job,
     JobType.SPEAKER_ANALYSIS: run_speaker_analysis_job,
     JobType.CAMERA_ANALYSIS: run_camera_analysis_job,
+    JobType.VISUAL_QUALITY_ANALYSIS: run_visual_quality_analysis_job,
+    JobType.IDENTITY_ANALYSIS: run_identity_analysis_job,
+    JobType.CAMERA_PLANNING: run_camera_planning_job,
+    JobType.MULTICAM_SYNC: run_multicam_sync_job,
+    JobType.MULTICAM_VISUAL_INDEX: run_multicam_visual_index_job,
     JobType.INGEST_YOUTUBE: run_youtube_ingest_job,
     JobType.SUGGESTION: run_suggestion_job,
     JobType.EDIT_PLAN: run_edit_plan_job,

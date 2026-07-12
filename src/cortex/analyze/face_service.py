@@ -22,6 +22,14 @@ from cortex.analyze.face_detect import (
     detect_faces,
     load_session,
 )
+from cortex.analyze.face_recognition import (
+    COSINE_MATCH_THRESHOLD,
+    EMBEDDING_DIMENSION,
+    MODEL_PATH as RECOGNITION_MODEL_PATH,
+    MODEL_SHA256 as RECOGNITION_MODEL_SHA256,
+    extract_embedding,
+    load_recognition_session,
+)
 from cortex.analyze.face_schemas import (
     FACE_INDEX_SCHEMA_VERSION,
     FaceDetection,
@@ -39,7 +47,7 @@ from cortex.domain.store import DomainStore
 from cortex.ingest.ffprobe import duration_seconds, probe_media
 from cortex.paths import faces_dir
 
-FACE_ALGORITHM_VERSION = "1.0.0"
+FACE_ALGORITHM_VERSION = "2.0.0"
 FRAME_EXTRACTION_WIDTH = 640
 
 
@@ -168,6 +176,7 @@ class FaceIndexService:
             "score_threshold": DEFAULT_SCORE_THRESHOLD,
             "nms_threshold": DEFAULT_NMS_THRESHOLD,
             "model": MODEL_PATH.name,
+            "recognition_model": [RECOGNITION_MODEL_PATH.name, RECOGNITION_MODEL_SHA256],
         }
         input_hash = hashlib.sha256(
             json.dumps(hash_payload, sort_keys=True, separators=(",", ":")).encode()
@@ -195,6 +204,7 @@ class FaceIndexService:
 
         progress_cb(10.0, "Carregando modelo YuNet (onnxruntime CPU)")
         session = load_session()
+        recognition_session = load_recognition_session()
 
         frames_data: list[dict] = []
         total = max(len(timestamps), 1)
@@ -203,6 +213,11 @@ class FaceIndexService:
                 raise FaceIndexJobCancelled()
             frame = _extract_frame_rgb(self._config.render.ffmpeg, source_path, timestamp)
             faces = detect_faces(session, frame)
+            for face_data in faces:
+                face_model = FaceDetection.model_validate(face_data)
+                face_data["embedding"] = extract_embedding(
+                    recognition_session, frame, face_model
+                )
             shot_type = classify_frame_shot(faces)
             frames_data.append({"time": timestamp, "faces": faces, "shot_type": shot_type})
             progress_cb(10.0 + 75.0 * (position + 1) / total, f"Analisando frame em {timestamp:.2f}s")
@@ -237,6 +252,7 @@ class FaceIndexService:
                         FaceDetection(
                             x=face["x"], y=face["y"], width=face["width"], height=face["height"],
                             score=face["score"], track_id=face["track_id"],
+                            embedding=face["embedding"],
                             landmarks=FaceLandmarks(**face["landmarks"]),
                         )
                         for face in frame["faces"]
@@ -252,6 +268,11 @@ class FaceIndexService:
                 score_threshold=DEFAULT_SCORE_THRESHOLD, nms_threshold=DEFAULT_NMS_THRESHOLD,
                 sample_fps=requested_sample_fps, ffmpeg_path=str(self._config.render.ffmpeg),
                 ffmpeg_version=effective_ffmpeg_version,
+                recognizer="sface_2021dec",
+                recognition_model_path=str(RECOGNITION_MODEL_PATH),
+                recognition_model_sha256=RECOGNITION_MODEL_SHA256,
+                embedding_dimension=EMBEDDING_DIMENSION,
+                cosine_match_threshold=COSINE_MATCH_THRESHOLD,
             ),
         )
 

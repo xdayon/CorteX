@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind, StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
+from cortex.edit.camera_plan_schemas import CameraEditPlanDocument
 from cortex.edit.schemas import (
     EditPlanDiagnostics,
     EditPlanDocument,
@@ -33,6 +35,7 @@ from cortex.render.service import (
     RenderPreconditionError,
     RenderService,
     _encoder_args,
+    _filtergraph,
     _resolve_font_family,
 )
 from cortex.schemas import JobCreate, JobStatus, JobType
@@ -77,6 +80,231 @@ def _alpha_plane(ffmpeg: Path, overlay_path: Path, timestamp: float) -> bytes:
         timeout=30,
     )
     return result.stdout
+
+
+def _center_pixel(ffmpeg: Path, media_path: Path, timestamp: float) -> tuple[int, int, int]:
+    result = subprocess.run(
+        [
+            str(ffmpeg), "-v", "error", "-ss", str(timestamp), "-i", str(media_path),
+            "-frames:v", "1", "-vf", "crop=1:1:(iw-1)/2:(ih-1)/2,format=rgb24",
+            "-f", "rawvideo", "-",
+        ],
+        capture_output=True, check=True, timeout=30,
+    )
+    return tuple(result.stdout[:3])  # type: ignore[return-value]
+
+
+def _dominant_audio_frequency(ffmpeg: Path, media_path: Path) -> float:
+    result = subprocess.run(
+        [
+            str(ffmpeg), "-v", "error", "-i", str(media_path), "-map", "0:a:0",
+            "-ac", "1", "-ar", "48000", "-f", "f32le", "-",
+        ],
+        capture_output=True, check=True, timeout=30,
+    )
+    samples = struct.unpack(f"<{len(result.stdout) // 4}f", result.stdout)
+    crossings = sum(
+        (left < 0 <= right) or (left >= 0 > right)
+        for left, right in zip(samples, samples[1:], strict=False)
+    )
+    duration = len(samples) / 48000
+    return crossings / (2 * duration)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="ffmpeg and ffprobe required")
+def test_camera_plan_v2_renders_iso_video_with_primary_audio(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    project = domain.create_project("Multicam render fixture")
+    source_dir = tmp_path / "projects" / project.id / "source"
+    source_dir.mkdir(parents=True)
+
+    def create_source(name: str, color: str, frequency: int) -> SourceAsset:
+        path = source_dir / name
+        subprocess.run([
+            str(config.render.ffmpeg), "-y", "-v", "error",
+            "-f", "lavfi", "-i", f"color=c={color}:size=320x180:rate=30:duration=2,noise=alls=4:allf=t",
+            "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000:duration=2",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", str(path),
+        ], check=True, timeout=60)
+        return domain.create_source_asset(SourceAsset(
+            project_id=project.id, kind=SourceKind.UPLOAD, original_filename=name,
+            stored_path=str(path.relative_to(tmp_path)),
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            size_bytes=path.stat().st_size, probe=probe_media(config.render.ffprobe, path),
+        ))
+
+    primary = create_source("primary.mp4", "red", 440)
+    iso = create_source("iso.mp4", "blue", 1000)
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(TranscriptDocument(
+        language="pt", duration_seconds=2.0,
+        engine=EngineInfo(
+            model="fixture", requested_device="cpu", effective_device="cpu",
+            requested_compute_type="int8", effective_compute_type="int8",
+            batch_size=1, vad=True,
+        ), segments=[],
+    ).model_dump_json(), encoding="utf-8")
+    transcript = domain.create_transcript_artifact(TranscriptArtifact(
+        project_id=project.id, source_asset_id=primary.id, path=str(transcript_path),
+        audio_sha256="audio", engine="fixture", model="fixture", device="cpu",
+        compute_type="int8", language="pt", vad=True, batch_size=1,
+        duration_seconds=2.0,
+    ))
+    plan = EditPlanDocument(
+        project_id=project.id, source_asset_id=primary.id,
+        transcript_artifact_id=transcript.id, analysis_artifact_id="analysis",
+        input_hash="multicam-edit", clip_start=0.0, clip_end=2.0, profile="balanced",
+        segments=[EditSegment(start=0.0, end=2.0, timeline_order=0)],
+        timeline_duration_seconds=2.0,
+        diagnostics=EditPlanDiagnostics(
+            profile="balanced", waveform_used=True, candidate_pauses=0, cuts=0,
+            saved_seconds=0.0, crossfade=0.0, vad_used=True,
+        ),
+        quality=EditQualityReport(passed=True, issues=[], profile="balanced", degraded=False),
+    )
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
+    plan_artifact = domain.create_stage_artifact(StageArtifact(
+        project_id=project.id, stage="edit_plan", path=str(plan_path),
+        input_hash=plan.input_hash,
+    ))
+    camera_plan = CameraEditPlanDocument.model_validate({
+        "project_id": project.id, "source_asset_id": primary.id,
+        "edit_plan_artifact_id": plan_artifact.id,
+        "edit_plan_input_hash": plan_artifact.input_hash,
+        "camera_timeline_artifact_id": "camera", "camera_timeline_input_hash": "camera-hash",
+        "identity_index_artifact_id": "identity", "identity_index_input_hash": "identity-hash",
+        "visual_quality_artifact_id": "quality", "visual_quality_input_hash": "quality-hash",
+        "input_hash": "camera-plan-v2",
+        "shots": [
+            {
+                "edit_segment_order": 0, "video_source_asset_id": primary.id,
+                "audio_source_asset_id": primary.id, "source_start_us": 0,
+                "source_end_us": 1_000_000, "audio_source_start_us": 0,
+                "audio_source_end_us": 1_000_000, "scene_index": 0,
+                "layout_id": "primary", "camera_role": "speaker_close", "intent": "speaker",
+                "confirmed_identity_ids": [], "visual_quality_usable": True, "evidence": [],
+            },
+            {
+                "edit_segment_order": 0, "video_source_asset_id": iso.id,
+                "audio_source_asset_id": primary.id, "source_start_us": 1_000_000,
+                "source_end_us": 2_000_000, "audio_source_start_us": 1_000_000,
+                "audio_source_end_us": 2_000_000, "scene_index": 0,
+                "layout_id": "iso", "camera_role": "two_shot", "intent": "context",
+                "confirmed_identity_ids": [], "visual_quality_usable": True, "evidence": [],
+            },
+        ],
+        "diagnostics": {
+            "shot_count": 2, "speaker_shot_count": 1, "context_shot_count": 1,
+            "fallback_shot_count": 0, "unusable_scene_count": 0,
+            "iso_context_shot_count": 1, "indexed_iso_camera_count": 1,
+            "reaction_shots_enabled": False, "reaction_shots_blocked_by": [],
+        },
+        "engine": {"algorithm": "fixture", "algorithm_version": "2"},
+    })
+    camera_path = tmp_path / "camera-plan.json"
+    camera_path.write_text(camera_plan.model_dump_json(), encoding="utf-8")
+    camera_artifact = domain.create_stage_artifact(StageArtifact(
+        project_id=project.id, stage="camera_edit_plan", schema_version=2,
+        path=str(camera_path), input_hash=camera_plan.input_hash,
+    ))
+    settings = RenderSettings(
+        encoder="libx264", canvas=RenderCanvasSettings(width=320, height=320, fps=30),
+        captions=RenderCaptionSettings(
+            enabled=False, font_family="Montserrat", font_size=28,
+            words_per_cue=3, outline=False,
+        ),
+        headline=RenderHeadlineSettings(
+            enabled=False, font_family="Montserrat", font_size=36,
+            duration_seconds=1.0,
+        ),
+        subtitles=RenderSubtitleSettings(sidecar_srt=False),
+    )
+
+    result = RenderService(config, domain).run(
+        edit_plan_artifact=plan_artifact, camera_edit_plan_artifact=camera_artifact,
+        encoder=None, headline=None, progress_cb=lambda *_args: None,
+        should_cancel=lambda: False, render_settings=settings,
+    )
+    document = RenderDocument.model_validate_json(
+        Path(domain.get_stage_artifact(result["render_artifact_id"]).path).read_text()
+    )
+    first_pixel = _center_pixel(config.render.ffmpeg, Path(document.output_path), 0.5)
+    iso_pixel = _center_pixel(config.render.ffmpeg, Path(document.output_path), 1.5)
+
+    assert first_pixel[0] > first_pixel[2]
+    assert iso_pixel[2] > iso_pixel[0]
+    assert _dominant_audio_frequency(config.render.ffmpeg, Path(document.output_path)) == pytest.approx(440, abs=8)
+    assert document.camera_edit_plan_artifact_id == camera_artifact.id
+    assert [(item.source_asset_id, item.video_used, item.audio_used) for item in document.sources] == [
+        (primary.id, True, True), (iso.id, True, False),
+    ]
+
+    jobs = JobStore(config.paths.database)
+    queued = jobs.create(JobCreate(
+        type=JobType.RENDER, project_id=project.id,
+        payload={
+            "edit_plan_artifact_id": plan_artifact.id,
+            "camera_edit_plan_artifact_id": camera_artifact.id,
+            "render_settings": settings.model_dump(mode="json"),
+        },
+    ))
+    assert process_next(config, jobs, domain, FakeTranscriptionEngine()) is True
+    finished = jobs.get(queued.id)
+    assert finished.status == JobStatus.SUCCEEDED
+    assert finished.result is not None
+    assert finished.result["cached"] is True
+    assert finished.result["render_artifact_id"] == result["render_artifact_id"]
+
+
+def test_camera_plan_filtergraph_uses_separate_video_inputs_and_primary_audio() -> None:
+    plan = EditPlanDocument.model_validate({
+        "project_id": "project", "source_asset_id": "primary",
+        "transcript_artifact_id": "transcript", "analysis_artifact_id": "analysis",
+        "input_hash": "edit", "clip_start": 0.0, "clip_end": 2.0,
+        "profile": "balanced", "segments": [
+            {"start": 0.0, "end": 2.0, "timeline_order": 0},
+        ], "timeline_duration_seconds": 2.0,
+        "diagnostics": {"profile": "balanced", "waveform_used": True,
+                        "candidate_pauses": 0, "cuts": 0, "saved_seconds": 0.0,
+                        "crossfade": 0.0, "vad_used": True},
+        "quality": {"passed": True, "issues": [], "profile": "balanced",
+                    "degraded": False},
+    })
+    camera_plan = CameraEditPlanDocument.model_validate({
+        "project_id": "project", "source_asset_id": "primary",
+        "edit_plan_artifact_id": "edit-artifact", "edit_plan_input_hash": "edit",
+        "camera_timeline_artifact_id": "camera", "camera_timeline_input_hash": "camera-hash",
+        "identity_index_artifact_id": "identity", "identity_index_input_hash": "identity-hash",
+        "visual_quality_artifact_id": "quality", "visual_quality_input_hash": "quality-hash",
+        "input_hash": "camera-plan", "shots": [{
+            "edit_segment_order": 0, "video_source_asset_id": "iso",
+            "audio_source_asset_id": "primary", "source_start_us": 800_000,
+            "source_end_us": 2_800_000, "audio_source_start_us": 0,
+            "audio_source_end_us": 2_000_000, "sync_offset_us": 800_000,
+            "scene_index": 0, "layout_id": "iso", "camera_role": "two_shot",
+            "intent": "context", "confirmed_identity_ids": [],
+            "visual_quality_usable": True, "evidence": [],
+        }],
+        "diagnostics": {"shot_count": 1, "speaker_shot_count": 0,
+                        "context_shot_count": 1, "fallback_shot_count": 0,
+                        "unusable_scene_count": 0, "iso_context_shot_count": 1,
+                        "indexed_iso_camera_count": 1, "reaction_shots_enabled": False,
+                        "reaction_shots_blocked_by": []},
+        "engine": {"algorithm": "fixture", "algorithm_version": "2"},
+    })
+
+    filtergraph, _video, _audio = _filtergraph(
+        plan, 320, 320, 30, -14.0, -1.0, camera_plan=camera_plan,
+        source_input_indices={"primary": 0, "iso": 1},
+    )
+
+    assert "[1:v]trim=start=0.800000:end=2.800000" in filtergraph
+    assert "[0:a]atrim=start=0.000000:end=2.000000" in filtergraph
+    assert "[1:a]" not in filtergraph
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
@@ -170,7 +398,7 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
         ),
         headline=RenderHeadlineSettings(
             enabled=True, text="Corte real", font_family="Montserrat",
-            font_size=36, duration_seconds=2.5,
+            font_size=36, duration_seconds=2.0,
         ),
         subtitles=RenderSubtitleSettings(sidecar_srt=True),
     )

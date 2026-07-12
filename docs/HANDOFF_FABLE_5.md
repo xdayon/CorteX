@@ -802,3 +802,253 @@ Verificacao integrada desta entrega: 62 testes fora dos arquivos que usam
 OpenAPI das rotas de camera, build Vite e `git diff --check` passaram. A suite
 integral com `TestClient` continua pendente de repeticao no host pelo hang de
 sandbox ja registrado no Gate 3.
+
+## Atualizacao 2026-07-12 - indice de qualidade visual (Gate 4b)
+
+Novo stage artifact `visual_quality_index`, derivado explicitamente da fonte +
+`scene_index` + `face_index`, sem alterar automaticamente EDL ou render:
+
+- amostragem configuravel (default 2 fps) por cena via FFmpeg software/CPU;
+- cada frame registra luma media, proporcao de pixels pretos, variancia do
+  Laplaciano para blur e delta normalizado para congelamento;
+- faces do indice esparso sao associadas somente dentro de uma janela temporal
+  limitada; `face_edge_occlusion` significa exclusivamente bbox tocando a borda
+  do frame e nao alega oclusao semantica;
+- agregacao por cena persiste shares, issues e `usable`; limiares, FFmpeg,
+  decoder/device solicitado e efetivo ficam no engine info do schema v1;
+- o hash inclui fonte, IDs/hashes dos dois upstreams, versao do algoritmo,
+  thresholds, amostragem, decoder e versao do FFmpeg; persistencia atomica e
+  cache seguem os stages anteriores;
+- `JobType.VISUAL_QUALITY_ANALYSIS`, worker e endpoints `POST /visual-quality` +
+  `GET /visual-quality/{artifact_id}` estao conectados.
+
+Validacao focada: 5 testes de metricas, persistencia/cache, cadeia upstream,
+worker ate artifact JSON persistido e contrato OpenAPI passaram; o conjunto
+camera/face/qualidade terminou com 35 testes. Ruff, compileall, build Vite e
+`git diff --check` passaram. Frames sinteticos deterministas foram injetados no
+teste do servico, portanto nao ha alegacao de validacao sobre episodio real,
+CUDA ou NVENC. A regressao que incluiu arquivos com `TestClient` repetiu o hang
+de finalizacao apos 10 testes; uma tentativa ampla por arquivos sem a string
+`TestClient` tambem bloqueou apos 7 testes e foi interrompida sem assertion
+reportada. A suite integral continua pendente no host.
+
+Proximo gate: identidade cross-camera com evidencia propria e escopo explicito;
+so depois disso o planner pode combinar `camera_timeline` +
+`visual_quality_index` para reaction shots e J/L-cuts conservadores.
+
+## Atualizacao 2026-07-12 - identidade SFace entre layouts (Gate 4c)
+
+O `face_index` passou ao schema v2 e agora gera embedding SFace normalizado de
+128 dimensoes para cada face detectada. O modelo oficial
+`face_recognition_sface_2021dec.onnx` (36.9 MiB, SHA-256
+`0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`) e a
+licenca Apache do OpenCV Zoo ficam versionados em `src/cortex/models/`.
+
+- alinhamento de cinco landmarks para 112x112 e inferencia ONNX foram
+  implementados em numpy + onnxruntime CPU, sem adicionar `opencv-python`;
+- o engine do `face_index` registra recognizer, caminho/hash do modelo,
+  dimensao, providers e limiar de cosseno; o cache v1 e invalidado pela mudanca
+  de schema/algoritmo e nunca e reutilizado como se contivesse embeddings;
+- novo artifact `identity_index`, derivado de `face_index` + `camera_timeline`,
+  usa complete-link: um novo embedding precisa superar o limiar contra todos os
+  membros da identidade, e proximidade de dois grupos dentro da margem vira
+  `ambiguous`, sem merge silencioso;
+- identidade e `confirmed` apenas com pelo menos duas observacoes SFace em
+  `layout_id`s distintos. Singletons/same-layout ficam `single_layout`; o escopo
+  registrado e `cross_layout_face_embedding`, nao camera fisica descoberta;
+- `JobType.IDENTITY_ANALYSIS`, worker, cache/persistencia atomica e endpoints
+  `POST /identities` + `GET /identities/{artifact_id}` estao conectados. A EDL
+  e o Studio ainda nao consomem automaticamente o artifact.
+
+Validacao: 8 testes novos inicialmente e depois 19 testes integrados de
+SFace/identidade/camera/qualidade passaram. O caminho real YuNet -> SFace foi
+executado sobre a fixture de retrato; outros 27 testes de face detect/classify e
+servico `face_index` passaram. Ruff, compileall, build Vite e
+`git diff --check` estao limpos. Nao houve episodio multicamera real, CUDA ou
+NVENC neste gate; continuidade cross-layout foi verificada com embeddings
+sinteticos controlados e o ONNX real foi verificado separadamente.
+
+Proximo gate: planner conservador de reaction shots consumindo
+`camera_timeline` + `identity_index` + `visual_quality_index`, preservando audio
+continuo. J/L-cut e punch-in editaveis continuam posteriores.
+
+## Atualizacao 2026-07-12 - camera edit plan vinculado (Gate 5a)
+
+Novo stage artifact `camera_edit_plan`, derivado explicitamente de `edit_plan` +
+`camera_timeline` + `identity_index` + `visual_quality_index`. Este gate nao
+fabrica reaction footage: o produto atualmente recebe um master unico, sem ISO
+de cameras, e `speaker_timeline` continua visual, nao diarizacao acustica.
+
+- cada shot e a intersecao exata de uma cena com um keep range da EDL e registra
+  intent `speaker`, `context` ou `fallback`, layout, role, identidades confirmadas
+  e evidencia de qualidade;
+- `speaker` exige `speaker_close` + alinhamento confirmado + cena utilizavel;
+  `two_shot`/`wide` utilizaveis viram `context`; qualidade ausente/reprovada e
+  roles ambiguos viram `fallback`;
+- schema v1 exige que `audio_source_*` seja identico a `source_*`, registra
+  `audio_continuity_mode=linked_source` e `temporal_reuse_allowed=false`;
+- reaction shots ficam explicitamente desabilitados por tres bloqueadores:
+  identidade acustica do speaker ausente, listening posture ausente e fonte de
+  camera alternativa ausente. Nenhum desses sinais e inferido por posicao;
+- hash/cache incluem IDs e input hashes dos quatro upstreams, algoritmo,
+  invariantes de continuidade e bloqueadores; persistencia atomica, worker e
+  endpoints `POST /camera-plans` + `GET /camera-plans/{artifact_id}` estao
+  conectados. Render e Studio ainda nao consomem automaticamente o artifact.
+
+Validacao focada: 5 testes do planner cobrem classificacao, audio/video
+vinculados, quality fail-safe, cache/persistencia, cadeia invalida, worker e
+OpenAPI. Regressao integrada com face/SFace, identidade, cameras e qualidade:
+24 testes passando. Proximo gate deve escolher entre (a) adicionar diarizacao
+acustica local com proveniencia para reaction shots no master ou (b) suportar
+fontes ISO sincronizadas; sem um desses inputs, reaction shots permanecem
+corretamente bloqueados. J/L-cut e punch-in continuam posteriores.
+
+## Atualizacao 2026-07-12 - sincronizacao de fontes ISO (Gate 5b)
+
+Foi escolhida a rota deterministica de fontes ISO, evitando introduzir um
+modelo de diarizacao externo/gated. Novo stage artifact `multicam_sync` recebe
+uma fonte primaria e 1-8 alternativas ja ingeridas no mesmo projeto:
+
+- cada fonte reutiliza o cache existente de audio PCM mono 16 kHz;
+- o sincronizador reduz o sinal a envelope RMS normalizado de 100 Hz e calcula
+  correlacao cruzada por FFT dentro de um offset maximo configuravel;
+- o contrato de offset e explicito: `alternate_time = primary_time + offset`;
+- cada camera registra offset em microssegundos, correlacao normalizada, margem
+  contra o segundo pico, overlap e status `synced`/`rejected` com reason;
+- defaults: busca ate 120 s, analise dos primeiros 600 s, correlacao minima
+  0.55, margem 0.05 e overlap minimo 5 s. Sinal fraco, pico ambiguo ou overlap
+  insuficiente nunca e aceito silenciosamente;
+- hash/cache incluem IDs + SHA-256 de todas as fontes, parametros, algoritmo e
+  caminhos FFmpeg/FFprobe; persistencia atomica, `JobType.MULTICAM_SYNC`, worker
+  e endpoints `POST /multicam-sync` + `GET /multicam-sync/{artifact_id}` estao
+  conectados.
+
+Validacao: 5 testes focados, incluindo WAVs reais normalizados pelo FFmpeg,
+offset conhecido de +800 ms, rejeicao de audio nao relacionado, cache, worker e
+OpenAPI. Regressao integrada multicam/camera plan/identidade/qualidade/SFace: 29
+testes passando. O planner ainda nao consome automaticamente o sync: cada ISO
+precisa primeiro de `scene_index`, `face_index`, `speaker_timeline`,
+`camera_timeline` e `visual_quality_index` proprios ou de um orquestrador que
+gere essa cadeia. Reaction shots continuam bloqueados ate esse proximo gate.
+
+## Atualizacao 2026-07-12 - indices visuais automaticos por ISO (Gate 5c)
+
+Novo stage artifact `multicam_visual_index`, consumindo um `multicam_sync`
+persistido. Para cada camera com status `synced`, o mesmo job executa em ordem:
+
+1. `scene_index` da fonte ISO;
+2. `face_index` v2 com YuNet + embeddings SFace;
+3. `visual_quality_index` da mesma cadeia cena/face.
+
+O manifest final registra source ID/SHA, offset em microssegundos e IDs dos tres
+artifacts. Cameras rejeitadas pelo sync sao preservadas como `rejected` com o
+reason original e nenhum substage e executado. Fonte ausente, SHA divergente ou
+projeto incorreto falha explicitamente; cancelamento dos substages propaga para
+o job pai. O cache do manifest inclui o sync e as configuracoes efetivas de
+cena, face e qualidade; cada substage tambem conserva seu cache proprio.
+
+`JobType.MULTICAM_VISUAL_INDEX`, worker e endpoints `POST /multicam-visual` +
+`GET /multicam-visual/{artifact_id}` estao conectados. Speaker timeline nao foi
+forjada para a ISO: reutilizar o VAD primario exigiria remapeamento temporal e
+proveniencia novos. Para escolha segura de contexto no proximo gate, cena,
+faces/identidade visual e quality ja sao suficientes; reaction semantica ainda
+exige speaker/listening evidence adicional.
+
+Validacao: 5 testes focados de schema, ordem/encadeamento, skip de rejeitada,
+fonte inconsistente, cache, worker e OpenAPI; os substages foram isolados por
+fixtures porque ja possuem testes reais proprios. Regressao multicamera completa:
+34 testes passando. Proximo gate: `camera_edit_plan` v2 consumir o manifest,
+converter `primary_time + offset` para o tempo ISO e selecionar apenas contexto
+visual utilizavel no mesmo instante global; depois o render deve suportar video
+ISO com audio continuo da fonte primaria.
+
+## Atualizacao 2026-07-12 - camera planner com contexto ISO (Gate 5d)
+
+`camera_edit_plan` passou ao schema v2 e aceita opcionalmente um
+`multicam_visual_index`. O planner continua construindo os shots primarios e so
+consulta ISOs quando o intent resultante seria `fallback`:
+
+- converte o intervalo global pela regra `iso_time = primary_time + offset`;
+- exige que uma unica cena ISO cubra todo o intervalo, evitando cruzar um corte
+  interno desconhecido;
+- exige `visual_quality.usable` e plano dominante `two_shot` ou `wide`;
+- prioriza `two_shot`, depois menor soma de shares de quality e source ID para
+  desempate deterministico;
+- nunca substitui `speaker` nem `context` primarios e nunca usa close ISO sem
+  speaker evidence;
+- cada shot v2 registra `video_source_asset_id`, `audio_source_asset_id`, tempos
+  separados e `sync_offset_us`. O schema exige duracoes iguais e valida
+  `video_time = audio_time + offset`; mesma fonte exige offset zero;
+- engine registra `audio_continuity_mode=primary_source_continuous` e
+  `temporal_reuse_allowed=false`. Com uma ISO indexada, o bloqueador
+  `alternate_camera_source_unavailable` desaparece, mas reaction shots seguem
+  desabilitados por falta de identidade acustica e listening posture.
+
+Hash/cache e manifest do artifact incluem o `multicam_visual_index` quando
+presente. API `CameraEditPlanRequest` e worker aceitam esse upstream opcional;
+sem ele, o comportamento primario anterior permanece, com cache v2 separado.
+
+Validacao focada: 6 testes, incluindo selecao ISO +800 ms, invariantes de
+audio/video, preservacao dos shots primarios e worker com manifest. Regressao
+multicamera completa: 35 testes passando. Proximo gate: render consumir o camera
+plan v2, abrir as fontes de video indicadas por shot e manter apenas o audio da
+fonte primaria; ate isso, o artifact e persistido/revisavel mas nao altera o MP4.
+
+## Atualizacao 2026-07-12 - render multicamera real (Gate 5e)
+
+O render passou ao schema v6 e aceita opcionalmente o `camera_edit_plan` v2 pela
+API, payload do job e `RenderService`. Antes de executar FFmpeg, valida o vinculo
+com o mesmo `edit_plan`, projeto e fonte primaria, exige cobertura contigua e
+integral de cada segmento e resolve todos os `SourceAsset` de video sem fallback.
+
+O filtergraph abre a fonte primaria e cada ISO indicada, recorta os shots nos
+tempos ISO persistidos e concatena as trocas apenas no ramo de video. O ramo de
+audio continua sendo recortado uma unica vez por segmento diretamente da fonte
+primaria, portanto nenhuma troca de camera introduz audio ISO ou emenda interna.
+Transicoes entre segmentos da EDL, loudness, overlays e quality gates existentes
+continuam no mesmo caminho de render.
+
+Cache e manifesto incluem o hash do camera plan e SHA de todas as fontes. O
+manifesto registra `camera_edit_plan_artifact_id` e, por fonte, uso efetivo de
+video/audio. Teste sintetico produz MP4 real com primario vermelho/440 Hz e ISO
+azul/1000 Hz, confirma a troca visual por pixels e confirma audio final em 440 Hz;
+o worker reutiliza o mesmo artifact multicamera em cache.
+
+Esta implementacao multicamera ficou fora do caminho de produto apos a correcao
+registrada abaixo; nao conectar esses endpoints novamente ao Studio.
+
+## Correcao de produto 2026-07-12 - master unico ja comutado
+
+O usuario nao fornece fontes ISO. O estudio grava no OBS/sistema equivalente e
+entrega um unico episodio cuja troca de cameras ja aconteceu ao vivo. Qualquer
+fluxo de upload/sincronizacao multicamera no Studio foi resultado de uma falha de
+comunicacao e nao pertence ao produto.
+
+Objetivo visual correto para os cortes:
+
+- evitar que o corte mostre somente o convidado quando o episodio contem imagem
+  segura do entrevistador;
+- primeiro preservar planos do entrevistador/two-shot que ja ocorram naturalmente
+  dentro do intervalo selecionado;
+- quando necessario, reutilizar apenas o VIDEO de um instante diferente do mesmo
+  master em que o entrevistador esteja silencioso e ouvindo, mantendo continuo o
+  AUDIO da fala principal do corte;
+- exigir identidade distinta, mouth motion baixo, ausencia de fala atribuida,
+  qualidade visual aprovada e duracao segura; em baixa confianca, nao inserir;
+- registrar no artifact o tempo editorial, o tempo de origem do reaction e toda
+  evidencia. Esta e uma excecao controlada a antiga proibicao de reutilizacao
+  temporal, que deve ser substituida no schema/planner.
+
+O frontend ISO do Gate 5f foi removido antes da entrega. Os servicos backend
+`multicam_sync`/`multicam_visual_index` e o render v6 multicamera permanecem
+temporariamente isolados no worktree, sem entrada na interface, e devem ser
+removidos depois que os testes uteis de audio continuo forem portados para o
+novo planner single-source.
+
+Na mesma correcao, o Brief IA ganhou texto padrao geral para cortes virais de
+Reels/TikTok, sem tema religioso fixo. O Studio passou a aceitar legenda desde
+12 px, escalar corretamente o tamanho na miniatura, refletir fonte, karaoke,
+cores, borda e sombra ao vivo e oferecer seletor visual de cores com hex opcional.
+
+Proximo gate: banco persistido de reaction candidates do entrevistador no master
+unico, seguido de planner e render com video emprestado/audio editorial continuo.
