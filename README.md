@@ -73,8 +73,12 @@ render FFmpeg multi-segmento. O caminho padrao usa
 a assinatura ChatGPT configurada
 no `codex`, sem exigir API key. Claude CLI e o fallback configurado; a troca fica
 explicita na provenance do artifact. Limites dos planos continuam valendo.
-O render inicial persiste MP4 e manifesto com streams/duracao validados; captions,
-headline Remotion e quality gate audiovisual completo ainda nao estao conectados.
+O render persiste MP4 e manifesto com streams/duracao/loudness validados, gera um
+overlay VP9 alpha cacheavel via Remotion para headline e karaoke palavra por palavra,
+compoe o overlay no master FFmpeg e publica sidecar SRT. Node, Remotion, hash do
+overlay e configuracoes efetivas ficam registrados no manifesto.
+As configuracoes suportadas do Studio sao persistidas no job/manifesto, e o gate
+visual inicial reprova trechos pretos ou congelados acima dos thresholds configurados.
 
 Detalhes e diagnostico: [Providers de IA](docs/AI_PROVIDERS.md).
 
@@ -85,6 +89,18 @@ cd apps/web
 npm install
 npm run dev
 ```
+
+Instale tambem o compositor com as versoes fixadas no lockfile:
+
+```bash
+cd apps/remotion
+npm install
+npm run build
+```
+
+`render.remotion_browser` deve apontar explicitamente para um
+`chrome-headless-shell` executavel. O job nao baixa navegador nem retorna
+silenciosamente ao renderer legado.
 
 Depois da primeira instalacao, backend e frontend podem ser iniciados juntos:
 
@@ -103,15 +119,16 @@ devem ser interpretados como telemetria real.
 ## Validacao
 
 ```bash
-python3 -m unittest discover -s tests -v
-python3 -m compileall -q src
-python3 -m json.tool prompts/clip_selection.schema.json >/dev/null
+.venv/bin/pytest -q
+.venv/bin/python -m compileall -q src/cortex
+cd apps/web && npm run build
+cd apps/remotion && npm run build
 ```
 
 Os testes atuais cobrem configuracao, jobs, ausencia explicita de GPU, protecao
-de pausas, snapping na waveform, VAD, fronteiras de palavras, headline ASS e um
-render FFmpeg curto com audio e video. Ainda faltam gates E2E de CUDA, NVENC,
-Remotion, diarizacao, J/L-cut e planejamento de cameras.
+de pausas, snapping na waveform, VAD, fronteiras de palavras, render FFmpeg curto,
+overlay alpha Remotion, karaoke temporal, cache e composicao final. Ainda faltam
+gates E2E de CUDA/NVENC, diarizacao, J/L-cut e planejamento de cameras.
 
 ## GPU
 

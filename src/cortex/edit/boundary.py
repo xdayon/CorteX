@@ -4,6 +4,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from cortex.analyze.schemas import AnalysisDocument
+from cortex.transcribe.schemas import TranscriptWord
+
+_WORD_GUARD = 0.035
+_SCENE_SNAP_WORD_GUARD = 0.015
+_SCENE_SNAP_MIN_SEGMENT_SECONDS = 0.2
 
 
 @dataclass
@@ -73,6 +78,82 @@ def _percentile(values: list[float], fraction: float) -> float:
     ordered = sorted(values)
     idx = int(round((len(ordered) - 1) * max(0.0, min(1.0, fraction))))
     return ordered[idx]
+
+
+def word_containing(
+    words: list[TranscriptWord], timestamp: float, guard: float = _SCENE_SNAP_WORD_GUARD
+) -> TranscriptWord | None:
+    """Return the word whose (guarded) span strictly contains ``timestamp``."""
+    for word in words:
+        if word.start + guard < timestamp < word.end - guard:
+            return word
+    return None
+
+
+def nearest_scene_cut(target: float, cuts: list[float], tolerance: float) -> float | None:
+    """Return the closest scene cut to ``target`` within ``tolerance`` seconds, if any."""
+    if not cuts or tolerance <= 0:
+        return None
+    candidates = [cut for cut in cuts if abs(cut - target) <= tolerance]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda cut: abs(cut - target))
+
+
+def snap_segments_to_scene_cuts(
+    segments: list[dict],
+    words: list[TranscriptWord],
+    vad_intervals: Iterable[tuple[float, float]],
+    cuts: list[float],
+    tolerance: float,
+) -> tuple[list[dict], list[dict]]:
+    """Snap EDL video boundaries to nearby scene cuts (see scene_index).
+
+    A boundary is moved to a scene cut only when the cut lies within
+    ``tolerance`` seconds AND the move does not land inside a word or a
+    protected VAD speech interval — speech/pause safety always outranks
+    scene alignment (docs/EDITING_ENGINE.md: "Em baixa confianca, preservar
+    fala/pausa"). Returns the (possibly) adjusted segments plus a list of
+    ``scene_snapped`` quality-report issue dicts, one per applied snap.
+    """
+    if not cuts or tolerance <= 0:
+        return segments, []
+
+    forbidden: list[tuple[float, float]] = [(w.start - _WORD_GUARD, w.end + _WORD_GUARD) for w in words]
+    for start, end in vad_intervals:
+        if end > start:
+            forbidden.append((start, end))
+
+    snapped = [dict(segment) for segment in segments]
+    issues: list[dict] = []
+    for index, segment in enumerate(snapped):
+        for boundary_key, boundary_name in (("start", "in"), ("end", "out")):
+            original = float(segment[boundary_key])
+            candidate = nearest_scene_cut(original, cuts, tolerance)
+            if candidate is None or round(candidate, 3) == round(original, 3):
+                continue
+            if word_containing(words, candidate) is not None:
+                continue
+            if any(a <= candidate <= b for a, b in forbidden):
+                continue
+            # o snap nunca pode inverter ou esvaziar o segmento (start e end
+            # podem ser puxados um contra o outro por cortes vizinhos)
+            if boundary_key == "start":
+                if candidate > float(segment["end"]) - _SCENE_SNAP_MIN_SEGMENT_SECONDS:
+                    continue
+            elif candidate < float(segment["start"]) + _SCENE_SNAP_MIN_SEGMENT_SECONDS:
+                continue
+            segment[boundary_key] = round(candidate, 3)
+            issues.append({
+                "severity": "info",
+                "code": "scene_snapped",
+                "segment": index,
+                "boundary": boundary_name,
+                "snapped_from": round(original, 3),
+                "snapped_to": round(candidate, 3),
+                "delta_ms": round(abs(candidate - original) * 1000, 1),
+            })
+    return snapped, issues
 
 
 def energy_track_from_analysis(analysis: AnalysisDocument) -> EnergyTrack:

@@ -28,6 +28,9 @@ ingest:
 render:
   ffmpeg: /usr/bin/ffmpeg
   ffprobe: /usr/bin/ffprobe
+  remotion_node: node
+  remotion_browser: /var/home/dx/.cache/puppeteer/chrome-headless-shell/linux-147.0.7727.57/chrome-headless-shell-linux64/chrome-headless-shell
+  remotion_app_dir: apps/remotion
   encoder: h264_nvenc
   allow_cpu_fallback: false
   width: 1080
@@ -36,12 +39,36 @@ render:
   loudness_target_lufs: -14.0
   loudness_tolerance_lu: 1.0
   true_peak_limit_dbfs: -1.0
+  captions_enabled: true
+  caption_font: Montserrat
+  caption_font_size: 32
+  caption_max_words: 5
+  headline_enabled: true
+  headline_font: Montserrat
+  headline_font_size: 42
+  headline_duration_seconds: 3.4
+  visual_quality_enabled: true
+  black_threshold_seconds: 0.5
+  freeze_threshold_seconds: 1.5
+  safe_zone_sample_fps: 4.0
 
 clips:
   minimum_seconds: 50
   maximum_seconds: 120
   count: 10
   pacing_profile: auto
+
+# Índice de cenas (cortes de câmera) via filtro scdet do FFmpeg.
+# scene_threshold: sensibilidade do scdet (0-100, escala nativa do filtro).
+#   Valor mais baixo detecta mais cortes; 10.0 é o default do próprio scdet.
+analysis:
+  scene_threshold: 10.0
+
+# scene_snap_tolerance_seconds: raio (em segundos) em que uma fronteira de
+#   vídeo da EDL pode ser ajustada para o corte de cena mais próximo do
+#   scene_index, sempre que isso não violar fala/VAD.
+edit:
+  scene_snap_tolerance_seconds: 0.5
 
 ai:
   provider: codex_cli

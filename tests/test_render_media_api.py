@@ -71,6 +71,15 @@ def _media_endpoint(app: FastAPI) -> Any:
     return route.endpoint
 
 
+def _subtitles_endpoint(app: FastAPI) -> Any:
+    route = next(
+        route
+        for route in app.routes
+        if route.path == "/api/v1/projects/{project_id}/renders/{artifact_id}/subtitles"
+    )
+    return route.endpoint
+
+
 def test_render_media_is_served_only_from_its_project_render_directory(tmp_path: Path) -> None:
     config = _config(tmp_path)
     app = create_app(config)
@@ -137,4 +146,47 @@ def test_render_media_is_served_only_from_its_project_render_directory(tmp_path:
     )
     with pytest.raises(HTTPException) as exc_info:
         endpoint(project.id, artifact.id)
+    assert exc_info.value.status_code == 410
+
+
+def test_render_subtitles_are_served_only_from_project_render_directory(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    app = create_app(config)
+    domain = app.state.domain
+    project = domain.create_project("Subtitles")
+    render_dir = config.paths.projects_dir / project.id / "renders"
+    render_dir.mkdir(parents=True)
+    media_path = render_dir / "result.mp4"
+    media_path.write_bytes(b"fake-mp4")
+    subtitles_path = render_dir / "result.srt"
+    subtitles_path.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\nLegenda real\n", encoding="utf-8"
+    )
+    document = _document(project.id, media_path).model_copy(update={
+        "subtitles_path": str(subtitles_path),
+        "subtitles_sha256": "c" * 64,
+    })
+    manifest_path = render_dir / "result.json"
+    manifest_path.write_text(document.model_dump_json(), encoding="utf-8")
+    artifact = domain.create_stage_artifact(StageArtifact(
+        project_id=project.id, stage="render", path=str(manifest_path), input_hash="render-srt",
+    ))
+
+    response = _subtitles_endpoint(app)(project.id, artifact.id)
+
+    assert isinstance(response, FileResponse)
+    assert response.media_type == "application/x-subrip"
+    assert Path(response.path).read_text(encoding="utf-8").endswith("Legenda real\n")
+    assert response.headers["content-disposition"].endswith(
+        f'filename="cortex-render-{artifact.id[:12]}.srt"'
+    )
+
+    outside = tmp_path / "outside.srt"
+    outside.write_text("secret", encoding="utf-8")
+    manifest_path.write_text(
+        document.model_copy(update={"subtitles_path": str(outside)}).model_dump_json(),
+        encoding="utf-8",
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        _subtitles_endpoint(app)(project.id, artifact.id)
     assert exc_info.value.status_code == 410

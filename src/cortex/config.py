@@ -45,6 +45,9 @@ class RenderConfig(BaseModel):
 
     ffmpeg: Path = Path("/usr/bin/ffmpeg")
     ffprobe: Path = Path("/usr/bin/ffprobe")
+    remotion_node: Path = Path("node")
+    remotion_browser: Path | None = None
+    remotion_app_dir: Path = Path("apps/remotion")
     encoder: str = "h264_nvenc"
     allow_cpu_fallback: bool = False
     width: int = Field(default=1080, ge=320)
@@ -53,6 +56,30 @@ class RenderConfig(BaseModel):
     loudness_target_lufs: float = Field(default=-14.0, ge=-70.0, le=-5.0)
     loudness_tolerance_lu: float = Field(default=1.0, gt=0.0, le=5.0)
     true_peak_limit_dbfs: float = Field(default=-1.0, ge=-9.0, le=0.0)
+    captions_enabled: bool = True
+    caption_font: str = "Montserrat"
+    caption_font_size: int = Field(default=32, ge=12, le=120)
+    caption_max_words: int = Field(default=5, ge=1, le=12)
+    headline_enabled: bool = True
+    headline_font: str = "Montserrat"
+    headline_font_size: int = Field(default=42, ge=12, le=160)
+    headline_duration_seconds: float = Field(default=3.4, gt=0.0, le=15.0)
+    visual_quality_enabled: bool = True
+    black_threshold_seconds: float = Field(default=0.5, gt=0.0, le=10.0)
+    freeze_threshold_seconds: float = Field(default=1.5, gt=0.0, le=30.0)
+    safe_zone_sample_fps: float = Field(default=4.0, gt=0.0, le=60.0)
+
+
+class AnalysisConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scene_threshold: float = Field(default=10.0, ge=0.0, le=100.0)
+
+
+class EditConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scene_snap_tolerance_seconds: float = Field(default=0.5, ge=0.0, le=5.0)
 
 
 class IngestConfig(BaseModel):
@@ -105,6 +132,8 @@ class CortexConfig(BaseModel):
     render: RenderConfig = RenderConfig()
     clips: ClipConfig = ClipConfig()
     ai: AiConfig = AiConfig()
+    analysis: AnalysisConfig = AnalysisConfig()
+    edit: EditConfig = EditConfig()
 
     def ensure_runtime_dirs(self) -> None:
         for path in (

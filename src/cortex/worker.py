@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from cortex.analyze.scene_service import SceneIndexJobCancelled, SceneIndexService
 from cortex.analyze.service import AnalysisJobCancelled, AnalysisService
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind
@@ -31,6 +32,7 @@ from cortex.ingest.ffprobe import FFprobeError, probe_media
 from cortex.ingest.youtube import YoutubeDownloadError, download_youtube_source
 from cortex.jobs import InvalidJobTransitionError, JobStore
 from cortex.paths import source_dir
+from cortex.render.schemas import RenderSettings, RenderSettingsPatch
 from cortex.render.service import RenderJobCancelled, RenderService
 from cortex.schemas import Job, JobStatus, JobType, JobUpdate, PipelineStage
 from cortex.suggest.provider import SuggestionProvider, build_suggestion_provider
@@ -282,6 +284,46 @@ def run_analysis_job(
     )
 
 
+def run_scene_analysis_job(
+    job: Job,
+    config: CortexConfig,
+    jobs: JobStore,
+    domain: DomainStore,
+) -> None:
+    source_asset_id = job.payload.get("source_asset_id")
+    if not source_asset_id:
+        raise ValueError("payload do job de índice de cenas sem source_asset_id")
+    source_asset = domain.get_source_asset(source_asset_id)
+    if source_asset.project_id != job.project_id:
+        raise ValueError("fonte do job de índice de cenas não pertence ao projeto")
+    service = SceneIndexService(config, domain)
+
+    def progress_cb(progress_percent: float, message: str) -> None:
+        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.ANALYZE)
+
+    def should_cancel() -> bool:
+        return _job_is_cancelled(jobs, job.id)
+
+    try:
+        result = service.run(
+            source_asset=source_asset,
+            threshold=job.payload.get("scene_threshold"),
+            progress_cb=progress_cb,
+            should_cancel=should_cancel,
+        )
+    except SceneIndexJobCancelled:
+        return
+    jobs.update(
+        job.id,
+        JobUpdate(
+            status=JobStatus.SUCCEEDED,
+            stage=PipelineStage.COMPLETE,
+            message="Índice de cenas concluído",
+            result=result,
+        ),
+    )
+
+
 def run_edit_plan_job(
     job: Job,
     config: CortexConfig,
@@ -300,6 +342,12 @@ def run_edit_plan_job(
     analysis_artifact = domain.get_stage_artifact(analysis_artifact_id)
     if analysis_artifact.project_id != job.project_id or analysis_artifact.stage != "analysis":
         raise ValueError("AnalysisArtifact do job de plano de edição não pertence ao projeto")
+    scene_index_artifact_id = job.payload.get("scene_index_artifact_id")
+    scene_index_artifact = None
+    if scene_index_artifact_id:
+        scene_index_artifact = domain.get_stage_artifact(scene_index_artifact_id)
+        if scene_index_artifact.project_id != job.project_id or scene_index_artifact.stage != "scene_index":
+            raise ValueError("SceneIndexArtifact do job de plano de edição não pertence ao projeto")
     start = job.payload.get("start")
     end = job.payload.get("end")
     if start is None or end is None:
@@ -321,6 +369,7 @@ def run_edit_plan_job(
             profile=job.payload.get("profile"),
             progress_cb=progress_cb,
             should_cancel=should_cancel,
+            scene_index_artifact=scene_index_artifact,
         )
     except EditPlanJobCancelled:
         return
@@ -357,8 +406,17 @@ def run_render_job(
         result = service.run(
             edit_plan_artifact=edit_plan,
             encoder=job.payload.get("encoder"),
+            headline=job.payload.get("headline"),
             progress_cb=progress_cb,
             should_cancel=lambda: _job_is_cancelled(jobs, job.id),
+            render_settings=(
+                RenderSettings.model_validate(job.payload["render_settings"])
+                if job.payload.get("render_settings") is not None else None
+            ),
+            render_settings_override=(
+                RenderSettingsPatch.model_validate(job.payload["render_settings_override"])
+                if job.payload.get("render_settings_override") is not None else None
+            ),
         )
     except RenderJobCancelled:
         return
@@ -371,6 +429,7 @@ def run_render_job(
 _HANDLERS: dict[JobType, Any] = {
     JobType.TRANSCRIPTION: run_transcription_job,
     JobType.ANALYSIS: run_analysis_job,
+    JobType.SCENE_ANALYSIS: run_scene_analysis_job,
     JobType.INGEST_YOUTUBE: run_youtube_ingest_job,
     JobType.SUGGESTION: run_suggestion_job,
     JobType.EDIT_PLAN: run_edit_plan_job,

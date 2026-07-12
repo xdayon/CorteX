@@ -35,3 +35,7 @@ def edit_plans_dir(config: CortexConfig, project_id: str) -> Path:
 
 def renders_dir(config: CortexConfig, project_id: str) -> Path:
     return project_dir(config, project_id) / "renders"
+
+
+def scenes_dir(config: CortexConfig, project_id: str) -> Path:
+    return project_dir(config, project_id) / "scenes"

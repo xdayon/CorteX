@@ -6,10 +6,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from cortex.analyze.schemas import AnalysisDocument
+from cortex.analyze.scene_schemas import SceneIndexDocument
 from cortex.config import CortexConfig
 from cortex.domain.models import StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
-from cortex.edit.boundary import energy_track_from_analysis
+from cortex.edit.boundary import energy_track_from_analysis, snap_segments_to_scene_cuts
 from cortex.edit.planner import plan_safe_segments, protect_segment_boundaries, timeline_duration
 from cortex.edit.profiles import resolve_profile
 from cortex.edit.quality import validate_edit_plan
@@ -73,6 +74,7 @@ class EditPlanService:
         profile: str | None,
         progress_cb: Callable[[float, str], None],
         should_cancel: Callable[[], bool],
+        scene_index_artifact: StageArtifact | None = None,
     ) -> dict:
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -82,6 +84,11 @@ class EditPlanService:
             raise EditPlanPreconditionError("artifact informado não é um AnalysisArtifact")
         if transcript_artifact.project_id != analysis_artifact.project_id:
             raise EditPlanPreconditionError("transcript e analysis não pertencem ao mesmo projeto")
+        if scene_index_artifact is not None:
+            if scene_index_artifact.stage != "scene_index":
+                raise EditPlanPreconditionError("artifact informado não é um SceneIndexArtifact")
+            if scene_index_artifact.project_id != transcript_artifact.project_id:
+                raise EditPlanPreconditionError("scene_index não pertence ao mesmo projeto")
 
         analysis_path = Path(analysis_artifact.path)
         if not analysis_path.exists():
@@ -89,12 +96,22 @@ class EditPlanService:
         transcript_path = Path(transcript_artifact.path)
         if not transcript_path.exists():
             raise EditPlanPreconditionError("arquivo do transcript não está disponível")
+        scene_index_path: Path | None = None
+        if scene_index_artifact is not None:
+            scene_index_path = Path(scene_index_artifact.path)
+            if not scene_index_path.exists():
+                raise EditPlanPreconditionError("arquivo do SceneIndexArtifact não está disponível")
 
         progress_cb(0.0, "Lendo transcript e análise")
         analysis = AnalysisDocument.model_validate_json(analysis_path.read_text(encoding="utf-8"))
         if analysis.transcript_artifact_id != transcript_artifact.id:
             raise EditPlanPreconditionError("AnalysisArtifact não corresponde a este transcript")
         transcript = TranscriptDocument.model_validate_json(transcript_path.read_text(encoding="utf-8"))
+        scene_index: SceneIndexDocument | None = None
+        if scene_index_path is not None:
+            scene_index = SceneIndexDocument.model_validate_json(scene_index_path.read_text(encoding="utf-8"))
+            if scene_index.source_asset_id != transcript_artifact.source_asset_id:
+                raise EditPlanPreconditionError("SceneIndexArtifact não corresponde à fonte deste transcript")
 
         requested_profile = (profile or "auto").strip().lower()
         transcript_hash = _sha256(transcript_path)
@@ -109,6 +126,15 @@ class EditPlanService:
             "clip_end": round(end, 4),
             "profile": requested_profile,
         }
+        # Absent a scene_index, the hash payload — and thus the cache key —
+        # is identical to before this gate: EDLs stay byte-for-byte the same
+        # when scene snapping does not participate.
+        if scene_index_artifact is not None and scene_index_path is not None:
+            hash_payload["scene_index_artifact_id"] = scene_index_artifact.id
+            hash_payload["scene_index_sha256"] = _sha256(scene_index_path)
+            hash_payload["scene_snap_tolerance_seconds"] = round(
+                self._config.edit.scene_snap_tolerance_seconds, 4
+            )
         input_hash = hashlib.sha256(
             json.dumps(hash_payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -151,9 +177,24 @@ class EditPlanService:
                 "vad_used": diagnostics["vad_used"],
             }
 
+        scene_snap_count = 0
+        if scene_index is not None:
+            if should_cancel():
+                raise EditPlanJobCancelled()
+            progress_cb(85.0, "Ajustando fronteiras aos cortes de cena")
+            cuts = [cut.time for cut in scene_index.cuts]
+            segments, scene_issues = snap_segments_to_scene_cuts(
+                segments, words, [(v.start, v.end) for v in analysis.vad_intervals],
+                cuts, self._config.edit.scene_snap_tolerance_seconds,
+            )
+            scene_snap_count = len(scene_issues)
+            quality = {**quality, "issues": [*quality["issues"], *scene_issues]}
+        diagnostics = {**diagnostics, "scene_snap_count": scene_snap_count}
+
         document = EditPlanDocument(
             project_id=transcript_artifact.project_id, source_asset_id=transcript_artifact.source_asset_id,
             transcript_artifact_id=transcript_artifact.id, analysis_artifact_id=analysis_artifact.id,
+            scene_index_artifact_id=scene_index_artifact.id if scene_index_artifact is not None else None,
             input_hash=input_hash, clip_start=round(start, 4), clip_end=round(end, 4),
             profile=resolved_profile.name,
             segments=[_segment_to_schema(segment) for segment in segments],
@@ -186,6 +227,8 @@ class EditPlanService:
                 "effective_profile": resolved_profile.name,
                 "quality_passed": quality["passed"],
                 "degraded": quality["degraded"],
+                "scene_index_artifact_id": scene_index_artifact.id if scene_index_artifact is not None else None,
+                "scene_snap_count": scene_snap_count,
             },
         ))
         progress_cb(100.0, "Plano de edição concluído")

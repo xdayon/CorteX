@@ -335,6 +335,87 @@ Proximo gate de produto: captions/headline Remotion reais, sidecar SRT e quality
 gate visual/audio ampliado. O warning de deprecacao do `fastapi.testclient`
 indica migracao futura para `httpx2`, mas nao bloqueia a suite atual.
 
+## Atualizacao 2026-07-12 - captions/headline FFmpeg e sidecar SRT
+
+- render schema v3 carrega o `TranscriptArtifact` referenciado pela EDL e remapeia
+  palavras da timeline fonte para a timeline editada, inclusive overlaps de crossfade;
+- captions reais sao queimadas no MP4 por FFmpeg/libass e a headline editorial e
+  aplicada por `drawtext`; o manifesto registra explicitamente
+  `renderer=ffmpeg-libass-drawtext`, sem alegar Remotion;
+- o SRT usa o mesmo mapa temporal, e persistido com SHA-256 e servido pelo endpoint
+  seguro `GET /projects/{id}/renders/{artifact_id}/subtitles`;
+- o hash do render inclui transcript, configuracao de overlays e headline, impedindo
+  cache incorreto entre textos ou estilos distintos;
+- o quality gate exige cues e sidecar quando captions estao habilitadas e registra
+  contagem de cues, captions/headline efetivas, loudness e true peak;
+- o frontend envia o titulo editorial como headline, mostra a contagem de legendas
+  e oferece download do SRT junto ao MP4.
+
+Validacao focada: render sintetico multi-segmento produziu MP4 com libass/drawtext,
+dois cues remapeados, sidecar persistido, loudness aprovado e cache reutilizado.
+Ruff, build Vite e `git diff --check` passaram. A suite completa continua travando
+nos testes que usam `TestClient` dentro do sandbox; repetir `.venv/bin/pytest -q`
+no host antes do merge.
+
+Proximo gate: tornar as configuracoes do Studio persistidas e efetivas no job,
+implementar karaoke/estilos por palavra no renderer Remotion proprio e ampliar o
+quality gate visual com frames pretos/congelados e verificacao de safe zones.
+
+## Atualizacao 2026-07-12 - Studio efetivo e quality gate visual inicial
+
+- `RenderSettings` v1 valida encoder, canvas/FPS, captions, headline e sidecar;
+  o objeto solicitado e persistido no job e o solicitado/efetivo entra no
+  manifesto schema v4 e no hash de cache;
+- o Studio deixou de manter controles inertes: canvas 9:16/1:1/16:9, encoder,
+  captions, fontes instaladas, tamanho, palavras por cue, outline, headline e
+  SRT agora alteram o render real;
+- fontes sao resolvidas por `fc-match` e qualquer substituicao implicita reprova
+  o job, evitando fallback visual silencioso;
+- `blackdetect` e `freezedetect` analisam o MP4 final com thresholds versionados;
+  contagem, duracao total/maxima e thresholds entram no quality report;
+- trechos pretos >= 0,5 s ou congelados >= 1,5 s geram issues explicitas e
+  reprovam o artifact antes da publicacao;
+- previews TikTok/Reels e safe zones ficaram rotulados como preview-only; recursos
+  de camera, J/L-cut, reactions e karaoke nao aparecem como controles efetivos.
+
+Validacao focada: 11 testes passaram, incluindo dois videos sinteticos para os
+detectores visuais e render real com settings customizados. Ruff, compileall,
+build Vite e `git diff --check` passaram. Testes baseados em `TestClient` ainda
+devem ser repetidos no host por causa do travamento conhecido no sandbox.
+
+Proximo gate: criar `apps/remotion/` isolado e versionado, gerar overlay alpha
+persistido/cacheavel com headline e karaoke por palavra, compor esse overlay no
+master FFmpeg e registrar provenance completa de Node/Remotion. Nao instalar
+dependencias `latest` nem fazer fallback silencioso para libass.
+
+## Atualizacao 2026-07-12 - overlay alpha Remotion e karaoke
+
+- `apps/remotion/` usa Remotion `4.0.489`, React `19.2.7` e TypeScript `5.9.3`
+  fixados no lockfile; o CLI aceita somente payload v1 validado e argv conhecido;
+- a composicao `CortexOverlay` gera WebM VP9 `yuva420p` com template Editorial
+  Quote, sombra/outline efetivos e karaoke palavra por palavra na timeline pos-EDL;
+- o browser e obrigatorio e explicito (`render.remotion_browser`); o job nao baixa
+  Chromium nem retorna silenciosamente a libass/drawtext;
+- o overlay e um `StageArtifact` `render_overlay` persistido, com cache baseado no
+  payload, lockfile, CLI e fontes da composicao; o manifesto registra SHA-256,
+  tamanho, canvas, FPS, duracao e versoes/caminhos efetivos de Node e Remotion;
+- o backend confirma VP9 `alpha_mode=1`, dimensoes, duracao, hash e contagem de
+  palavras antes de compor o overlay sobre o master com FFmpeg/libvpx;
+- o Studio envia karaoke e sombra como configuracoes efetivas, e o manifesto de
+  render schema v5 referencia integralmente o artifact alpha;
+- um teste real extrai o plano alpha em instantes distintos, prova mudanca temporal
+  entre palavras e transparencia apos a ultima palavra, alem de validar composicao,
+  sidecar, quality gate e cache dos dois stages.
+
+Validacao no host: 66 testes fora dos sete endpoints `TestClient` passaram em
+19,94 s; os builds TypeScript de `apps/web` e `apps/remotion`, Ruff, compileall e
+`git diff --check` passaram. O teste Remotion requer host porque abre um servidor
+local para o browser. NVENC nao foi repetido neste gate.
+
+Proximo gate: completar o editor visual com cores/animacoes e overrides por corte,
+validar safe zones no artifact final e concluir o relatorio de publicacao do
+quality gate audiovisual. Depois, iniciar cenas/faces/cameras e J/L-cut reais.
+
 ## Fases seguintes
 
 Depois de uma transcricao real revisavel:
@@ -410,3 +491,149 @@ Depois deste handoff, foi implementado o primeiro caminho real de selecao:
 O P1 de Analysis Artifact continua sendo a proxima dependencia. A waveform da
 Curadoria ainda e ilustrativa e as fronteiras exibidas sao apenas regioes
 semanticas aproximadas, agora rotuladas dessa forma na interface.
+
+## Atualizacao 2026-07-12 - editor visual completo, overrides por corte e relatório
+
+- o payload v1 do overlay Remotion agora carrega cores efetivas, animacoes de
+  caption/karaoke e headline, com validacao estrita no backend e no CLI;
+- o render aceita override por corte via merge parcial documentado, persiste o
+  settings solicitado/override/efetivo e usa cache por settings resolvido;
+- safe zones foram extraidas para definicao versionada compartilhada por canvas
+  e o quality gate do render passou a consolidar um relatorio de publicacao com
+  loudness, visual, captions, safe zones, encoder e provenance;
+- o Studio ganhou affordance de customizacao por corte na etapa Render, sem
+  duplicar o painel global.
+
+Revisao do orquestrador (2026-07-12, apos esgotar creditos do codex): a rodada
+foi entregue com regressoes que precisaram de correcao no host antes de fechar:
+
+- bundle Remotion estava em cache stale (`apps/remotion/.cache`), reproduzindo o
+  erro `interpolate [0,0]`; limpar o cache e rebuildar resolveu. O `safeInterpolate`
+  ja guardava ranges iguais;
+- `RemotionOverlayManifest` nao declarava os campos de cor emitidos pelo CLI
+  (`captionTextColor`, `captionKaraokeColor`, `headlineBurstColor`,
+  `headlineStripColor`); adicionados com alias;
+- a validacao hex so existia em `RenderColorSettings`; foi estendida para
+  `RenderCaptionSettings`, `RenderHeadlineSettings` e as duas classes `Patch`
+  (cores agora normalizam para uppercase canonico e rejeitam nao-hex).
+
+Estado validado no host: `.venv/bin/pytest -q` = 78 testes passando (inclusive os
+TestClient, que rodaram fora do sandbox), Ruff limpo, `compileall`, builds de
+`apps/web` e `apps/remotion` e `git diff --check` OK. Nada commitado.
+
+Safe zones - validacao real por pixels (implementada nesta revisao): a checagem
+estatica anterior (tautologica) foi substituida. `RenderService._safe_zone_issues`
+agora amostra os pixels nao-transparentes do overlay WebM alpha via FFmpeg
+(`alphaextract,bbox`), separando a metade superior (headline) da inferior
+(legenda) e comparando as bounding boxes com as margens da safe zone em pixels.
+Detalhes que importam para quem for mexer:
+
+- o decoder nativo `vp9` do FFmpeg DESCARTA o plano alpha ("Requested planes not
+  available"); e obrigatorio forcar `-c:v libvpx-vp9` ANTES do `-i`, senao a
+  analise quebra. O compositor ja usava libvpx; a analise passou a usar tambem;
+- a taxa de amostragem e `render.safe_zone_sample_fps` (default 4.0);
+- tolerancia de `_SAFE_ZONE_TOLERANCE_PX` (2 px) absorve ruido de subamostragem;
+- `tests/test_render_quality_report.py` gera WebMs VP9 alpha reais (alpha escrito
+  por `geq`, pois `drawbox` NAO altera o plano alpha) e prova deteccao dentro/fora
+  para caption e headline; o teste de render completo exercita o overlay real.
+
+Pendente (nao critico): distinguir headline/legenda hoje assume ancoragem
+topo/base via corte ao meio do canvas; se um template futuro posicionar overlays
+fora dessas metades, a atribuicao por regiao precisa evoluir.
+
+## Atualizacao 2026-07-12 - indice de cenas e scene snapping
+
+Gate 1 da Fase 5: fundacao deterministica de cortes de camera, usada agora no
+scene snapping da EDL e reutilizavel depois por faces/cameras/reactions.
+
+Indice de cenas (`scene_index`):
+
+- deteccao via filtro `scdet` do proprio FFmpeg — zero dependencias Python
+  novas (nada de PySceneDetect/OpenCV), decisao de arquitetura explicita;
+- `scdet` loga cada corte detectado em stderr como
+  `lavfi.scd.score: <score>, lavfi.scd.time: <time>` quando roda com `-v info`;
+  `src/cortex/analyze/scene_detect.py` faz o parse por regex (mesmo padrao de
+  `blackdetect`/`freezedetect` ja usado em `cortex.render.service`), sem
+  precisar do filtro `metadata=print`;
+- threshold versionado em `analysis.scene_threshold` (default 10.0, escala
+  nativa do scdet, 0-100) em `config/cortex.yaml`, com override por job;
+- `SceneIndexDocument` (`src/cortex/analyze/scene_schemas.py`) segue o mesmo
+  padrao dos outros stage artifacts: schema versionado (v1), hash de inputs
+  (fonte + threshold + versao do algoritmo), cache por hash, JSON persistido em
+  `data/projects/<id>/scenes/`. Guarda cortes com score, cenas contiguas
+  derivadas dos cortes, contagem, duracao da fonte e provenance (caminho e
+  versao efetiva do ffmpeg, filtro e threshold efetivos);
+- `SceneIndexService` (`src/cortex/analyze/scene_service.py`) roda o `scdet`
+  direto sobre o video fonte (nao sobre o WAV normalizado, que nao tem canal de
+  video), com claim/progresso/cancelamento cooperativos identicos ao padrao
+  de `AnalysisService` — o subprocesso e monitorado por polling e pode ser
+  terminado a meio caminho;
+- `JobType.SCENE_ANALYSIS` com handler real em `worker.py`;
+  `POST /api/v1/projects/{id}/scenes` cria o job (404/400/409 claros se
+  projeto/fonte nao existem ou o arquivo da fonte nao esta disponivel) e
+  `GET /api/v1/projects/{id}/scenes/{artifact_id}` retorna o documento.
+
+Scene snapping na EDL:
+
+- `edit_plan` aceita opcionalmente `scene_index_artifact_id`. Quando presente,
+  apos o quality gate existente (que ja repara fronteiras dentro de palavra —
+  `boundary_snapped`), `snap_segments_to_scene_cuts`
+  (`src/cortex/edit/boundary.py`) ajusta toda fronteira de VIDEO da EDL (start
+  e end de cada segmento) para o corte de cena mais proximo, DESDE QUE o corte
+  esteja a ate `edit.scene_snap_tolerance_seconds` (default 0.5 s,
+  `config/cortex.yaml`) E o ponto de destino nao caia dentro de uma palavra
+  nem de um intervalo VAD protegido. A funcao reutiliza o mesmo resolvedor de
+  fronteiras do modulo (nao ha um resolver paralelo) e a prioridade continua
+  sendo preservar fala/pausa, como no `EDITING_ENGINE.md`;
+- cada snap aplicado gera uma issue `scene_snapped` (severity `info`, para
+  distinguir de reparo de algo inseguro) no `EditQualityReport`, com
+  `snapped_from`/`snapped_to` em segundos e `delta_ms`;
+  `EditPlanDiagnostics.scene_snap_count` soma os snaps aplicados;
+- o hash de cache do `edit_plan` so inclui o `scene_index_artifact_id`, o
+  sha256 do documento de cenas e a tolerancia quando um `scene_index` e
+  passado — sem ele, o payload do hash e byte-identico ao anterior a este
+  gate, entao planos existentes continuam validos e o comportamento sem
+  scene_index nao muda;
+- `EditPlanDocument.scene_index_artifact_id` (opcional, default `None`) grava
+  a proveniencia; `EDIT_PLAN_SCHEMA_VERSION` continua 1 porque o campo novo e
+  aditivo e tem default, entao documentos antigos continuam validando.
+
+Curadoria (frontend):
+
+- botao explicito "Detectar cenas" na etapa Curadoria (nunca automatico);
+  acompanha o job `scene_analysis` por SSE como os demais e, ao concluir,
+  desenha os cortes de cena como marcadores reais sobre a waveform do corte
+  ativo (`SceneMarkers` em `apps/web/src/App.tsx`), rotulados como dado real
+  de `scdet`, nao preview;
+- ao preparar os planos de edicao dos cortes selecionados, o `scene_index`
+  detectado (se houver) e enviado automaticamente para ativar o snapping.
+
+Validacao: video sintetico de quatro trechos concatenados (cores solidas +
+`testsrc`, cortes conhecidos em ~2.0s/3.5s/6.0s) provou deteccao dentro de
+0.2s de tolerancia e cache hit na segunda chamada do `SceneIndexService`
+(`tests/test_scene_index.py`). Testes unitarios de `snap_segments_to_scene_cuts`
+cobrem snap dentro da tolerancia, recusa por violacao de palavra, recusa por
+violacao de VAD, fronteira multi-segmento e no-op sem cortes/tolerancia
+(`tests/test_scene_snapping.py`), alem de testes de servico/API provando que um
+plano sem `scene_index` fica byte-identico ao comportamento anterior e que um
+plano com `scene_index` aplica o snap e registra a issue. `.venv/bin/pytest -q`
+= 95 testes (79 anteriores + 16 novos, TestClient incluso) passaram no sandbox
+desta vez, sem o travamento historico; Ruff, `compileall`, build de `apps/web`
+e `git diff --check` tambem passaram. Nao foi necessario repetir no host desta
+vez, mas como o travamento de `TestClient` no sandbox ja foi visto antes,
+reconfirmar `.venv/bin/pytest -q` no host antes do merge por seguranca.
+
+Fora do escopo deste gate (fica para os proximos gates da Fase 5): deteccao de
+faces, tracking de interlocutor, reaction shots, camera planner e J/L-cut
+reais. O `scene_index` aqui e apenas a fundacao determinista de cortes de
+camera — nenhuma dessas capacidades foi implementada ou deve ser declarada
+como pronta.
+
+Revisao do orquestrador (mesma data): aprovado com uma correcao aplicada apos a
+entrega da lane implementer — `snap_segments_to_scene_cuts` podia inverter ou
+esvaziar um segmento curto quando start e end eram puxados por cortes de cena
+opostos; adicionado guard de comprimento minimo (`_SCENE_SNAP_MIN_SEGMENT_SECONDS`
+= 0.2s) com teste dedicado. Validacao final no host: 96 testes, Ruff, compileall,
+build Vite e `git diff --check` limpos. Proximo gate da Fase 5: shot/face index
+(deteccao de faces e planos por amostragem) como fundacao para tracking de
+interlocutor e reaction shots.

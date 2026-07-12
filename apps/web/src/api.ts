@@ -154,6 +154,7 @@ export type EditPlanIssue = {
   time?: number | null;
   snapped_from?: number | null;
   snapped_to?: number | null;
+  delta_ms?: number | null;
 };
 
 export type EditPlanDocument = {
@@ -162,6 +163,7 @@ export type EditPlanDocument = {
   source_asset_id: string;
   transcript_artifact_id: string;
   analysis_artifact_id: string;
+  scene_index_artifact_id?: string | null;
   input_hash: string;
   clip_start: number;
   clip_end: number;
@@ -181,6 +183,7 @@ export type EditPlanDocument = {
     saved_seconds: number;
     crossfade: number;
     vad_used: boolean;
+    scene_snap_count: number;
   };
   quality: {
     passed: boolean;
@@ -188,6 +191,75 @@ export type EditPlanDocument = {
     profile: string;
     degraded: boolean;
   };
+};
+
+export type SceneCut = { time: number; score: number };
+export type SceneSegment = { index: number; start: number; end: number };
+
+export type SceneIndexDocument = {
+  schema_version: number;
+  duration_seconds: number;
+  cuts: SceneCut[];
+  scenes: SceneSegment[];
+  cut_count: number;
+  engine: {
+    filter: string;
+    threshold_requested: number;
+    threshold_effective: number;
+    ffmpeg_version: string;
+  };
+};
+
+export type RenderSettings = {
+  schema_version: 1;
+  encoder: "h264_nvenc" | "libx264";
+  canvas: {
+    width: 1080 | 1920;
+    height: 1080 | 1920;
+    fps: 30;
+  };
+  captions: {
+    enabled: boolean;
+    font_family: string;
+    font_size: number;
+    words_per_cue: number;
+    outline: boolean;
+    shadow: boolean;
+    karaoke: boolean;
+    text_color: string;
+    karaoke_color: string;
+    outline_color: string;
+    shadow_color: string;
+    animation: { style: "none" | "fade" | "pop"; duration_seconds: number };
+  };
+  headline: {
+    enabled: boolean;
+    text: string;
+    font_family: string;
+    font_size: number;
+    duration_seconds: number;
+    burst_color: string;
+    strip_color: string;
+    text_color: string;
+    animation: { entrance: "none" | "fade" | "slide"; exit: "none" | "fade" | "slide"; duration_seconds: number };
+  };
+  subtitles: {
+    sidecar_srt: boolean;
+  };
+  template: {
+    quote_burst_opacity: number;
+    quote_strip_opacity: number;
+    quote_padding: number;
+  };
+};
+
+export type RenderSettingsPatch = {
+  encoder?: RenderSettings["encoder"];
+  canvas?: Partial<RenderSettings["canvas"]>;
+  captions?: Partial<RenderSettings["captions"]>;
+  headline?: Partial<RenderSettings["headline"]>;
+  subtitles?: Partial<RenderSettings["subtitles"]>;
+  template?: Partial<RenderSettings["template"]>;
 };
 
 export type RenderDocument = {
@@ -200,6 +272,11 @@ export type RenderDocument = {
   output_size_bytes: number;
   timeline_duration_seconds: number;
   segment_count: number;
+  subtitles_path?: string | null;
+  subtitles_sha256?: string | null;
+  overlays?: { renderer: string; captions_enabled: boolean; karaoke_enabled: boolean; caption_font?: string | null; headline_enabled: boolean; headline_text?: string | null; artifact_sha256?: string | null; remotion_version?: string | null } | null;
+  requested_settings?: RenderSettings | null;
+  effective_settings?: RenderSettings | null;
   engine: { requested_encoder: string; effective_encoder: string; width: number; height: number; fps: number };
   quality: {
     passed: boolean;
@@ -213,7 +290,31 @@ export type RenderDocument = {
     loudness_delta_lu?: number | null;
     true_peak_dbfs?: number | null;
     true_peak_limit_dbfs?: number | null;
+    caption_cue_count: number;
+    subtitles_present: boolean;
+    headline_present: boolean;
+    visual_analysis_performed?: boolean;
+    black_threshold_seconds?: number | null;
+    black_interval_count?: number;
+    black_total_duration_seconds?: number;
+    black_max_duration_seconds?: number;
+    freeze_threshold_seconds?: number | null;
+    freeze_interval_count?: number;
+    freeze_total_duration_seconds?: number;
+    freeze_max_duration_seconds?: number;
   };
+  publication?: {
+    publish_ready: boolean;
+    reasons: string[];
+    loudness: Record<string, number | null>;
+    visual: Record<string, number | boolean | null>;
+    captions: Record<string, number | boolean | null>;
+    safe_zones: Record<string, unknown>;
+    encoder: Record<string, string>;
+    dimensions: Record<string, number>;
+    hashes: Record<string, string | null>;
+    provenance: Record<string, string | null>;
+  } | null;
 };
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
@@ -271,19 +372,32 @@ export const api = {
       body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, ...brief }),
     }),
 
-  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string) =>
+  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string, sceneIndexArtifactId?: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/edit-plans`, {
       method: "POST",
-      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, start, end, profile }),
+      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, scene_index_artifact_id: sceneIndexArtifactId ?? null, start, end, profile }),
     }),
+
+  startSceneIndex: (projectId: string, sourceAssetId: string, sceneThreshold?: number) =>
+    request<ApiJob>(`/api/v1/projects/${projectId}/scenes`, {
+      method: "POST",
+      body: JSON.stringify({ source_asset_id: sourceAssetId, scene_threshold: sceneThreshold ?? null }),
+    }),
+
+  sceneIndex: (projectId: string, artifactId: string) =>
+    request<ArtifactEnvelope<SceneIndexDocument>>(`/api/v1/projects/${projectId}/scenes/${artifactId}`),
 
   editPlan: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<EditPlanDocument>>(`/api/v1/projects/${projectId}/edit-plans/${artifactId}`),
 
-  startRender: (projectId: string, editPlanArtifactId: string, encoder: string) =>
+  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, renderSettingsOverride?: RenderSettingsPatch) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/renders`, {
       method: "POST",
-      body: JSON.stringify({ edit_plan_artifact_id: editPlanArtifactId, encoder }),
+      body: JSON.stringify({
+        edit_plan_artifact_id: editPlanArtifactId,
+        render_settings: renderSettings,
+        render_settings_override: renderSettingsOverride,
+      }),
     }),
 
   render: (projectId: string, artifactId: string) =>
@@ -291,6 +405,9 @@ export const api = {
 
   renderMediaUrl: (projectId: string, artifactId: string) =>
     `/api/v1/projects/${projectId}/renders/${artifactId}/media`,
+
+  renderSubtitlesUrl: (projectId: string, artifactId: string) =>
+    `/api/v1/projects/${projectId}/renders/${artifactId}/subtitles`,
 
   // Upload via XHR para ter progresso real de envio (fetch não expõe upload progress).
   uploadSource: (projectId: string, file: File, onProgress?: (fraction: number) => void) =>

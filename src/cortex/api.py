@@ -23,7 +23,7 @@ from cortex.ingest.ffprobe import FFprobeError, probe_media
 from cortex.ingest.upload import UploadValidationError, store_upload_stream
 from cortex.jobs import InvalidJobTransitionError, JobNotFoundError, JobStore
 from cortex.paths import renders_dir, source_dir
-from cortex.render.schemas import RenderDocument
+from cortex.render.schemas import RenderDocument, RenderSettings, RenderSettingsPatch
 from cortex.schemas import JobCreate, JobStatus, JobType
 
 
@@ -60,6 +60,7 @@ class EditPlanRequest(BaseModel):
 
     transcript_artifact_id: str
     analysis_artifact_id: str
+    scene_index_artifact_id: str | None = None
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     profile: str = "auto"
@@ -71,11 +72,29 @@ class EditPlanRequest(BaseModel):
         return self
 
 
+class SceneIndexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str
+    scene_threshold: float | None = Field(default=None, ge=0.0, le=100.0)
+
+
 class RenderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     edit_plan_artifact_id: str
     encoder: str | None = None
+    headline: str | None = Field(default=None, max_length=120)
+    render_settings: RenderSettings | None = None
+    render_settings_override: RenderSettingsPatch | None = None
+
+    @model_validator(mode="after")
+    def reject_mixed_settings(self) -> RenderRequest:
+        if self.render_settings is not None and (
+            self.encoder is not None or self.headline is not None or self.render_settings_override is not None
+        ):
+            raise ValueError("render_settings não pode ser combinado com encoder/headline legados")
+        return self
 
 
 class SuggestionRequest(BaseModel):
@@ -269,6 +288,45 @@ def create_app(config: CortexConfig | None = None):
             "document": json.loads(path.read_text(encoding="utf-8")),
         }
 
+    @app.post(f"{router_prefix}/projects/{{project_id}}/scenes", status_code=201)
+    def create_scene_index_job(project_id: str, request: SceneIndexRequest):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        try:
+            asset = domain.get_source_asset(request.source_asset_id)
+        except SourceAssetNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Fonte não encontrada") from exc
+        if asset.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Fonte não pertence a este projeto")
+        source_path = settings.paths.data_dir / asset.stored_path
+        if not source_path.exists():
+            raise HTTPException(
+                status_code=409, detail="Arquivo da fonte não está disponível para detecção de cenas"
+            )
+        return jobs.create(JobCreate(
+            type=JobType.SCENE_ANALYSIS,
+            project_id=project_id,
+            payload={"source_asset_id": asset.id, "scene_threshold": request.scene_threshold},
+        ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/scenes/{{artifact_id}}")
+    def get_scene_index(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Índice de cenas não encontrado") from exc
+        if artifact.project_id != project_id or artifact.stage != "scene_index":
+            raise HTTPException(status_code=404, detail="Índice de cenas não encontrado")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo do índice de cenas não está disponível")
+        return {
+            "artifact": artifact,
+            "document": json.loads(path.read_text(encoding="utf-8")),
+        }
+
     @app.post(f"{router_prefix}/projects/{{project_id}}/edit-plans", status_code=201)
     def create_edit_plan_job(project_id: str, request: EditPlanRequest):
         try:
@@ -287,12 +345,20 @@ def create_app(config: CortexConfig | None = None):
             raise HTTPException(status_code=404, detail="Análise não encontrada") from exc
         if analysis.project_id != project_id or analysis.stage != "analysis":
             raise HTTPException(status_code=400, detail="Análise não pertence a este projeto")
+        if request.scene_index_artifact_id is not None:
+            try:
+                scene_index = domain.get_stage_artifact(request.scene_index_artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="Índice de cenas não encontrado") from exc
+            if scene_index.project_id != project_id or scene_index.stage != "scene_index":
+                raise HTTPException(status_code=400, detail="Índice de cenas não pertence a este projeto")
         return jobs.create(JobCreate(
             type=JobType.EDIT_PLAN,
             project_id=project_id,
             payload={
                 "transcript_artifact_id": request.transcript_artifact_id,
                 "analysis_artifact_id": request.analysis_artifact_id,
+                "scene_index_artifact_id": request.scene_index_artifact_id,
                 "start": request.start,
                 "end": request.end,
                 "profile": request.profile,
@@ -330,7 +396,19 @@ def create_app(config: CortexConfig | None = None):
         return jobs.create(JobCreate(
             type=JobType.RENDER,
             project_id=project_id,
-            payload={"edit_plan_artifact_id": edit_plan.id, "encoder": request.encoder},
+            payload={
+                "edit_plan_artifact_id": edit_plan.id,
+                "encoder": request.encoder,
+                "headline": request.headline,
+                "render_settings": (
+                    request.render_settings.model_dump(mode="json")
+                    if request.render_settings is not None else None
+                ),
+                "render_settings_override": (
+                    request.render_settings_override.model_dump(mode="json", exclude_none=True)
+                    if request.render_settings_override is not None else None
+                ),
+            },
         ))
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}")
@@ -381,6 +459,44 @@ def create_app(config: CortexConfig | None = None):
             media_path,
             media_type="video/mp4",
             filename=f"cortex-render-{artifact.id[:12]}.mp4",
+        )
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/subtitles")
+    def get_render_subtitles(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Render não encontrado") from exc
+        if artifact.project_id != project_id or artifact.stage != "render":
+            raise HTTPException(status_code=404, detail="Render não encontrado")
+
+        render_root = renders_dir(settings, project_id).resolve()
+        manifest_path = Path(artifact.path).resolve()
+        if not manifest_path.is_relative_to(render_root) or not manifest_path.is_file():
+            raise HTTPException(status_code=410, detail="Manifesto do render não está disponível")
+        try:
+            document = RenderDocument.model_validate_json(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=410, detail="Manifesto do render não está disponível"
+            ) from exc
+        if document.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Render não encontrado")
+        if document.subtitles_path is None:
+            raise HTTPException(status_code=404, detail="Render não possui sidecar SRT")
+        subtitles_path = Path(document.subtitles_path).resolve()
+        if (
+            not subtitles_path.is_relative_to(render_root)
+            or subtitles_path.suffix.lower() != ".srt"
+            or not subtitles_path.is_file()
+        ):
+            raise HTTPException(status_code=410, detail="Sidecar SRT não está disponível")
+        return FileResponse(
+            subtitles_path,
+            media_type="application/x-subrip",
+            filename=f"cortex-render-{artifact.id[:12]}.srt",
         )
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/artifacts")

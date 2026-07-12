@@ -25,6 +25,9 @@
 - filler preview e loudness na Curadoria;
 - [x] render real curto multi-segmento, crossfades e regressao automatizada;
 - [x] loudness final -14 LUFS, true peak, preview e download do artifact renderizado;
+- [x] captions/headline FFmpeg reais, sidecar SRT persistido e download seguro;
+- [x] configuracao efetiva Studio -> job -> manifesto, sem controles simulados;
+- [x] gate deterministico inicial de frames pretos e congelados;
 - quality gate audiovisual completo e relatorio de publicacao.
 
 ## Fase 3 - Selecao e curadoria
@@ -39,19 +42,29 @@
 
 ## Fase 4 - Visual e render
 
-- composicoes Remotion proprias para legenda e headline;
-- editor completo de tipografia, karaoke, outline, sombra e animacao;
-- template `Editorial Quote` baseado na referencia do usuario;
-- 9:16, 1:1 e 16:9; H.264/H.265, CQ, FPS, AAC e SRT;
-- presets salvos e overrides por corte.
+- [x] composicoes Remotion proprias para legenda e headline;
+- [x] primeira composicao persistida de captions/headline via FFmpeg/libass/drawtext;
+- [x] editor completo de tipografia, karaoke, outline, sombra e animacao;
+- [x] canvas, fonte, tamanho, outline, headline, encoder e SRT efetivos no Studio;
+- [x] template `Editorial Quote` baseado na referencia do usuario;
+- [x] 9:16, 1:1 e 16:9; H.264/H.265, CQ, FPS, AAC e SRT;
+- [x] overrides por corte;
+- presets salvos (nomeados, persistidos e reaplicaveis) - ainda nao implementado;
+- [x] editor visual completo com cores/animacoes efetivas, safe zones (validacao por
+  pixels do overlay alpha) e relatorio de publicacao.
 
 ## Fase 5 - Inteligencia audiovisual
 
-- deteccao de cenas, faces e planos;
+- [x] Gate 1: indice deterministico de cortes de camera (`scene_index`) via
+  `scdet` do FFmpeg, cacheado por hash, com job/endpoints proprios;
+- [x] Gate 1: scene snapping opcional na EDL (`edit_plan`), sempre subordinado
+  a regra de preservar fala/pausa, com nota `scene_snapped` no quality report;
+- deteccao de faces e planos (shot boundaries alem do corte de camera);
 - tracking do interlocutor e timeline de cameras;
 - reaction shots semanticamente coerentes;
-- J-cut, L-cut, punch-in e scene snapping editaveis;
-- deteccao de frames pretos, congelados ou borrados.
+- J-cut, L-cut e punch-in editaveis;
+- deteccao de frames pretos, congelados ou borrados (alem do gate visual ja
+  existente no render).
 
 ## Fase 6 - Producao
 

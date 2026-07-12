@@ -32,6 +32,7 @@ class EditPlanDiagnostics(BaseModel):
     saved_seconds: float = Field(ge=0)
     crossfade: float = Field(ge=0)
     vad_used: bool
+    scene_snap_count: int = Field(default=0, ge=0)
 
 
 class EditQualityIssue(BaseModel):
@@ -45,6 +46,7 @@ class EditQualityIssue(BaseModel):
     time: float | None = None
     snapped_from: float | None = None
     snapped_to: float | None = None
+    delta_ms: float | None = None
     cuts: int | None = None
     recommended_max: int | None = None
 
@@ -66,6 +68,7 @@ class EditPlanDocument(BaseModel):
     source_asset_id: str
     transcript_artifact_id: str
     analysis_artifact_id: str
+    scene_index_artifact_id: str | None = None
     input_hash: str
     clip_start: float = Field(ge=0)
     clip_end: float = Field(ge=0)
