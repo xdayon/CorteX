@@ -882,6 +882,8 @@ def run_edit_plan_job(
             progress_cb=progress_cb,
             should_cancel=should_cancel,
             scene_index_artifact=scene_index_artifact,
+            jl_cut=job.payload.get("jl_cut"),
+            max_jl_offset_seconds=job.payload.get("max_jl_offset_seconds"),
         )
     except EditPlanJobCancelled:
         return

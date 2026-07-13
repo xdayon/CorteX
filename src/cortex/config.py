@@ -86,6 +86,10 @@ class EditConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scene_snap_tolerance_seconds: float = Field(default=0.5, ge=0.0, le=5.0)
+    # J/L-cut default (Gate 4, Session G). False until the FFmpeg renderer
+    # (Session H) actually trims audio/video independently — flipping this
+    # on today would persist offsets no renderer honors yet.
+    jl_cut_enabled_default: bool = False
 
 
 class IngestConfig(BaseModel):

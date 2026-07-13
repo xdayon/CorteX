@@ -3,9 +3,11 @@ from __future__ import annotations
 import math
 
 from cortex.analyze.schemas import VadInterval
-from cortex.edit.boundary import EnergyTrack
+from cortex.edit.boundary import EnergyTrack, word_containing
 from cortex.edit.profiles import EditingProfile
 from cortex.transcribe.schemas import TranscriptWord
+
+_JL_OFFSET_EPSILON = 0.001
 
 
 def word_intervals(words: list[TranscriptWord], guard: float = 0.035) -> list[tuple[float, float]]:
@@ -161,6 +163,115 @@ def plan_safe_segments(
                 "duration": profile.crossfade,
             }
     return segments, diagnostics
+
+
+def _forbidden_zones(
+    words: list[TranscriptWord], vad_intervals: list[VadInterval] | None, guard: float = 0.035,
+) -> list[tuple[float, float]]:
+    forbidden = word_intervals(words, guard)
+    for interval in vad_intervals or []:
+        if interval.end > interval.start:
+            forbidden.append((interval.start, interval.end))
+    return forbidden
+
+
+def resolve_jl_cuts(
+    segments: list[dict],
+    words: list[TranscriptWord],
+    vad_intervals: list[VadInterval] | None,
+    energy: EnergyTrack | None,
+    max_offset: float,
+) -> tuple[list[dict], list[dict], dict]:
+    """Resolve independent audio cut points (J/L-cuts) at interior boundaries.
+
+    For every boundary between two consecutive segments that already carries
+    a transition, search for a quiet, word/VAD-safe point near that
+    segment's video out-point within ``max_offset`` seconds — the same
+    EnergyTrack.quiet_boundary + forbidden-zone construction used elsewhere
+    in this module. The resolved offset shifts *both* the outgoing
+    segment's audio_end and the incoming segment's audio_start by the same
+    amount, so the audio seconds one segment gains are exactly the seconds
+    its neighbor loses (see EditPlanDocument's A/V coverage invariant).
+
+    When no safe point exists in range (dense words/VAD covering the whole
+    window), the boundary keeps its original synchronous transition and a
+    ``jl_no_safe_boundary`` issue is recorded — never a raised exception,
+    consistent with this pipeline's fail-safe/degrade-not-abort policy.
+    """
+    resolved = [dict(segment) for segment in segments]
+    issues: list[dict] = []
+    counts = {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 0}
+
+    if max_offset <= 0 or energy is None or len(resolved) < 2:
+        for segment in resolved:
+            segment.setdefault("audio_start", segment["start"])
+            segment.setdefault("audio_end", segment["end"])
+        return resolved, issues, counts
+
+    forbidden = _forbidden_zones(words, vad_intervals)
+
+    for index in range(len(resolved) - 1):
+        current = resolved[index]
+        following = resolved[index + 1]
+        transition = current.get("transition")
+        if not transition:
+            continue
+
+        video_cut = float(current["end"])
+        candidate = energy.quiet_boundary(video_cut, max_offset, forbidden)
+        safe = (
+            word_containing(words, candidate) is None
+            and not any(a <= candidate <= b for a, b in forbidden)
+        )
+        if not safe:
+            counts["jl_blocked"] += 1
+            issues.append({
+                "severity": "info",
+                "code": "jl_no_safe_boundary",
+                "segment": index,
+                "boundary": "out",
+                "time": round(video_cut, 3),
+            })
+            continue
+
+        offset = round(candidate - video_cut, 3)
+        offset = max(-max_offset, min(max_offset, offset))
+        if abs(offset) < _JL_OFFSET_EPSILON:
+            # Already the quietest point on offer, and it coincides with the
+            # existing video cut — nothing to gain from a J/L-cut here.
+            continue
+
+        new_audio_end = round(video_cut + offset, 3)
+        new_audio_start = round(float(following["start"]) + offset, 3)
+        current_audio_start = float(current.get("audio_start") or current["start"])
+        following_audio_end = float(following.get("audio_end") or following["end"])
+        if (
+            new_audio_end <= current_audio_start + _JL_OFFSET_EPSILON
+            or new_audio_start >= following_audio_end - _JL_OFFSET_EPSILON
+        ):
+            # The safe point exists but a neighbor segment is too short to
+            # absorb the shift without inverting its audio clock.
+            counts["jl_blocked"] += 1
+            issues.append({
+                "severity": "info",
+                "code": "jl_no_safe_boundary",
+                "segment": index,
+                "boundary": "out",
+                "time": round(video_cut, 3),
+            })
+            continue
+
+        current["audio_end"] = new_audio_end
+        following["audio_start"] = new_audio_start
+        kind = "j_cut" if offset < 0 else "l_cut"
+        transition["kind"] = kind
+        transition["audio_offset_seconds"] = offset
+        counts["j_cuts" if kind == "j_cut" else "l_cuts"] += 1
+
+    for segment in resolved:
+        segment.setdefault("audio_start", segment["start"])
+        segment.setdefault("audio_end", segment["end"])
+    return resolved, issues, counts
 
 
 def timeline_duration(segments: list[dict], default_crossfade: float = 0.0) -> float:

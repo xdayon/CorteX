@@ -17,23 +17,29 @@ class EditingProfile(BaseModel):
     rhetorical_ceiling: float
     min_removed_pause: float
     max_cuts_per_30s: int
+    # Max seconds a J/L-cut audio boundary may drift from its video boundary
+    # (Gate 4). Slower-paced profiles tolerate wider offsets: at a
+    # contemplative rhythm a held or leading voice reads as natural emphasis,
+    # while a dynamic/fast cut needs A/V to stay tight or the join reads as
+    # a sync error rather than a deliberate J/L-cut.
+    max_jl_offset: float
 
 
 PROFILES: dict[str, EditingProfile] = {
     "dynamic": EditingProfile(
         name="dynamic", silence_threshold=0.82, pre_roll=0.10, post_roll=0.15,
         boundary_radius=0.24, crossfade=0.045, rhetorical_ceiling=1.20,
-        min_removed_pause=0.32, max_cuts_per_30s=7,
+        min_removed_pause=0.32, max_cuts_per_30s=7, max_jl_offset=0.35,
     ),
     "balanced": EditingProfile(
         name="balanced", silence_threshold=1.10, pre_roll=0.12, post_roll=0.21,
         boundary_radius=0.30, crossfade=0.060, rhetorical_ceiling=1.65,
-        min_removed_pause=0.42, max_cuts_per_30s=5,
+        min_removed_pause=0.42, max_cuts_per_30s=5, max_jl_offset=0.50,
     ),
     "contemplative": EditingProfile(
         name="contemplative", silence_threshold=1.65, pre_roll=0.16, post_roll=0.34,
         boundary_radius=0.34, crossfade=0.080, rhetorical_ceiling=2.45,
-        min_removed_pause=0.55, max_cuts_per_30s=3,
+        min_removed_pause=0.55, max_cuts_per_30s=3, max_jl_offset=0.70,
     ),
 }
 

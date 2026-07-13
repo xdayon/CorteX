@@ -11,7 +11,12 @@ from cortex.config import CortexConfig
 from cortex.domain.models import StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
 from cortex.edit.boundary import energy_track_from_analysis, snap_segments_to_scene_cuts
-from cortex.edit.planner import plan_safe_segments, protect_segment_boundaries, timeline_duration
+from cortex.edit.planner import (
+    plan_safe_segments,
+    protect_segment_boundaries,
+    resolve_jl_cuts,
+    timeline_duration,
+)
 from cortex.edit.profiles import resolve_profile
 from cortex.edit.quality import validate_edit_plan
 from cortex.edit.schemas import (
@@ -21,6 +26,7 @@ from cortex.edit.schemas import (
     EditQualityReport,
     EditSegment,
     EditTransition,
+    JlSettings,
 )
 from cortex.paths import edit_plans_dir
 from cortex.transcribe.schemas import TranscriptDocument, TranscriptWord
@@ -54,6 +60,8 @@ def _segment_to_schema(segment: dict) -> EditSegment:
     return EditSegment(
         start=segment["start"],
         end=segment["end"],
+        audio_start=segment.get("audio_start"),
+        audio_end=segment.get("audio_end"),
         timeline_order=segment.get("timeline_order", 0),
         transition=EditTransition(**transition) if transition else None,
     )
@@ -75,6 +83,8 @@ class EditPlanService:
         progress_cb: Callable[[float, str], None],
         should_cancel: Callable[[], bool],
         scene_index_artifact: StageArtifact | None = None,
+        jl_cut: bool | None = None,
+        max_jl_offset_seconds: float | None = None,
     ) -> dict:
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -116,6 +126,28 @@ class EditPlanService:
         requested_profile = (profile or "auto").strip().lower()
         transcript_hash = _sha256(transcript_path)
         analysis_hash = _sha256(analysis_path)
+
+        # Resolved eagerly (before the hash/cache check) because the
+        # effective J/L-cut settings below depend on the resolved profile's
+        # max_jl_offset, and the cache key must reflect them.
+        words = _flatten_words(transcript)
+        resolved_profile = resolve_profile(requested_profile, words, start, end)
+        energy = energy_track_from_analysis(analysis)
+
+        effective_jl_enabled = (
+            self._config.edit.jl_cut_enabled_default if jl_cut is None else bool(jl_cut)
+        )
+        if effective_jl_enabled:
+            requested_by: str = "user" if jl_cut is not None else "profile"
+            effective_max_jl_offset = resolved_profile.max_jl_offset
+            if max_jl_offset_seconds is not None:
+                effective_max_jl_offset = max(
+                    0.0, min(float(max_jl_offset_seconds), resolved_profile.max_jl_offset)
+                )
+        else:
+            requested_by = "disabled"
+            effective_max_jl_offset = 0.0
+
         hash_payload = {
             "schema_version": EDIT_PLAN_SCHEMA_VERSION,
             "transcript_artifact_id": transcript_artifact.id,
@@ -125,6 +157,11 @@ class EditPlanService:
             "clip_start": round(start, 4),
             "clip_end": round(end, 4),
             "profile": requested_profile,
+            "jl_settings": {
+                "enabled": effective_jl_enabled,
+                "max_offset_seconds": round(effective_max_jl_offset, 4),
+                "requested_by": requested_by,
+            },
         }
         # Absent a scene_index, the hash payload — and thus the cache key —
         # is identical to before this gate: EDLs stay byte-for-byte the same
@@ -150,9 +187,6 @@ class EditPlanService:
         if should_cancel():
             raise EditPlanJobCancelled()
         progress_cb(20.0, "Resolvendo perfil de ritmo")
-        words = _flatten_words(transcript)
-        resolved_profile = resolve_profile(requested_profile, words, start, end)
-        energy = energy_track_from_analysis(analysis)
 
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -189,7 +223,24 @@ class EditPlanService:
             )
             scene_snap_count = len(scene_issues)
             quality = {**quality, "issues": [*quality["issues"], *scene_issues]}
-        diagnostics = {**diagnostics, "scene_snap_count": scene_snap_count}
+
+        jl_counts = {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 0}
+        if effective_jl_enabled and not quality["degraded"]:
+            if should_cancel():
+                raise EditPlanJobCancelled()
+            progress_cb(90.0, "Resolvendo cortes J/L de áudio")
+            segments, jl_issues, jl_counts = resolve_jl_cuts(
+                segments, words, analysis.vad_intervals, energy, effective_max_jl_offset,
+            )
+            quality = {**quality, "issues": [*quality["issues"], *jl_issues]}
+
+        diagnostics = {
+            **diagnostics,
+            "scene_snap_count": scene_snap_count,
+            "j_cuts": jl_counts["j_cuts"],
+            "l_cuts": jl_counts["l_cuts"],
+            "jl_blocked": jl_counts["jl_blocked"],
+        }
 
         document = EditPlanDocument(
             project_id=transcript_artifact.project_id, source_asset_id=transcript_artifact.source_asset_id,
@@ -203,6 +254,11 @@ class EditPlanService:
             ),
             diagnostics=EditPlanDiagnostics(**diagnostics),
             quality=EditQualityReport(**quality),
+            jl_settings=JlSettings(
+                enabled=effective_jl_enabled,
+                max_offset_seconds=round(effective_max_jl_offset, 4),
+                requested_by=requested_by,
+            ),
         )
 
         if should_cancel():
@@ -229,6 +285,9 @@ class EditPlanService:
                 "degraded": quality["degraded"],
                 "scene_index_artifact_id": scene_index_artifact.id if scene_index_artifact is not None else None,
                 "scene_snap_count": scene_snap_count,
+                "requested_jl": jl_cut,
+                "effective_jl": effective_jl_enabled,
+                "effective_max_jl_offset_seconds": round(effective_max_jl_offset, 4),
             },
         ))
         progress_cb(100.0, "Plano de edição concluído")

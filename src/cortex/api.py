@@ -97,6 +97,10 @@ class EditPlanRequest(BaseModel):
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     profile: str = "auto"
+    # None = use config.edit.jl_cut_enabled_default (currently False — the
+    # FFmpeg renderer doesn't honor J/L offsets yet, see Gate 4 Session H).
+    jl_cut: bool | None = None
+    max_jl_offset_seconds: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="after")
     def clip_order(self) -> "EditPlanRequest":
@@ -1083,6 +1087,8 @@ def create_app(config: CortexConfig | None = None):
                 "start": request.start,
                 "end": request.end,
                 "profile": request.profile,
+                "jl_cut": request.jl_cut,
+                "max_jl_offset_seconds": request.max_jl_offset_seconds,
             },
         ))
 

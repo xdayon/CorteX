@@ -17,7 +17,12 @@ from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind, StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
 from cortex.edit.boundary import EnergyTrack
-from cortex.edit.planner import plan_safe_segments, protect_segment_boundaries
+from cortex.edit.planner import (
+    plan_safe_segments,
+    protect_segment_boundaries,
+    resolve_jl_cuts,
+    word_intervals,
+)
 from cortex.edit.profiles import PROFILES
 from cortex.edit.quality import validate_edit_plan
 from cortex.edit.schemas import EditPlanDocument
@@ -288,7 +293,7 @@ def test_edit_plan_service_caches_by_input_hash(tmp_path: Path) -> None:
     assert first["cached"] is False
     assert progress == sorted(progress) and progress[-1] == 100.0
     document = EditPlanDocument.model_validate_json(Path(first["edit_plan_path"]).read_text())
-    assert document.schema_version == 1
+    assert document.schema_version == 2
     assert len(domain.list_stage_artifacts(transcript.project_id, "edit_plan")) == 1
 
     second = service.run(
@@ -341,5 +346,275 @@ def test_edit_plan_endpoint_creates_job_and_get_returns_document(tmp_path: Path)
     assert fetched.status_code == 200, fetched.text
     payload = fetched.json()
     assert payload["artifact"]["stage"] == "edit_plan"
-    assert payload["document"]["schema_version"] == 1
+    assert payload["document"]["schema_version"] == 2
     assert payload["document"]["quality"]["passed"] is True
+
+
+# -- 8. J/L-cut resolution (Gate 4, Session G) --------------------------------
+
+
+def _jl_segments() -> list[dict]:
+    return [
+        {
+            "start": 0.0, "end": 2.0, "timeline_order": 0,
+            "transition": {"video": "micro_dissolve", "audio": "equal_power_crossfade", "duration": 0.06},
+        },
+        {"start": 2.5, "end": 4.0, "timeline_order": 1},
+    ]
+
+
+def test_resolve_jl_cuts_applies_offset_and_classifies_kind() -> None:
+    words = [_word("um", 1.0, 1.8), _word("dois", 2.7, 3.2)]
+    rms = [0.5] * 500
+    for i in range(180, 195):
+        rms[i] = 0.01
+    energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=rms)
+    forbidden = word_intervals(words)
+    expected_candidate = energy.quiet_boundary(2.0, 0.30, forbidden)
+    expected_offset = round(expected_candidate - 2.0, 3)
+    assert abs(expected_offset) > 0.001  # sanity: fixture actually moves the boundary
+
+    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, [], energy, 0.30)
+
+    assert issues == []
+    transition = resolved[0]["transition"]
+    assert transition["audio_offset_seconds"] == pytest.approx(expected_offset)
+    expected_kind = "j_cut" if expected_offset < 0 else "l_cut"
+    assert transition["kind"] == expected_kind
+    assert counts[f"{expected_kind}s"] == 1
+    assert counts["jl_blocked"] == 0
+    assert resolved[0]["audio_end"] == pytest.approx(round(2.0 + expected_offset, 3))
+    assert resolved[1]["audio_start"] == pytest.approx(round(2.5 + expected_offset, 3))
+    # boundaries with no neighbor never carry an offset (see coverage invariant)
+    assert resolved[0]["audio_start"] == resolved[0]["start"]
+    assert resolved[1]["audio_end"] == resolved[1]["end"]
+    # audio duration gained by one segment is exactly what its neighbor lost
+    total_video = (resolved[0]["end"] - resolved[0]["start"]) + (resolved[1]["end"] - resolved[1]["start"])
+    total_audio = (resolved[0]["audio_end"] - resolved[0]["audio_start"]) + (
+        resolved[1]["audio_end"] - resolved[1]["audio_start"]
+    )
+    assert total_audio == pytest.approx(total_video)
+
+
+def test_resolve_jl_cuts_blocks_when_entire_window_is_forbidden_by_word() -> None:
+    words = [_word("continuo", 1.7, 2.3)]  # covers the whole +/-0.30 search radius
+    energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=[0.5] * 500)
+
+    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, [], energy, 0.30)
+
+    assert counts == {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 1}
+    assert len(issues) == 1
+    assert issues[0]["code"] == "jl_no_safe_boundary"
+    transition = resolved[0]["transition"]
+    assert transition.get("kind") is None
+    assert transition.get("audio_offset_seconds") is None
+    assert resolved[0]["audio_end"] == resolved[0]["end"]
+    assert resolved[1]["audio_start"] == resolved[1]["start"]
+
+
+def test_resolve_jl_cuts_blocks_when_entire_window_is_forbidden_by_vad() -> None:
+    vad_intervals = [VadInterval(start=1.6, end=2.4, duration=0.8, start_sample=0, end_sample=1)]
+    energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=[0.5] * 500)
+
+    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), [], vad_intervals, energy, 0.30)
+
+    assert counts["jl_blocked"] == 1
+    assert issues[0]["code"] == "jl_no_safe_boundary"
+    assert resolved[0]["audio_end"] == resolved[0]["end"]
+    assert resolved[1]["audio_start"] == resolved[1]["start"]
+
+
+def test_resolve_jl_cuts_noop_when_max_offset_zero() -> None:
+    words = [_word("um", 1.0, 1.8), _word("dois", 2.7, 3.2)]
+    energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=[0.5] * 500)
+
+    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, [], energy, 0.0)
+
+    assert issues == []
+    assert counts == {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 0}
+    assert resolved[0]["audio_start"] == resolved[0]["start"]
+    assert resolved[0]["audio_end"] == resolved[0]["end"]
+    assert "kind" not in resolved[0]["transition"]
+
+
+def _jl_fixture_words() -> list[TranscriptWord]:
+    return [
+        _word("isso", 0.5, 1.0),
+        _word("mundo", 3.0, 3.5),
+        _word("agora", 3.6, 4.0),
+    ]
+
+
+def _jl_fixture_rms() -> list[float]:
+    # Frame grid matches energy_track_from_analysis for a 4.0s clip with the
+    # default 0.1s analysis frame (see _analysis_document): 60 frames. A
+    # quiet dip at indices 16-17 (~1.65s-1.75s) sits inside the J/L search
+    # radius (0.30s-0.50s past the balanced profile's planned cut at 1.25s)
+    # but outside the planner's own 0.30s boundary_radius, so it only
+    # influences J/L resolution, not where the pause itself gets cut.
+    rms = [0.4] * 60
+    rms[16] = 0.01
+    rms[17] = 0.01
+    return rms
+
+
+def test_edit_plan_v2_matches_v1_behavior_when_jl_disabled(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = _jl_fixture_words()
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 4.0, rms=_jl_fixture_rms())
+    service = EditPlanService(config, domain)
+
+    result = service.run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0.0, end=4.0, profile="balanced",
+        progress_cb=lambda _v, _m: None, should_cancel=lambda: False,
+    )
+    document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
+
+    assert document.schema_version == 2
+    assert document.jl_settings.enabled is False
+    assert document.jl_settings.max_offset_seconds == 0.0
+    assert document.diagnostics.j_cuts == 0
+    assert document.diagnostics.l_cuts == 0
+    assert document.diagnostics.jl_blocked == 0
+    for segment in document.segments:
+        assert segment.video_start == segment.start
+        assert segment.video_end == segment.end
+        assert segment.audio_start == segment.start
+        assert segment.audio_end == segment.end
+        assert segment.transition is None or segment.transition.kind == "crossfade"
+        assert segment.transition is None or segment.transition.audio_offset_seconds == 0.0
+
+
+def test_edit_plan_jl_enabled_applies_offset_within_profile_limit(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = _jl_fixture_words()
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 4.0, rms=_jl_fixture_rms())
+    service = EditPlanService(config, domain)
+
+    result = service.run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0.0, end=4.0, profile="balanced", jl_cut=True,
+        progress_cb=lambda _v, _m: None, should_cancel=lambda: False,
+    )
+    document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
+
+    assert document.jl_settings.enabled is True
+    assert document.jl_settings.max_offset_seconds == pytest.approx(PROFILES["balanced"].max_jl_offset)
+    assert document.diagnostics.l_cuts == 1
+    assert document.diagnostics.j_cuts == 0
+    assert document.diagnostics.jl_blocked == 0
+    assert len(document.segments) == 2
+    first, second = document.segments
+    assert first.transition is not None
+    assert first.transition.kind == "l_cut"
+    assert first.transition.audio_offset_seconds == pytest.approx(0.4)
+    assert abs(first.transition.audio_offset_seconds) <= PROFILES["balanced"].max_jl_offset + 1e-9
+    assert first.audio_end == pytest.approx(1.65)
+    assert second.audio_start == pytest.approx(3.25)
+    # Coverage invariant: total audio seconds == total video seconds. Also
+    # implicitly proven by EditPlanDocument validating at all — a violation
+    # would have raised a ValidationError during service.run().
+    total_video = sum(seg.video_end - seg.video_start for seg in document.segments)
+    total_audio = sum(seg.audio_end - seg.audio_start for seg in document.segments)
+    assert total_audio == pytest.approx(total_video)
+    assert first.video_end == pytest.approx(1.25)
+    assert second.video_start == pytest.approx(2.85)
+
+
+def test_edit_plan_jl_user_max_offset_clamped_by_profile(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = _jl_fixture_words()
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 4.0, rms=_jl_fixture_rms())
+    service = EditPlanService(config, domain)
+
+    result = service.run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0.0, end=4.0, profile="balanced", jl_cut=True, max_jl_offset_seconds=999.0,
+        progress_cb=lambda _v, _m: None, should_cancel=lambda: False,
+    )
+    document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
+
+    assert document.jl_settings.max_offset_seconds == pytest.approx(PROFILES["balanced"].max_jl_offset)
+
+
+def test_edit_plan_jl_toggle_changes_hash_and_artifact(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = _jl_fixture_words()
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 4.0, rms=_jl_fixture_rms())
+    service = EditPlanService(config, domain)
+
+    without_jl = service.run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0.0, end=4.0, profile="balanced", jl_cut=False,
+        progress_cb=lambda _v, _m: None, should_cancel=lambda: False,
+    )
+    with_jl = service.run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0.0, end=4.0, profile="balanced", jl_cut=True,
+        progress_cb=lambda _v, _m: None, should_cancel=lambda: False,
+    )
+    with_jl_again = service.run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0.0, end=4.0, profile="balanced", jl_cut=True,
+        progress_cb=lambda _v, _m: None, should_cancel=lambda: False,
+    )
+
+    assert without_jl["cached"] is False
+    assert with_jl["cached"] is False
+    assert without_jl["edit_plan_artifact_id"] != with_jl["edit_plan_artifact_id"]
+    assert with_jl_again["cached"] is True
+    assert with_jl_again["edit_plan_artifact_id"] == with_jl["edit_plan_artifact_id"]
+
+
+def test_edit_plan_jl_metadata_records_requested_and_effective(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = _jl_fixture_words()
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 4.0, rms=_jl_fixture_rms())
+    service = EditPlanService(config, domain)
+
+    result = service.run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0.0, end=4.0, profile="balanced", jl_cut=True,
+        progress_cb=lambda _v, _m: None, should_cancel=lambda: False,
+    )
+    artifact = domain.get_stage_artifact(result["edit_plan_artifact_id"])
+    assert artifact.metadata["requested_jl"] is True
+    assert artifact.metadata["effective_jl"] is True
+    assert artifact.metadata["effective_max_jl_offset_seconds"] == pytest.approx(
+        PROFILES["balanced"].max_jl_offset
+    )
+
+
+def test_resolve_jl_cuts_blocks_when_neighbor_segment_cannot_absorb_offset() -> None:
+    # A quiet dip pulls the audio cut ~0.2s early (J-cut), but the outgoing
+    # segment is only 0.15s long: applying the offset would invert its audio
+    # clock. The boundary must degrade to a synchronous cut, never raise.
+    segments = [
+        {
+            "start": 1.85, "end": 2.0, "timeline_order": 0,
+            "transition": {"video": "micro_dissolve", "audio": "equal_power_crossfade", "duration": 0.06},
+        },
+        {"start": 2.5, "end": 4.0, "timeline_order": 1},
+    ]
+    rms = [0.5] * 500
+    for i in range(178, 182):  # quiet dip around 1.78s-1.82s
+        rms[i] = 0.01
+    energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=rms)
+
+    resolved, issues, counts = resolve_jl_cuts(segments, [], [], energy, 0.30)
+
+    assert counts == {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 1}
+    assert issues[0]["code"] == "jl_no_safe_boundary"
+    assert resolved[0]["audio_end"] == resolved[0]["end"]
+    assert resolved[1]["audio_start"] == resolved[1]["start"]
