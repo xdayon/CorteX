@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hitechx.local/schemas/eval-dataset-1.json",
+  "title": "CorteX Editorial Evaluation Dataset Entry",
+  "description": "Uma entrada de dataset de avaliação editorial: metadados de um episódio (por hash, nunca por caminho de mídia) e as decisões humanas de aprovação/reprovação de trechos.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dataset_schema_version", "episode", "decisions"],
+  "properties": {
+    "dataset_schema_version": { "type": "integer", "const": 1 },
+    "episode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "source_sha256", "duration_seconds", "transcript_artifact_hash"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64,128}$",
+          "description": "Hash sha256 do arquivo de mídia fonte. Nunca um caminho de arquivo."
+        },
+        "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "transcript_artifact_hash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Identificador/hash do artefato de transcrição usado (audio_sha256 ou artifact id), nunca um caminho de arquivo."
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/decision" }
+    }
+  },
+  "$defs": {
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clip_ref", "verdict", "theme", "duration_seconds",
+        "hook_summary", "payoff_summary", "speakers", "reason",
+        "decided_by", "decided_at"
+      ],
+      "properties": {
+        "clip_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start_second", "end_second"],
+          "properties": {
+            "start_second": { "type": "number", "minimum": 0 },
+            "end_second": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "verdict": { "type": "string", "enum": ["approved", "rejected"] },
+        "theme": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "hook_summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "payoff_summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "speakers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "decided_by": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "decided_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

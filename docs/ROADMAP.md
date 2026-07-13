@@ -41,7 +41,10 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
 - [x] duracao 15-180 s e 1-25 sugestoes (schema minItems=1/minimum=15, config, API, UI clamp, boundary tests);
 - [x] hook, contexto, payoff, headline e explicacao do score exibidos com dados reais na Curadoria;
 - [x] fallback local identificado como heuristico (LocalHeuristicProvider opt-in, mode=heuristic, badge "SEM LLM");
-- conjunto de avaliacao com cortes aprovados/reprovados.
+- [x] conjunto de avaliacao com cortes aprovados/reprovados (eval/dataset versionado
+  sem midia privada, runner offline scripts/eval_selection.py com relatorio JSON,
+  baseline/thresholds versionados e modo --check; decisoes humanas ainda
+  pending_human_review ate revisao real).
 
 ## Fase 4 - Visual e render
 

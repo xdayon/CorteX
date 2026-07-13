@@ -1,0 +1,266 @@
+{
+  "dataset_schema_version": 1,
+  "episode": {
+    "title": "Raças de ETs Foram Reveladas — Dayon News Explica Tudo (Prosa Inversa 20)",
+    "source_sha256": "b068ed0bcff81a0ee841e1237e0503059dfd00f7ab731808c74e13c3b5562daa",
+    "duration_seconds": 5901.026375,
+    "transcript_artifact_hash": "b068ed0bcff81a0ee841e1237e0503059dfd00f7ab731808c74e13c3b5562daa"
+  },
+  "decisions": [
+    {
+      "clip_ref": {
+        "start_second": 5041.26,
+        "end_second": 5111.83
+      },
+      "verdict": "approved",
+      "theme": "hibridização, tecnologia secreta e revelações ufológicas",
+      "duration_seconds": 70.57,
+      "hook_summary": "Dayan afirma que tecnologias de naves estariam sendo seguradas por causa do impacto econômico.",
+      "payoff_summary": "A fala fecha com a frase mais forte: o congressista teria dito que o mundo entraria em choque.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "É um corte de alta tensão, com promessa clara, escalada e frase final altamente compartilhável. Funciona sozinho e concentra o imaginário viral do episódio.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 4370.98,
+        "end_second": 4449.46
+      },
+      "verdict": "approved",
+      "theme": "Fox News, quatro raças alienígenas e viralização do tema",
+      "duration_seconds": 78.48,
+      "hook_summary": "Dayan diz que o tema furou a bolha e chegou a grandes perfis no Brasil.",
+      "payoff_summary": "O apresentador resume o choque: quatro raças, incluindo reptilianos, em jornal aberto.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "O corte tem assunto quente, linguagem simples, escala mundial e um fechamento com estranhamento perfeito para Reels/TikTok.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 1598.17,
+        "end_second": 1669.75
+      },
+      "verdict": "approved",
+      "theme": "por que ufologia inevitavelmente entra em conspiração",
+      "duration_seconds": 71.58,
+      "hook_summary": "Dayan defende que não dá para falar de ufologia sem tocar em conspiração.",
+      "payoff_summary": "O fechamento transforma a pergunta: diante dos relatos, o estranho seria não desconfiar.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "O corte é autônomo, tem tese clara e frase final forte. Bom para comentários polarizados e retenção.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 1256.08,
+        "end_second": 1337.09
+      },
+      "verdict": "approved",
+      "theme": "controle de massas, invasão alienígena simulada e inimigo comum",
+      "duration_seconds": 81.01,
+      "hook_summary": "Dayan apresenta a hipótese pessimista: uma agenda conduzindo pessoas para um fim.",
+      "payoff_summary": "A conclusão conecta invasão simulada, união humana e condução da população.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "Tem estrutura perfeita de viral: tese sombria, mecanismo simples e payoff conspiratório forte, sem depender de muita introdução.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 2166.99,
+        "end_second": 2227.99
+      },
+      "verdict": "approved",
+      "theme": "líderes religiosos, disclosure e histeria coletiva",
+      "duration_seconds": 61.0,
+      "hook_summary": "Dayan diz que pastores foram chamados para discutir como preparar a população para revelações.",
+      "payoff_summary": "O fechamento traz líderes religiosos treinando textos sagrados para não perder fiéis.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "Une religião e ufologia, dois motores fortes de comentário. A fala é clara, curta e com progressão natural.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 803.05,
+        "end_second": 862.38
+      },
+      "verdict": "approved",
+      "theme": "engenharia reversa, tecnologia gravitacional e naves humanas",
+      "duration_seconds": 59.33,
+      "hook_summary": "Dayan afirma que haveria pesquisas públicas e privadas em tecnologias capturadas.",
+      "payoff_summary": "A fala fecha expandindo as implicações para naves, salto espacial e teleporte.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "Corte direto, visualmente imaginável e com grande promessa tecnológica. Forte para audiência de conspiração, ciência e futurismo.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 2530.59,
+        "end_second": 2614.26
+      },
+      "verdict": "approved",
+      "theme": "religião, criação divina e vida extraterrestre",
+      "duration_seconds": 83.67,
+      "hook_summary": "Dayan fala sobre contato, Blue Beam e preparação das religiões para uma possível revelação.",
+      "payoff_summary": "O fechamento formula a pergunta teológica central: por que outras raças não poderiam ser criação de Deus?",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "O recorte tem apelo viral por tensionar fé e ufologia sem caricaturar. A frase final é forte e autônoma.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 1847.6,
+        "end_second": 1898.52
+      },
+      "verdict": "approved",
+      "theme": "filme Disclosure, população humana e hipótese MIB",
+      "duration_seconds": 50.92,
+      "hook_summary": "Dayan nota uma fala estranha no trailer sobre '7 bilhões de humanos'.",
+      "payoff_summary": "A virada final sugere um planeta estilo MIB com parte da população não humana.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "É um gancho extremamente viral, com pergunta simples e inquietante. O payoff é curto, mas forte o bastante para segurar o corte.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 2989.35,
+        "end_second": 3070.16
+      },
+      "verdict": "approved",
+      "theme": "Saturno, símbolos antigos e conhecimento impossível",
+      "duration_seconds": 80.81,
+      "hook_summary": "O host pergunta como antigos teriam acesso a informações sem alguém 'assoprar' a resposta.",
+      "payoff_summary": "A conclusão reforça a impossibilidade tecnológica para povos antigos observarem certos detalhes.",
+      "speakers": [
+        "Sam"
+      ],
+      "reason": "O trecho é visual, misterioso e alimenta comentários. Tem boa cadência e uma pergunta final memorável.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 5452.59,
+        "end_second": 5500.07
+      },
+      "verdict": "approved",
+      "theme": "insectoides, felinos e a Terra como jardim cósmico",
+      "duration_seconds": 47.48,
+      "hook_summary": "Dayan antecipa a objeção: por que ETs pareceriam bichos da Terra?",
+      "payoff_summary": "A fala fecha com a imagem da Terra como um grande jardim cósmico.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "Ideia curta, clara e altamente comentável. Tem excelente compressão e uma metáfora final forte.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 3344.75,
+        "end_second": 3427.0
+      },
+      "verdict": "approved",
+      "theme": "interferência alienígena, evolução e jardineiros cósmicos",
+      "duration_seconds": 82.25,
+      "hook_summary": "Dayan desafia a ideia de que interferir na criação seria necessariamente errado.",
+      "payoff_summary": "A conclusão expande a metáfora para cultivar consciência e inteligência em escala galáctica.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "É um recorte filosófico forte e elegante, com metáfora clara e debate moral. Bom para público mais reflexivo.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 4200.15,
+        "end_second": 4285.5
+      },
+      "verdict": "approved",
+      "theme": "ciência, misticismo, Descartes e racionalidade",
+      "duration_seconds": 85.35,
+      "hook_summary": "Sam questiona por que instituições modernas teriam guru e lembra que cientistas clássicos eram místicos.",
+      "payoff_summary": "A virada é que Descartes teria sonhado com um anjo dizendo para buscar a racionalidade.",
+      "speakers": [
+        "Sam"
+      ],
+      "reason": "Mistura humor, surpresa histórica e debate ciência/fé. É um trecho com grande potencial de retenção pela virada final.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 436.22,
+        "end_second": 514.21
+      },
+      "verdict": "approved",
+      "theme": "relato de militar, radar e objetos inexplicáveis",
+      "duration_seconds": 77.99,
+      "hook_summary": "Sam relata o estigma contra pilotos e militares que falam sobre experiências inexplicáveis.",
+      "payoff_summary": "O fechamento resume o mistério: há algo no céu que não sabemos explicar.",
+      "speakers": [
+        "Sam"
+      ],
+      "reason": "Funciona como história autônoma, com testemunho indireto, contexto técnico e conclusão forte. É menos explosivo, mas muito editável.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 185.55,
+        "end_second": 299.3
+      },
+      "verdict": "approved",
+      "theme": "formas de estudar o fenômeno ufológico",
+      "duration_seconds": 74.95,
+      "hook_summary": "Dayan corrige a ideia de que OVNIs seriam assunto só dos Estados Unidos e introduz sua estrutura.",
+      "payoff_summary": "A fala fecha com espiritualidade e o nível militar, onde haveria acesso direto ao fenômeno.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "Serve como corte didático viral, ideal para apresentar o convidado e organizar o tema. Boa segurança editorial.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    },
+    {
+      "clip_ref": {
+        "start_second": 5712.28,
+        "end_second": 5767.44
+      },
+      "verdict": "approved",
+      "theme": "game rápido sobre casos ufológicos famosos",
+      "duration_seconds": 55.16,
+      "hook_summary": "Dayan diz que o caos pode anteceder uma nova ordem e admite medo do que pode vir.",
+      "payoff_summary": "Dayan responde 'real' para uma sequência de casos e possibilidades ufológicas.",
+      "speakers": [
+        "Dayan"
+      ],
+      "reason": "Formato de game é altamente consumível e gera comentários. O gancho anterior dá gravidade, mas o payoff é o verdadeiro motor viral.",
+      "decided_by": "pending_human_review",
+      "decided_at": "2026-07-12T21:48:45.644120+00:00"
+    }
+  ]
+}

@@ -1356,3 +1356,13 @@ Evidencia: docs/evidence/gate1-face-crop-e2e.md. Risco documentado: crop e
 extrapolado em segmentos que cruzam cortes de cena sem amostras da identidade
 (mitigado por fail-closed com camera_edit_plan; indice por fonte/shot fica
 para depois). Roadmap atualizado.
+
+### Gate 8 concluido (mesma sessao)
+
+Dataset versionado em eval/dataset (schema draft 2020-12, sem midia privada,
+1a entrada real prosa-inversa-20.json com 15 clips pending_human_review),
+runner offline deterministico em src/cortex/eval/runner.py + CLI
+scripts/eval_selection.py (--check com exit code), baseline/thresholds em
+eval/baseline.json, antes/depois identificavel por input_hash+prompt_sha256+
+provider do provenance. 7 testes. Pendente: veredito humano real para ativar
+os gates de cobertura/rejected no baseline.
