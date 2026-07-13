@@ -15,12 +15,14 @@ from cortex.analyze.audio import (
     vad_parameters,
     waveform_resolutions,
 )
+from cortex.analyze.fillers import FILLER_LEXICON_VERSION, detect_fillers
 from cortex.analyze.schemas import ANALYSIS_SCHEMA_VERSION, AnalysisDocument, AnalysisEngineInfo
 from cortex.config import CortexConfig
 from cortex.domain.models import SourceAsset, StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
 from cortex.ingest.normalize import extract_normalized_audio
 from cortex.paths import analysis_dir, cache_dir
+from cortex.transcribe.schemas import TranscriptDocument
 
 
 class AnalysisJobCancelled(RuntimeError):
@@ -60,7 +62,7 @@ class AnalysisService:
         audio_hash = _sha256(normalized.path)
         transcript_hash = _sha256(Path(transcript_artifact.path))
         hash_payload = {
-            "analysis_algorithm": "1.0.1",
+            "analysis_algorithm": "1.1.0",
             "schema_version": ANALYSIS_SCHEMA_VERSION,
             "source_asset_id": source_asset.id,
             "transcript_artifact_id": transcript_artifact.id,
@@ -69,6 +71,7 @@ class AnalysisService:
             "vad": vad_parameters(),
             "waveform_points": [512, 4096],
             "loudness_engine": "ffmpeg-loudnorm-ebur128",
+            "filler_lexicon_version": FILLER_LEXICON_VERSION,
         }
         input_hash = hashlib.sha256(json.dumps(hash_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         cached = self._domain.find_cached_stage_artifact(
@@ -95,6 +98,10 @@ class AnalysisService:
             raise AnalysisJobCancelled()
         progress_cb(75.0, "Medindo loudness e true peak")
         loudness = measure_loudness(self._config.render.ffmpeg, normalized.path)
+        transcript_document = TranscriptDocument.model_validate_json(
+            Path(transcript_artifact.path).read_text(encoding="utf-8")
+        )
+        fillers = detect_fillers(transcript_document.segments)
         document = AnalysisDocument(
             project_id=source_asset.project_id, source_asset_id=source_asset.id,
             transcript_artifact_id=transcript_artifact.id, input_hash=input_hash,
@@ -107,7 +114,7 @@ class AnalysisService:
             ),
             waveform=waveform, vad_intervals=vad, pauses=pauses,
             speech_density=density, overall_speech_ratio=overall_ratio,
-            loudness=loudness, room_tone=room_tone,
+            loudness=loudness, room_tone=room_tone, fillers=fillers,
         )
         if should_cancel():
             raise AnalysisJobCancelled()

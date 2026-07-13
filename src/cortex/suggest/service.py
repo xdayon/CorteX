@@ -115,13 +115,13 @@ class SuggestionService:
         )
         if cached is not None:
             progress_cb(100.0, "Sugestões em cache reutilizadas")
+            cached_document = json.loads(Path(cached.path).read_text(encoding="utf-8"))
             return {
                 "cached": True,
                 "suggestion_artifact_id": cached.id,
                 "suggestion_path": cached.path,
-                "selection": json.loads(Path(cached.path).read_text(encoding="utf-8"))[
-                    "selection"
-                ],
+                "selection": cached_document["selection"],
+                "provenance": cached_document.get("provenance"),
             }
 
         prompt = (

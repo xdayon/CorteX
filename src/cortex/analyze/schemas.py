@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ANALYSIS_SCHEMA_VERSION = 1
+from cortex.analyze.fillers import Filler
+
+ANALYSIS_SCHEMA_VERSION = 2
 
 
 class TimeInterval(BaseModel):
@@ -76,3 +78,4 @@ class AnalysisDocument(BaseModel):
     overall_speech_ratio: float = Field(ge=0, le=1)
     loudness: LoudnessMetrics
     room_tone: list[RoomToneSample]
+    fillers: list[Filler] = Field(default_factory=list)

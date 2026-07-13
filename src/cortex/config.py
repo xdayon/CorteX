@@ -102,7 +102,7 @@ class ClipConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     minimum_seconds: int = Field(default=50, ge=15, le=180)
-    maximum_seconds: int = Field(default=120, ge=30, le=180)
+    maximum_seconds: int = Field(default=120, ge=15, le=180)
     count: int = Field(default=10, ge=1, le=25)
     pacing_profile: str = "auto"
 

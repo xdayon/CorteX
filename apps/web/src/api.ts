@@ -123,6 +123,16 @@ export type ArtifactEnvelope<T> = {
 
 export type AnalysisInterval = { start: number; end: number; duration: number };
 
+export type SpeechDensityWindow = AnalysisInterval & { speech_ratio: number };
+
+export type Filler = {
+  word: string;
+  start: number;
+  end: number;
+  kind: "hesitation" | "repetition";
+  confidence: number;
+};
+
 export type AnalysisDocument = {
   schema_version: number;
   duration_seconds: number;
@@ -134,6 +144,7 @@ export type AnalysisDocument = {
   }>;
   vad_intervals: AnalysisInterval[];
   pauses: AnalysisInterval[];
+  speech_density: SpeechDensityWindow[];
   overall_speech_ratio: number;
   loudness: {
     integrated_lufs: number | null;
@@ -141,6 +152,8 @@ export type AnalysisDocument = {
     measurement_scope: string;
   };
   room_tone: Array<AnalysisInterval & { rms_dbfs: number }>;
+  /** Ausente em artifacts de análise anteriores ao detector de fillers (bump de schema). */
+  fillers?: Filler[];
 };
 
 export type SuggestionBrief = {
@@ -149,6 +162,24 @@ export type SuggestionBrief = {
   maximum_seconds: number;
   topic?: string;
   instructions?: string;
+};
+
+export type NarrativeBeat = {
+  start_second: number;
+  end_second: number;
+  summary: string;
+  evidence: string;
+};
+
+export type ClipScores = {
+  spoken_hook: number;
+  standalone_clarity: number;
+  emotion: number;
+  quotability: number;
+  payoff: number;
+  compression_safety: number;
+  audience_relevance: number;
+  total: number;
 };
 
 export type SuggestedClip = {
@@ -161,15 +192,28 @@ export type SuggestedClip = {
   primary_speaker: string;
   topic?: string;
   pacing: "dynamic" | "balanced" | "contemplative";
+  hook: NarrativeBeat;
+  context: NarrativeBeat;
+  payoff: NarrativeBeat;
   reasoning: string;
   warnings: string[];
-  scores: { total: number } & Record<string, number>;
+  scores: ClipScores;
+};
+
+export type SuggestionProvenance = {
+  provider?: string;
+  requested_provider?: string;
+  effective_provider?: string;
+  fallback_used?: boolean;
+  fallback_reason?: string;
+  model?: string;
 };
 
 export type SuggestionSelection = {
   schema_version: "1.0";
   selection_notes: string;
   clips: SuggestedClip[];
+  provenance?: SuggestionProvenance;
 };
 
 export type EditPlanIssue = {

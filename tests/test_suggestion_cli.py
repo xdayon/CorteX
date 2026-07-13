@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 
 from cortex.api import create_app
 from cortex.config import CortexConfig, load_config
@@ -24,13 +25,60 @@ from cortex.worker import process_next
 
 from conftest import FakeTranscriptionEngine
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CLIP_SELECTION_SCHEMA = json.loads(
+    (_PROJECT_ROOT / "prompts/clip_selection.schema.json").read_text(encoding="utf-8")
+)
+
+
+def _valid_clip(**overrides) -> dict:
+    clip = {
+        "rank": 1,
+        "title": "Um corte de teste",
+        "headline": "Headline de teste",
+        "start_second": 0,
+        "end_second": 30,
+        "estimated_duration": 30,
+        "primary_speaker": "Convidado",
+        "topic": "Tópico de teste",
+        "pacing": "balanced",
+        "hook": {
+            "start_second": 0, "end_second": 5,
+            "summary": "Abertura do corte.", "evidence": "Frase de abertura.",
+        },
+        "context": {
+            "start_second": 5, "end_second": 20,
+            "summary": "Desenvolvimento do corte.", "evidence": "Trecho intermediário.",
+        },
+        "payoff": {
+            "start_second": 20, "end_second": 30,
+            "summary": "Conclusão do corte.", "evidence": "Frase final.",
+        },
+        "approximate_edl": [
+            {
+                "order": 0, "source_start": 0, "source_end": 30, "purpose": "hook",
+                "preferred_visual": "primary_speaker", "audio_mode": "source",
+                "transition_in": "hard_cut", "mask_jump_with": "none",
+                "confidence": 0.9, "notes": "Segmento único.",
+            },
+        ],
+        "scores": {
+            "spoken_hook": 4, "standalone_clarity": 4, "emotion": 3, "quotability": 4,
+            "payoff": 4, "compression_safety": 4, "audience_relevance": 4, "total": 27,
+        },
+        "reasoning": "Corte autocontido com abertura, desenvolvimento e conclusão claros.",
+        "warnings": [],
+    }
+    clip.update(overrides)
+    return clip
+
 
 class FakeSuggestionProvider:
     def __init__(self, document: dict | None = None) -> None:
         self.document = document or {
             "schema_version": "1.0",
-            "selection_notes": "Sem cortes suficientes no fixture.",
-            "clips": [],
+            "selection_notes": "Corte de teste selecionado.",
+            "clips": [_valid_clip()],
         }
         self.calls: list[tuple[str, dict]] = []
 
@@ -147,7 +195,7 @@ def test_suggestion_service_validates_persists_and_reuses_cache():
         assert len(provider.calls) == 1
         persisted = json.loads(Path(first["suggestion_path"]).read_text(encoding="utf-8"))
         assert persisted["provenance"]["provider"] == "fake"
-        assert persisted["selection"]["clips"] == []
+        assert len(persisted["selection"]["clips"]) == 1
 
 
 def test_provider_prefers_codex_without_calling_claude_fallback():
@@ -273,3 +321,138 @@ def test_suggestion_endpoint_checks_transcript_ownership_and_queues_job():
         body = response.json()
         assert body["type"] == "suggestion"
         assert body["payload"]["brief"]["count"] == 2
+
+
+def test_suggestion_service_rejects_empty_clip_list():
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_dir = Path(directory)
+        config = _config(tmp_dir)
+        config.ensure_runtime_dirs()
+        domain = DomainStore(config.paths.database)
+        transcript = _transcript(domain, tmp_dir)
+        analysis = _analysis(domain, tmp_dir, transcript)
+        provider = FakeSuggestionProvider(document={
+            "schema_version": "1.0",
+            "selection_notes": "Sem cortes.",
+            "clips": [],
+        })
+        service = SuggestionService(config, domain, provider)
+
+        try:
+            service.run(
+                transcript_artifact=transcript,
+                analysis_artifact=analysis,
+                brief={"count": 3, "minimum_seconds": 15, "maximum_seconds": 60},
+                progress_cb=lambda _progress, _message: None,
+                should_cancel=lambda: False,
+            )
+        except ValueError as exc:
+            assert "clips" in str(exc)
+        else:
+            raise AssertionError("resposta com 0 clips deveria ser rejeitada")
+
+
+def test_suggestion_service_rejects_clip_below_minimum_duration():
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_dir = Path(directory)
+        config = _config(tmp_dir)
+        config.ensure_runtime_dirs()
+        domain = DomainStore(config.paths.database)
+        transcript = _transcript(domain, tmp_dir)
+        analysis = _analysis(domain, tmp_dir, transcript)
+        provider = FakeSuggestionProvider(document={
+            "schema_version": "1.0",
+            "selection_notes": "Corte curto demais.",
+            "clips": [_valid_clip(end_second=14, estimated_duration=14)],
+        })
+        service = SuggestionService(config, domain, provider)
+
+        try:
+            service.run(
+                transcript_artifact=transcript,
+                analysis_artifact=analysis,
+                brief={"count": 3, "minimum_seconds": 15, "maximum_seconds": 60},
+                progress_cb=lambda _progress, _message: None,
+                should_cancel=lambda: False,
+            )
+        except ValueError as exc:
+            assert "estimated_duration" in str(exc)
+        else:
+            raise AssertionError("clip com estimated_duration 14 deveria ser rejeitado")
+
+
+def test_clip_selection_schema_boundary_validation_directly():
+    minimal_document = {
+        "schema_version": "1.0",
+        "selection_notes": "notas",
+        "clips": [],
+    }
+    errors = sorted(Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(minimal_document), key=str)
+    assert errors, "clips vazio deveria falhar com minItems: 1"
+
+    document_with_short_clip = {
+        "schema_version": "1.0",
+        "selection_notes": "notas",
+        "clips": [_valid_clip(estimated_duration=14)],
+    }
+    errors = sorted(
+        Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(document_with_short_clip), key=str
+    )
+    assert errors, "estimated_duration 14 deveria falhar com minimum: 15"
+
+    document_with_valid_clip = {
+        "schema_version": "1.0",
+        "selection_notes": "notas",
+        "clips": [_valid_clip(estimated_duration=15, end_second=15)],
+    }
+    errors = list(Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(document_with_valid_clip))
+    assert errors == []
+
+
+def test_suggestion_request_boundary_counts_and_durations():
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_dir = Path(directory)
+        config = _config(tmp_dir)
+        config.ensure_runtime_dirs()
+        domain = DomainStore(config.paths.database)
+        transcript = _transcript(domain, tmp_dir)
+        analysis = _analysis(domain, tmp_dir, transcript)
+        client = TestClient(create_app(config))
+
+        def post(**overrides):
+            payload = {
+                "transcript_artifact_id": transcript.id,
+                "analysis_artifact_id": analysis.id,
+                "count": 2,
+                "minimum_seconds": 15,
+                "maximum_seconds": 60,
+            }
+            payload.update(overrides)
+            return client.post(f"/api/v1/projects/{transcript.project_id}/suggest", json=payload)
+
+        assert post(count=0).status_code == 422
+        assert post(count=1).status_code == 201
+        assert post(count=25).status_code == 201
+        assert post(count=26).status_code == 422
+        assert post(minimum_seconds=14).status_code == 422
+        assert post(minimum_seconds=15).status_code == 201
+        assert post(maximum_seconds=180).status_code == 201
+        assert post(maximum_seconds=181).status_code == 422
+        assert post(minimum_seconds=60, maximum_seconds=30).status_code == 422
+
+
+def test_clip_config_maximum_seconds_boundary():
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "config.yaml"
+
+        path.write_text("clips:\n  minimum_seconds: 15\n  maximum_seconds: 15\n", encoding="utf-8")
+        config = load_config(path)
+        assert config.clips.maximum_seconds == 15
+
+        path.write_text("clips:\n  minimum_seconds: 14\n  maximum_seconds: 14\n", encoding="utf-8")
+        try:
+            load_config(path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("maximum_seconds 14 deveria ser rejeitado (ge=15)")

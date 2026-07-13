@@ -51,7 +51,16 @@ def _media_fixture(config: CortexConfig, domain: DomainStore, wav: Path):
     ))
     transcript_path = config.paths.projects_dir / project.id / "transcripts" / "transcript.json"
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
-    transcript_path.write_text('{"schema_version":1,"segments":[]}', encoding="utf-8")
+    transcript_path.write_text(json.dumps({
+        "schema_version": 1,
+        "duration_seconds": 1.0,
+        "engine": {
+            "name": "fake", "model": "fake", "requested_device": "cpu",
+            "effective_device": "cpu", "requested_compute_type": "int8",
+            "effective_compute_type": "int8", "batch_size": 1, "vad": True,
+        },
+        "segments": [],
+    }), encoding="utf-8")
     transcript = domain.create_transcript_artifact(TranscriptArtifact(
         project_id=project.id,
         source_asset_id=source.id,
@@ -131,9 +140,10 @@ def test_analysis_service_persists_schema_reuses_cache_and_cancels(
 
     assert first["cached"] is False
     assert len(artifacts) == 1 and artifacts[0].stage == "analysis"
-    assert document.schema_version == 1
+    assert document.schema_version == 2
     assert document.waveform and document.vad_intervals and document.pauses
     assert document.speech_density and document.loudness and document.room_tone
+    assert document.fillers == []
     assert progress == sorted(progress) and progress[-1] == 100.0
 
     second = service.run(
@@ -184,5 +194,5 @@ def test_analysis_api_worker_and_artifact_get(
     assert fetched.status_code == 200, fetched.text
     payload = fetched.json()
     assert payload["artifact"]["stage"] == "analysis"
-    assert payload["document"]["schema_version"] == 1
+    assert payload["document"]["schema_version"] == 2
     assert json.loads(Path(final.result["analysis_path"]).read_text())["input_hash"]

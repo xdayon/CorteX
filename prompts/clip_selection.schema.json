@@ -10,7 +10,7 @@
     "selection_notes": { "type": "string", "maxLength": 1000 },
     "clips": {
       "type": "array",
-      "minItems": 0,
+      "minItems": 1,
       "maxItems": 25,
       "items": { "$ref": "#/$defs/clip" }
     }
@@ -94,7 +94,7 @@
         "headline": { "type": "string", "minLength": 4, "maxLength": 100 },
         "start_second": { "type": "number", "minimum": 0 },
         "end_second": { "type": "number", "exclusiveMinimum": 0 },
-        "estimated_duration": { "type": "number", "exclusiveMinimum": 0, "maximum": 180 },
+        "estimated_duration": { "type": "number", "minimum": 15, "maximum": 180 },
         "primary_speaker": { "type": "string", "minLength": 1, "maxLength": 100 },
         "topic": { "type": "string", "maxLength": 160 },
         "pacing": {
