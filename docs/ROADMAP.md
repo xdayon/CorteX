@@ -106,8 +106,11 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
   monotonia >=85% em cortes >=20s; bloqueadores tipados por-shot e diagnostics com
   segundos por identidade/role; painel de leitura no Studio);
 - J-cut, L-cut e punch-in editaveis;
-- crop facial estatico: enquadrar uma identidade confirmada com posicao fixa por
-  segmento, sem tracking ou movimento continuo, e fallback central auditavel;
+- [x] crop facial estatico: enquadrar uma identidade confirmada com posicao fixa por
+  segmento, sem tracking ou movimento continuo, e fallback central auditavel
+  (manifesto v7 com target/samples/fallback/temporal_motion=false; testes
+  fail-closed cross-project/source/identidade/arquivo; E2E real no host com
+  NVENC e quality gate aprovado — docs/evidence/gate1-face-crop-e2e.md);
 - remover o ramo experimental de fontes ISO (`multicam_sync`,
   `multicam_visual_index` e caminhos v2 associados) apos portar os testes uteis
   de continuidade de audio para o planner single-source.

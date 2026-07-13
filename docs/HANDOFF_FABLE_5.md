@@ -1343,3 +1343,16 @@ bloqueadores tipados por-shot (REACTION_BLOCKER_*), preservacao de
 aparicoes naturais, e CameraPlanDiagnosticsPanel (leitura) no Studio.
 Render aceita schema v4 (whitelist {2,3,4}). Pendente para sessao futura
 do Studio: orquestrar criacao do camera plan pela UI.
+
+### Gate 1 concluido (mesma sessao)
+
+E2E real no host executado com API+worker de producao sobre trecho de 4 min
+do episodio Prosa Inversa 20 (projeto gate1-e2e-face-crop): cadeia completa
+succeeded, 3 identidades confirmed, render NVENC 1080x1920 com manifesto v7
+(static_face_crops com samples/fallback/temporal_motion=false), SRT, quality
+gate passed/publish_ready, frames comprovando ausencia de movimento, e
+rejeicao fail-closed de camera_edit_plan+face_static_crop observada ao vivo.
+Evidencia: docs/evidence/gate1-face-crop-e2e.md. Risco documentado: crop e
+extrapolado em segmentos que cruzam cortes de cena sem amostras da identidade
+(mitigado por fail-closed com camera_edit_plan; indice por fonte/shot fica
+para depois). Roadmap atualizado.
