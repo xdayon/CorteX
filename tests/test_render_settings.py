@@ -155,3 +155,26 @@ def test_render_settings_patch_merges_nested_fields_field_by_field() -> None:
     assert merged.headline.text_color == "#445566"
     assert merged.headline.animation.entrance == "none"
     assert merged.headline.animation.exit == "slide"
+
+
+def test_render_preset_with_face_static_crop_can_be_overridden_per_cut() -> None:
+    preset = RenderSettings.model_validate({
+        **_payload(), "framing": {"mode": "face_static_crop"},
+    })
+
+    # A specific cut turns face crop off for this one export, keeping the rest
+    # of the preset (canvas, captions) untouched.
+    overridden = _merge_render_settings(
+        preset, RenderSettingsPatch.model_validate({"framing": {"mode": "vertical_crop"}}),
+    )
+    assert overridden.framing.mode == "vertical_crop"
+    assert overridden.canvas == preset.canvas
+    assert overridden.captions.font_size == preset.captions.font_size
+
+    # Another cut can re-enable it explicitly; overriding a value equal to the
+    # preset's own is a no-op, not a silent identity switch.
+    reapplied = _merge_render_settings(
+        overridden, RenderSettingsPatch.model_validate({"framing": {"mode": "face_static_crop"}}),
+    )
+    assert reapplied.framing.mode == "face_static_crop"
+    assert reapplied.canvas == preset.canvas
