@@ -50,7 +50,12 @@ from cortex.paths import source_dir
 from cortex.render.schemas import RenderSettings, RenderSettingsPatch
 from cortex.render.service import RenderJobCancelled, RenderService
 from cortex.schemas import Job, JobStatus, JobType, JobUpdate, PipelineStage
-from cortex.suggest.provider import SuggestionProvider, build_suggestion_provider
+from cortex.suggest.provider import (
+    FallbackSuggestionProvider,
+    SuggestionProvider,
+    build_named_provider,
+    build_suggestion_provider,
+)
 from cortex.suggest.service import SuggestionJobCancelled, SuggestionService
 from cortex.transcribe.engine import FasterWhisperEngine, TranscriptionEngine
 from cortex.transcribe.service import TranscribeJobCancelled, TranscribeService
@@ -993,9 +998,19 @@ def process_next(
         if job.type == JobType.TRANSCRIPTION:
             handler(job, config, jobs, domain, engine)
         elif job.type == JobType.SUGGESTION:
-            provider = suggestion_provider or build_suggestion_provider(
-                config.ai, cwd=Path(__file__).resolve().parents[2]
-            )
+            requested_provider = job.payload.get("provider")
+            if requested_provider:
+                cwd = Path(__file__).resolve().parents[2]
+                provider = FallbackSuggestionProvider(
+                    build_named_provider(requested_provider, config.ai, cwd=cwd),
+                    None,
+                    primary_name=requested_provider,
+                    fallback_name=None,
+                )
+            else:
+                provider = suggestion_provider or build_suggestion_provider(
+                    config.ai, cwd=Path(__file__).resolve().parents[2]
+                )
             handler(job, config, jobs, domain, provider)
         else:
             handler(job, config, jobs, domain)

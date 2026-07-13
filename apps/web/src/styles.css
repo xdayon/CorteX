@@ -244,6 +244,7 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; heigh
 .page-heading-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .provenance-badge { padding: 4px 9px; color: var(--cyan); background: rgba(25,230,242,.08); border: 1px solid rgba(25,230,242,.25); border-radius: 4px; font: 500 10px "IBM Plex Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }
 .provenance-badge.fallback { color: #f2b84b; background: rgba(242,184,75,.1); border-color: rgba(242,184,75,.3); }
+.provenance-badge.heuristic { color: #c792f2; background: rgba(199,146,242,.1); border-color: rgba(199,146,242,.35); }
 .fillers-panel { margin-top: 14px; padding: 12px 14px; background: rgba(10,16,18,.5); border: 1px solid var(--line); border-radius: 6px; }
 .fillers-empty { margin: 0; color: var(--muted); font-size: 12px; }
 .fillers-count { display: block; margin-bottom: 8px; color: var(--muted); font: 10px "IBM Plex Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }

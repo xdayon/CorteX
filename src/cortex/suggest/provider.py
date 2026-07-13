@@ -299,6 +299,282 @@ class ClaudeCliProvider:
         )
 
 
+_TRANSCRIPT_REQUEST_MARKER = "## Pedido atual e transcrição\n"
+_TRANSCRIPT_LINE_RE = re.compile(r"^\[(?P<start>[\d.]+)-(?P<end>[\d.]+)\]\s(?P<text>.*)$")
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 1)].rstrip() + "…"
+
+
+class LocalHeuristicProvider:
+    """Deterministic, LLM-free candidate generator.
+
+    Reads the structured request payload that ``SuggestionService`` appends to
+    the end of every prompt (after ``_TRANSCRIPT_REQUEST_MARKER``) and derives
+    clip candidates directly from transcript timing and pause data, without
+    calling any external model.
+    """
+
+    name = "local_heuristic"
+
+    def _parse_request_payload(self, prompt: str) -> dict[str, Any]:
+        marker_index = prompt.rfind(_TRANSCRIPT_REQUEST_MARKER)
+        if marker_index == -1:
+            raise SuggestionProviderError(
+                "heurística local não encontrou o payload estruturado no prompt"
+            )
+        tail = prompt[marker_index + len(_TRANSCRIPT_REQUEST_MARKER) :]
+        try:
+            payload = json.loads(tail)
+        except json.JSONDecodeError as exc:
+            raise SuggestionProviderError(
+                "heurística local não conseguiu decodificar o payload estruturado"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise SuggestionProviderError("payload estruturado da heurística local não é um objeto")
+        return payload
+
+    @staticmethod
+    def _parse_segments(transcript_text: str) -> list[dict[str, Any]]:
+        segments: list[dict[str, Any]] = []
+        for line in transcript_text.splitlines():
+            match = _TRANSCRIPT_LINE_RE.match(line)
+            if not match:
+                continue
+            start = float(match.group("start"))
+            end = float(match.group("end"))
+            text = match.group("text").strip()
+            if end <= start or not text:
+                continue
+            segments.append({"start": start, "end": end, "text": text})
+        segments.sort(key=lambda item: item["start"])
+        return segments
+
+    @staticmethod
+    def _pause_boundaries(local_audio_analysis: dict[str, Any] | None) -> set[float]:
+        if not local_audio_analysis:
+            return set()
+        boundaries: set[float] = set()
+        for pause in local_audio_analysis.get("notable_pauses") or []:
+            start = pause.get("start")
+            end = pause.get("end")
+            if isinstance(start, (int, float)):
+                boundaries.add(round(float(start), 1))
+            if isinstance(end, (int, float)):
+                boundaries.add(round(float(end), 1))
+        return boundaries
+
+    @staticmethod
+    def _pacing(words_per_second: float) -> str:
+        if words_per_second >= 2.5:
+            return "dynamic"
+        if words_per_second <= 1.2:
+            return "contemplative"
+        return "balanced"
+
+    def _build_candidates(
+        self,
+        segments: list[dict[str, Any]],
+        *,
+        minimum_seconds: float,
+        maximum_seconds: float,
+        pause_boundaries: set[float],
+    ) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for i in range(len(segments)):
+            words_so_far = 0
+            for j in range(i, len(segments)):
+                window_segments = segments[i : j + 1]
+                duration = window_segments[-1]["end"] - window_segments[0]["start"]
+                if duration > maximum_seconds:
+                    break
+                words_so_far = sum(len(seg["text"].split()) for seg in window_segments)
+                if duration < minimum_seconds:
+                    continue
+                start = window_segments[0]["start"]
+                end = window_segments[-1]["end"]
+                has_pause_boundary = (
+                    round(start, 1) in pause_boundaries or round(end, 1) in pause_boundaries
+                )
+                density = words_so_far / duration if duration > 0 else 0.0
+                candidates.append(
+                    {
+                        "segments": window_segments,
+                        "start": start,
+                        "end": end,
+                        "duration": duration,
+                        "words": words_so_far,
+                        "density": density,
+                        "has_pause_boundary": has_pause_boundary,
+                    }
+                )
+        candidates.sort(
+            key=lambda item: (
+                not item["has_pause_boundary"],
+                -item["density"],
+                -item["duration"],
+                item["start"],
+            )
+        )
+        return candidates
+
+    @staticmethod
+    def _select_non_overlapping(candidates: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        for candidate in candidates:
+            if len(selected) >= count:
+                break
+            overlaps = any(
+                candidate["start"] < chosen["end"] and chosen["start"] < candidate["end"]
+                for chosen in selected
+            )
+            if overlaps:
+                continue
+            selected.append(candidate)
+        selected.sort(key=lambda item: item["start"])
+        return selected
+
+    def _build_clip(self, rank: int, candidate: dict[str, Any], *, topic: str | None) -> dict[str, Any]:
+        segments = candidate["segments"]
+        first_text = segments[0]["text"]
+        last_text = segments[-1]["text"]
+        middle_segments = segments[1:-1] or segments
+        middle_text = " ".join(seg["text"] for seg in middle_segments)
+        pacing = self._pacing(candidate["density"])
+        title = _truncate(first_text, 100) or "Corte heurístico local"
+        headline = _truncate(first_text, 100)
+        if len(headline) < 4:
+            headline = _truncate(f"{first_text} {last_text}", 100) or "Corte sem LLM"
+        boundary_note = " delimitada por pausa segura" if candidate["has_pause_boundary"] else ""
+        reasoning = _truncate(
+            "Seleção heurística local, sem LLM: janela com densidade de "
+            f"{candidate['density']:.2f} palavras/s{boundary_note}, sem cortar no meio de "
+            "um segmento de transcrição.",
+            800,
+        )
+        return {
+            "rank": rank,
+            "title": title,
+            "headline": headline,
+            "start_second": round(candidate["start"], 3),
+            "end_second": round(candidate["end"], 3),
+            "estimated_duration": round(candidate["duration"], 3),
+            "primary_speaker": "Locutor não identificado (sem diarização)",
+            "topic": _truncate(topic or first_text, 160),
+            "pacing": pacing,
+            "hook": {
+                "start_second": round(segments[0]["start"], 3),
+                "end_second": round(segments[0]["end"], 3),
+                "summary": _truncate(first_text, 300),
+                "evidence": _truncate(first_text, 240),
+            },
+            "context": {
+                "start_second": round(middle_segments[0]["start"], 3),
+                "end_second": round(middle_segments[-1]["end"], 3),
+                "summary": _truncate(middle_text, 300),
+                "evidence": _truncate(middle_text, 240),
+            },
+            "payoff": {
+                "start_second": round(segments[-1]["start"], 3),
+                "end_second": round(segments[-1]["end"], 3),
+                "summary": _truncate(last_text, 300),
+                "evidence": _truncate(last_text, 240),
+            },
+            "approximate_edl": [
+                {
+                    "order": 0,
+                    "source_start": round(candidate["start"], 3),
+                    "source_end": round(candidate["end"], 3),
+                    "purpose": "development",
+                    "preferred_visual": "auto",
+                    "audio_mode": "source",
+                    "transition_in": "hard_cut",
+                    "mask_jump_with": "none",
+                    "confidence": 0.35,
+                    "notes": "Corte único cobrindo a janela selecionada pela heurística local.",
+                },
+            ],
+            "scores": {
+                "spoken_hook": 3,
+                "standalone_clarity": 3,
+                "emotion": 3,
+                "quotability": 3,
+                "payoff": 3,
+                "compression_safety": 3,
+                "audience_relevance": 3,
+                "total": 21,
+            },
+            "reasoning": reasoning,
+            "warnings": [
+                "Seleção heurística local, sem LLM: recomenda-se revisão humana antes de publicar.",
+            ],
+        }
+
+    def generate(
+        self,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        should_cancel: Callable[[], bool],
+    ) -> SuggestionProviderResult:
+        started = time.monotonic()
+        if should_cancel():
+            raise SuggestionProviderCancelled("seleção cancelada pelo usuário")
+        payload = self._parse_request_payload(prompt)
+        segments = self._parse_segments(str(payload.get("transcript") or ""))
+        if not segments:
+            raise SuggestionProviderError(
+                "heurística local não encontrou segmentos de transcrição para gerar candidatos"
+            )
+        brief = payload.get("brief") or {}
+        minimum_seconds = float(brief.get("minimum_seconds") or 15)
+        maximum_seconds = float(brief.get("maximum_seconds") or 180)
+        count = int(brief.get("count") or 10)
+        topic = brief.get("topic")
+        pause_boundaries = self._pause_boundaries(payload.get("local_audio_analysis"))
+
+        candidates = self._build_candidates(
+            segments,
+            minimum_seconds=minimum_seconds,
+            maximum_seconds=maximum_seconds,
+            pause_boundaries=pause_boundaries,
+        )
+        if not candidates:
+            raise SuggestionProviderError(
+                "heurística local não encontrou janelas válidas dentro dos limites de duração"
+            )
+        selected = self._select_non_overlapping(candidates, count)
+        clips = [
+            self._build_clip(rank, candidate, topic=topic)
+            for rank, candidate in enumerate(selected, start=1)
+        ]
+        document = {
+            "schema_version": "1.0",
+            "selection_notes": _truncate(
+                f"Seleção heurística local, sem LLM: {len(clips)} corte(s) gerados por densidade "
+                "de fala e pausas seguras a partir da transcrição.",
+                1000,
+            ),
+            "clips": clips,
+        }
+        duration_ms = round((time.monotonic() - started) * 1000)
+        return SuggestionProviderResult(
+            document=document,
+            provenance={
+                "provider": self.name,
+                "mode": "heuristic",
+                "engine": "local_heuristic_v1",
+                "llm_used": False,
+                "duration_ms": duration_ms,
+                "auth_mode": "none",
+            },
+        )
+
+
 class FallbackSuggestionProvider:
     def __init__(
         self,
@@ -307,11 +583,15 @@ class FallbackSuggestionProvider:
         *,
         primary_name: str,
         fallback_name: str | None,
+        heuristic: SuggestionProvider | None = None,
+        heuristic_name: str | None = None,
     ) -> None:
         self._primary = primary
         self._fallback = fallback
         self._primary_name = primary_name
         self._fallback_name = fallback_name
+        self._heuristic = heuristic
+        self._heuristic_name = heuristic_name
 
     @staticmethod
     def _validated(
@@ -333,48 +613,55 @@ class FallbackSuggestionProvider:
         *,
         should_cancel: Callable[[], bool],
     ) -> SuggestionProviderResult:
-        try:
-            result = self._validated(self._primary, prompt, schema, should_cancel)
-            return SuggestionProviderResult(
-                result.document,
-                {
-                    **result.provenance,
-                    "requested_provider": self._primary_name,
-                    "effective_provider": result.provenance.get("provider", self._primary_name),
-                    "fallback_used": False,
-                },
-            )
-        except SuggestionProviderCancelled:
-            raise
-        except SuggestionProviderError as primary_error:
-            if self._fallback is None:
+        attempts: list[tuple[SuggestionProvider, str]] = [(self._primary, self._primary_name)]
+        if self._fallback is not None:
+            attempts.append((self._fallback, self._fallback_name or "fallback"))
+        if self._heuristic is not None:
+            attempts.append((self._heuristic, self._heuristic_name or "local_heuristic"))
+
+        last_error: SuggestionProviderError | None = None
+        for index, (candidate_provider, candidate_name) in enumerate(attempts):
+            try:
+                result = self._validated(candidate_provider, prompt, schema, should_cancel)
+            except SuggestionProviderCancelled:
                 raise
-            result = self._validated(self._fallback, prompt, schema, should_cancel)
-            return SuggestionProviderResult(
-                result.document,
-                {
-                    **result.provenance,
-                    "requested_provider": self._primary_name,
-                    "effective_provider": result.provenance.get("provider", self._fallback_name),
-                    "fallback_used": True,
-                    "fallback_reason": str(primary_error)[-1000:],
-                },
-            )
+            except SuggestionProviderError as exc:
+                last_error = exc
+                continue
+            provenance = {
+                **result.provenance,
+                "requested_provider": self._primary_name,
+                "effective_provider": result.provenance.get("provider", candidate_name),
+                "fallback_used": index > 0,
+            }
+            if index > 0 and last_error is not None:
+                provenance["fallback_reason"] = str(last_error)[-1000:]
+            return SuggestionProviderResult(result.document, provenance)
+        assert last_error is not None
+        raise last_error
 
 
-def _provider(name: str, config: AiConfig, *, cwd: Path) -> SuggestionProvider:
+def build_named_provider(name: str, config: AiConfig, *, cwd: Path) -> SuggestionProvider:
     if name == "codex_cli":
         return CodexCliProvider(config)
     if name == "claude_cli":
         return ClaudeCliProvider(config, cwd=cwd)
+    if name == "local_heuristic":
+        return LocalHeuristicProvider()
     raise SuggestionProviderError(f"provider de IA não suportado: {name}")
 
 
 def build_suggestion_provider(config: AiConfig, *, cwd: Path) -> SuggestionProvider:
-    primary = _provider(config.provider, config, cwd=cwd)
+    primary = build_named_provider(config.provider, config, cwd=cwd)
     fallback = (
-        _provider(config.fallback_provider, config, cwd=cwd)
+        build_named_provider(config.fallback_provider, config, cwd=cwd)
         if config.fallback_provider is not None
+        else None
+    )
+    heuristic = (
+        LocalHeuristicProvider()
+        if config.enable_local_heuristic_fallback and config.provider != "local_heuristic"
+        and config.fallback_provider != "local_heuristic"
         else None
     )
     return FallbackSuggestionProvider(
@@ -382,4 +669,6 @@ def build_suggestion_provider(config: AiConfig, *, cwd: Path) -> SuggestionProvi
         fallback,
         primary_name=config.provider,
         fallback_name=config.fallback_provider,
+        heuristic=heuristic,
+        heuristic_name="local_heuristic" if heuristic is not None else None,
     )

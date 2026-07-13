@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -244,6 +244,7 @@ class SuggestionRequest(BaseModel):
     primary_subject: str | None = Field(default=None, max_length=200)
     topic: str | None = Field(default=None, max_length=500)
     instructions: str | None = Field(default=None, max_length=4000)
+    provider: Literal["codex_cli", "claude_cli", "local_heuristic"] | None = Field(default=None)
 
     @model_validator(mode="after")
     def duration_order(self) -> "SuggestionRequest":
@@ -1303,7 +1304,8 @@ def create_app(config: CortexConfig | None = None):
         if analysis.project_id != project_id or analysis.stage != "analysis":
             raise HTTPException(status_code=400, detail="Análise não pertence a este projeto")
         brief = request.model_dump(
-            exclude={"transcript_artifact_id", "analysis_artifact_id"}, exclude_none=True
+            exclude={"transcript_artifact_id", "analysis_artifact_id", "provider"},
+            exclude_none=True,
         )
         return jobs.create(JobCreate(
             type=JobType.SUGGESTION,
@@ -1312,6 +1314,7 @@ def create_app(config: CortexConfig | None = None):
                 "transcript_artifact_id": request.transcript_artifact_id,
                 "analysis_artifact_id": request.analysis_artifact_id,
                 "brief": brief,
+                "provider": request.provider,
             },
         ))
 

@@ -126,6 +126,7 @@ class AiConfig(BaseModel):
     claude_effort: str = "low"
     timeout_seconds: int = Field(default=300, ge=10, le=3600)
     max_input_chars: int = Field(default=800_000, ge=10_000, le=5_000_000)
+    enable_local_heuristic_fallback: bool = False
 
 
 class CortexConfig(BaseModel):

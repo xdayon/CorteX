@@ -207,6 +207,7 @@ export type SuggestionProvenance = {
   fallback_used?: boolean;
   fallback_reason?: string;
   model?: string;
+  mode?: string;
 };
 
 export type SuggestionSelection = {

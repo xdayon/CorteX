@@ -222,6 +222,12 @@ function ProvenanceBadge({ provenance }: { provenance?: SuggestionSelection["pro
   if (!provenance) return null;
   const provider = provenance.effective_provider || provenance.provider || provenance.requested_provider;
   if (!provider) return null;
+  const isHeuristic = provenance.mode === "heuristic" || provider === "local_heuristic";
+  if (isHeuristic) {
+    return <span className="provenance-badge heuristic" title={provenance.fallback_used ? `Fallback de ${provenance.requested_provider} para heurística local (sem LLM): ${provenance.fallback_reason ?? "sem detalhe"}` : "Seleção heurística local, sem LLM."}>
+      {provenance.fallback_used ? "FALLBACK · HEURÍSTICA LOCAL — SEM LLM" : "HEURÍSTICA LOCAL — SEM LLM"}
+    </span>;
+  }
   return <span className={`provenance-badge ${provenance.fallback_used ? "fallback" : ""}`} title={provenance.fallback_used ? `Fallback de ${provenance.requested_provider} para ${provider}: ${provenance.fallback_reason ?? "sem detalhe"}` : `Seleção gerada por ${provider}`}>
     {provenance.fallback_used ? `FALLBACK · ${provider}` : provider}
   </span>;
