@@ -38,6 +38,7 @@ from cortex.render.schemas import (
     RenderSourceInfo,
     RenderSubtitleSettings,
     RenderTemplateSettings,
+    RenderTransitionInfo,
 )
 from cortex.render.safe_zones import SAFE_ZONES, SAFE_ZONES_VERSION
 from cortex.render.face_crop import resolve_static_face_crop
@@ -49,6 +50,15 @@ from cortex.render.remotion import (
     RemotionOverlayService,
 )
 from cortex.transcribe.schemas import TranscriptDocument
+
+
+# Fixed join fade for a j/l-cut audio boundary (Gate 4, Session H). The
+# jl_cut resolver in the planner already chose a quiet, word/VAD-safe point
+# for the audio cut and baked it into audio_start/audio_end — this is not an
+# editorial crossfade, only enough overlap to avoid an audible click at the
+# splice. 20ms is comfortably under a single video frame at any supported
+# fps and short enough that it can never be mistaken for a dissolve.
+_JL_AUDIO_MICROFADE_SECONDS = 0.02
 
 
 class RenderJobCancelled(RuntimeError):
@@ -188,6 +198,24 @@ def _merge_render_settings(base: RenderSettings, patch: RenderSettingsPatch | No
     return RenderSettings.model_validate(data)
 
 
+def _render_transitions(plan: EditPlanDocument) -> list[RenderTransitionInfo]:
+    """Requested-vs-effective transition manifest entries for every interior
+    EDL boundary (Gate 4, Session H). See RenderTransitionInfo for why
+    effective always mirrors requested today."""
+    transitions: list[RenderTransitionInfo] = []
+    for index, segment in enumerate(plan.segments[:-1]):
+        configured = segment.transition
+        kind = configured.kind if configured is not None else "crossfade"
+        offset = configured.audio_offset_seconds if configured is not None else 0.0
+        transitions.append(RenderTransitionInfo(
+            boundary_index=index,
+            requested_kind=kind, effective_kind=kind,
+            requested_audio_offset_seconds=offset,
+            effective_audio_offset_seconds=offset,
+        ))
+    return transitions
+
+
 def _filtergraph(
     plan: EditPlanDocument,
     width: int,
@@ -252,11 +280,14 @@ def _filtergraph(
                 f"setsar=1,format=yuv420p{output_label}"
             )
         raise RenderPreconditionError(f"modo de enquadramento não suportado: {framing_mode}")
+    audio_durations: list[float] = []
     for index, segment in enumerate(plan.segments):
-        duration = segment.end - segment.start
-        if duration <= 0:
+        video_duration = segment.video_end - segment.video_start
+        audio_duration = segment.audio_end - segment.audio_start
+        if video_duration <= 0 or audio_duration <= 0:
             raise RenderPreconditionError(f"segmento {index} possui duração inválida")
-        durations.append(duration)
+        durations.append(video_duration)
+        audio_durations.append(audio_duration)
         segment_shots = shots_by_segment.get(segment.timeline_order)
         if segment_shots:
             shot_labels: list[str] = []
@@ -277,11 +308,16 @@ def _filtergraph(
                 )
         else:
             video_parts.append(compose_video(
-                f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},setpts=PTS-STARTPTS",
+                f"[0:v]trim=start={segment.video_start:.6f}:end={segment.video_end:.6f},"
+                "setpts=PTS-STARTPTS",
                 f"[v{index}]", segment.timeline_order,
             ))
+        # Audio always follows the segment's own audio clock, independent of
+        # whether video came from the primary source or a camera-plan shot
+        # (Gate 4): a jl_cut boundary only ever shifts audio_start/audio_end,
+        # never which source or which video clock feeds a segment.
         audio_parts.append(
-            f"[0:a]atrim=start={segment.start:.6f}:end={segment.end:.6f},"
+            f"[0:a]atrim=start={segment.audio_start:.6f}:end={segment.audio_end:.6f},"
             f"asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:"
             f"channel_layouts=stereo[a{index}]"
         )
@@ -296,28 +332,51 @@ def _filtergraph(
     else:
         previous_video = "[v0]"
         previous_audio = "[a0]"
-        output_duration = durations[0]
+        video_duration_acc = durations[0]
+        audio_duration_acc = audio_durations[0]
         transitions: list[str] = []
         for index in range(1, len(plan.segments)):
             configured = plan.segments[index - 1].transition
+            kind = configured.kind if configured is not None else "crossfade"
             fade = configured.duration if configured is not None else 0.0
             fade = max(0.0, min(fade, durations[index - 1] / 2, durations[index] / 2))
             video_out = "[vout]" if index == len(plan.segments) - 1 else f"[vx{index}]"
             audio_out = "[aout]" if index == len(plan.segments) - 1 else f"[ax{index}]"
             if fade > 0:
-                offset = max(0.001, output_duration - fade)
+                offset = max(0.001, video_duration_acc - fade)
                 transitions.append(
                     f"{previous_video}[v{index}]xfade=transition=fade:duration={fade:.6f}:"
                     f"offset={offset:.6f}{video_out}"
                 )
-                transitions.append(
-                    f"{previous_audio}[a{index}]acrossfade=d={fade:.6f}:c1=tri:c2=tri{audio_out}"
-                )
-                output_duration += durations[index] - fade
+                video_duration_acc += durations[index] - fade
             else:
                 transitions.append(f"{previous_video}[v{index}]concat=n=2:v=1:a=0{video_out}")
+                video_duration_acc += durations[index]
+            if kind in ("j_cut", "l_cut"):
+                # The audio cut point for a j/l boundary is already baked
+                # into audio_start/audio_end by the planner (Gate 4's
+                # jl_cut resolver) — the two audio clips are adjacent, not
+                # overlapping, editorial content. A duration-matched
+                # acrossfade here (the crossfade/hard path below) would
+                # double-apply the offset. Instead we join with a fixed,
+                # short micro-crossfade — audible click removal only, never
+                # an editorial dissolve — falling back to a hard concat
+                # when either side's audio is too short to host even that.
+                audio_fade = min(
+                    _JL_AUDIO_MICROFADE_SECONDS, audio_durations[index - 1] / 2,
+                    audio_durations[index] / 2,
+                )
+            else:
+                audio_fade = fade
+            if audio_fade > 0:
+                transitions.append(
+                    f"{previous_audio}[a{index}]acrossfade=d={audio_fade:.6f}:"
+                    f"c1=tri:c2=tri{audio_out}"
+                )
+                audio_duration_acc += audio_durations[index] - audio_fade
+            else:
                 transitions.append(f"{previous_audio}[a{index}]concat=n=2:v=0:a=1{audio_out}")
-                output_duration += durations[index]
+                audio_duration_acc += audio_durations[index]
             previous_video, previous_audio = video_out, audio_out
         transitions.append(
             f"{previous_audio}loudnorm=I={loudness_target_lufs:.2f}:"
@@ -1136,6 +1195,7 @@ class RenderService:
                 ),
                 timeline_duration_seconds=plan.timeline_duration_seconds,
                 segment_count=len(plan.segments),
+                transitions=_render_transitions(plan),
                 engine=RenderEngineInfo(
                     ffmpeg=str(self._config.render.ffmpeg), ffprobe=str(self._config.render.ffprobe),
                     requested_encoder=requested_encoder, effective_encoder=requested_encoder,

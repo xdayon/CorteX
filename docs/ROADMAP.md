@@ -108,7 +108,14 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
   (diversity_policy v1.0.0: piso de confianca 0.55, share max 0.2, espacamento 15s,
   monotonia >=85% em cortes >=20s; bloqueadores tipados por-shot e diagnostics com
   segundos por identidade/role; painel de leitura no Studio);
-- J-cut, L-cut e punch-in editaveis;
+- [x] J-cut e L-cut reais com relogios A/V independentes (EDL v2 com
+  video_/audio_start/end e invariante de cobertura; offsets resolvidos em
+  boundaries seguros de palavra/VAD, limitados por perfil; renderer com
+  trims A/V independentes e micro-fade anti-click de 20ms; manifesto v8
+  com requested/effective transition; toggle e chips J/L na Curadoria;
+  regressao sintetica por pixel e frequencia provando troca em instantes
+  distintos);
+- punch-in editavel;
 - [x] crop facial estatico: enquadrar uma identidade confirmada com posicao fixa por
   segmento, sem tracking ou movimento continuo, e fallback central auditavel
   (manifesto v7 com target/samples/fallback/temporal_motion=false; testes

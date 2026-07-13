@@ -289,6 +289,11 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; heigh
 .edl-segment { position: absolute; top: 5px; bottom: 5px; display: flex; align-items: center; min-width: 12px; color: #031012; background: linear-gradient(90deg, var(--cyan), var(--green)); border-right: 2px solid #071012; }
 .edl-segment i { padding-left: 6px; font: normal 600 9px "IBM Plex Mono", monospace; }.edl-segment em { position: absolute; right: 2px; bottom: 1px; padding: 1px 3px; color: var(--text); background: rgba(3,16,18,.72); font: normal 7px "IBM Plex Mono", monospace; }
 .edl-stats { justify-content: flex-start; color: var(--muted); }.edl-stats span { flex: 1; }.edl-stats b { color: var(--text); font-weight: 500; }
+.jl-boundaries { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.jl-chip { padding: 3px 7px; color: #031012; font: 600 10px/1.4 "IBM Plex Mono", monospace, sans-serif; letter-spacing: .04em; background: var(--cyan); }
+.jl-chip.l_cut { background: var(--green); }
+.jl-toggle { display: flex; align-items: center; gap: 7px; margin-top: 14px; color: var(--muted); font: 500 11px/1.4 "Montserrat", "Trebuchet MS", sans-serif; cursor: pointer; }
+.jl-toggle input { accent-color: var(--cyan); }
 .quality-report { margin-top: 14px; padding: 12px 13px; border-left: 2px solid var(--green); background: rgba(103,245,139,.035); }
 .quality-report.degraded { border-left-color: var(--amber); background: rgba(255,188,74,.04); }.quality-report > div { display: flex; align-items: center; gap: 7px; color: var(--green); }.quality-report.degraded > div { color: var(--amber); }
 .quality-report b { font-size: 11px; }.quality-report p { margin: 7px 0 0; color: var(--muted); font: 9px/1.45 "IBM Plex Mono", monospace; }.quality-report p span { color: var(--amber); }

@@ -229,6 +229,25 @@ export type EditPlanIssue = {
   delta_ms?: number | null;
 };
 
+export type EditTransition = {
+  video: string;
+  audio: string;
+  duration: number;
+  kind: "hard" | "crossfade" | "j_cut" | "l_cut";
+  audio_offset_seconds: number;
+};
+
+export type EditSegment = {
+  start: number;
+  end: number;
+  video_start: number;
+  video_end: number;
+  audio_start: number;
+  audio_end: number;
+  timeline_order: number;
+  transition?: EditTransition | null;
+};
+
 export type EditPlanDocument = {
   schema_version: number;
   project_id: string;
@@ -240,12 +259,7 @@ export type EditPlanDocument = {
   clip_start: number;
   clip_end: number;
   profile: string;
-  segments: Array<{
-    start: number;
-    end: number;
-    timeline_order: number;
-    transition?: { video: string; audio: string; duration: number } | null;
-  }>;
+  segments: EditSegment[];
   timeline_duration_seconds: number;
   diagnostics: {
     profile: string;
@@ -256,12 +270,20 @@ export type EditPlanDocument = {
     crossfade: number;
     vad_used: boolean;
     scene_snap_count: number;
+    j_cuts: number;
+    l_cuts: number;
+    jl_blocked: number;
   };
   quality: {
     passed: boolean;
     issues: EditPlanIssue[];
     profile: string;
     degraded: boolean;
+  };
+  jl_settings: {
+    enabled: boolean;
+    max_offset_seconds: number;
+    requested_by: "profile" | "user" | "disabled";
   };
 };
 
@@ -576,10 +598,10 @@ export const api = {
       body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, ...brief }),
     }),
 
-  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string, sceneIndexArtifactId?: string) =>
+  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string, sceneIndexArtifactId?: string, jlCut?: boolean, maxJlOffsetSeconds?: number) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/edit-plans`, {
       method: "POST",
-      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, scene_index_artifact_id: sceneIndexArtifactId ?? null, start, end, profile }),
+      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, scene_index_artifact_id: sceneIndexArtifactId ?? null, start, end, profile, jl_cut: jlCut ?? null, max_jl_offset_seconds: maxJlOffsetSeconds ?? null }),
     }),
 
   startSceneIndex: (projectId: string, sourceAssetId: string, sceneThreshold?: number) =>

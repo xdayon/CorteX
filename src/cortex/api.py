@@ -97,8 +97,9 @@ class EditPlanRequest(BaseModel):
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     profile: str = "auto"
-    # None = use config.edit.jl_cut_enabled_default (currently False — the
-    # FFmpeg renderer doesn't honor J/L offsets yet, see Gate 4 Session H).
+    # None = use config.edit.jl_cut_enabled_default (currently False; the
+    # renderer honors J/L offsets since Gate 4 Session H, but the feature
+    # stays opt-in — pass True explicitly to request it for this plan).
     jl_cut: bool | None = None
     max_jl_offset_seconds: float | None = Field(default=None, ge=0.0)
 

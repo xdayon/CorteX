@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-RENDER_SCHEMA_VERSION = 7
+RENDER_SCHEMA_VERSION = 8
 RENDER_SETTINGS_SCHEMA_VERSION = 1
 OVERLAY_SCHEMA_VERSION = 1
 
@@ -229,6 +229,30 @@ class RenderSourceInfo(BaseModel):
     audio_used: bool
 
 
+class RenderTransitionInfo(BaseModel):
+    """Requested-vs-effective transition actually materialized in the
+    filtergraph at one interior EDL boundary (Gate 4, Session H).
+
+    ``requested_*`` mirrors ``EditTransition`` on the source EditPlanDocument
+    boundary as-authored by the planner. ``effective_*`` is what the renderer
+    built into the filtergraph — today that is always identical to
+    requested, because the planner already materializes the audio offset
+    into the segment's audio_start/audio_end clocks before the render stage
+    ever sees the plan; the renderer has no further degrade path for a
+    boundary it accepts. The field pair exists so a future renderer-side
+    fallback (e.g. an audio duration too short to honor the offset) has
+    somewhere to report a discrepancy without a schema migration.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    boundary_index: int = Field(ge=0)
+    requested_kind: Literal["hard", "crossfade", "j_cut", "l_cut"]
+    effective_kind: Literal["hard", "crossfade", "j_cut", "l_cut"]
+    requested_audio_offset_seconds: float
+    effective_audio_offset_seconds: float
+
+
 class RenderQualityReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -340,6 +364,7 @@ class RenderDocument(BaseModel):
     subtitles_sha256: str | None = None
     timeline_duration_seconds: float = Field(ge=0)
     segment_count: int = Field(ge=1)
+    transitions: list[RenderTransitionInfo] = Field(default_factory=list)
     engine: RenderEngineInfo
     requested_settings: RenderSettings | None = None
     effective_settings: RenderSettings | None = None

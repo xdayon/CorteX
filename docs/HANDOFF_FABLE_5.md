@@ -1366,3 +1366,16 @@ scripts/eval_selection.py (--check com exit code), baseline/thresholds em
 eval/baseline.json, antes/depois identificavel por input_hash+prompt_sha256+
 provider do provenance. 7 testes. Pendente: veredito humano real para ativar
 os gates de cobertura/rejected no baseline.
+
+### Gate 4 concluido (mesma sessao)
+
+J/L-cut reais em duas entregas: sessao G (EDL v2, resolve_jl_cuts com
+boundaries seguros e invariante A/V fail-closed, opt-in via request/config,
+commit 102efa2) e sessao H (renderer com trims independentes video_/audio_,
+micro-crossfade fixo 20ms anti-click na juncao j/l, RENDER_SCHEMA_VERSION 8
+com RenderTransitionInfo requested/effective, toggle J/L + chips com offset
+na Curadoria e regressao tests/test_render_jl_cut.py provando por pixel e
+frequencia que audio e video trocam em instantes distintos; cancelar J/L
+restaura filtergraph byte-identico ao pre-Gate 4). Lacuna consciente: teste
+de encadeamento job->job com jl_cut=true via worker (cobertura funcional
+equivalente existe via service direto).
