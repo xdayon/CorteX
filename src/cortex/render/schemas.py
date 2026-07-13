@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-RENDER_SCHEMA_VERSION = 6
+RENDER_SCHEMA_VERSION = 7
 RENDER_SETTINGS_SCHEMA_VERSION = 1
 OVERLAY_SCHEMA_VERSION = 1
 
@@ -64,6 +64,15 @@ class RenderCanvasSettings(BaseModel):
     width: int = Field(ge=320, le=3840)
     height: int = Field(ge=320, le=3840)
     fps: int = Field(ge=15, le=120)
+
+
+class RenderFramingSettings(BaseModel):
+    """Defines how a landscape source occupies a portrait render canvas."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    mode: Literal["vertical_crop", "blurred_background", "face_static_crop"] = "vertical_crop"
 
 
 class RenderCaptionSettings(BaseModel):
@@ -125,6 +134,7 @@ class RenderSettings(BaseModel):
     schema_version: Literal[1] = RENDER_SETTINGS_SCHEMA_VERSION
     encoder: Literal["h264_nvenc", "libx264"]
     canvas: RenderCanvasSettings
+    framing: RenderFramingSettings = Field(default_factory=RenderFramingSettings)
     captions: RenderCaptionSettings
     headline: RenderHeadlineSettings
     subtitles: RenderSubtitleSettings
@@ -180,11 +190,18 @@ class RenderTemplateSettingsPatch(BaseModel):
     quote_padding: float | None = Field(default=None, ge=0.0, le=64.0)
 
 
+class RenderFramingSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["vertical_crop", "blurred_background", "face_static_crop"] | None = None
+
+
 class RenderSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     encoder: Literal["h264_nvenc", "libx264"] | None = None
     canvas: RenderCanvasSettings | None = None
+    framing: RenderFramingSettingsPatch | None = None
     captions: RenderCaptionSettingsPatch | None = None
     headline: RenderHeadlineSettingsPatch | None = None
     subtitles: RenderSubtitleSettings | None = None
@@ -310,6 +327,10 @@ class RenderDocument(BaseModel):
     source_asset_id: str
     edit_plan_artifact_id: str
     camera_edit_plan_artifact_id: str | None = None
+    face_index_artifact_id: str | None = None
+    identity_index_artifact_id: str | None = None
+    target_identity_id: str | None = None
+    static_face_crops: list[dict[str, object]] = Field(default_factory=list)
     sources: list[RenderSourceInfo] = Field(default_factory=list)
     input_hash: str
     output_path: str

@@ -76,7 +76,7 @@ class AnalysisConfig(BaseModel):
     scene_threshold: float = Field(default=10.0, ge=0.0, le=100.0)
     face_sample_fps: float = Field(default=1.0, gt=0.0, le=10.0)
     speaker_sample_fps: float = Field(default=4.0, ge=1.0, le=10.0)
-    speaker_vad_padding_seconds: float = Field(default=0.15, ge=0.0, le=2.0)
+    speaker_vad_padding_seconds: float = Field(default=1.0, ge=0.0, le=2.0)
     visual_quality_sample_fps: float = Field(default=2.0, gt=0.0, le=10.0)
     multicam_max_offset_seconds: float = Field(default=120.0, gt=0.0, le=3600.0)
     multicam_analysis_seconds: float = Field(default=600.0, ge=10.0, le=7200.0)

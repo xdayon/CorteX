@@ -11,6 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from cortex.config import CortexConfig
+from cortex.analyze.face_schemas import FaceIndexDocument
+from cortex.analyze.identity_schemas import IdentityIndexDocument
 from cortex.domain.models import StageArtifact
 from cortex.domain.store import (
     DomainStore,
@@ -38,6 +40,7 @@ from cortex.render.schemas import (
     RenderTemplateSettings,
 )
 from cortex.render.safe_zones import SAFE_ZONES, SAFE_ZONES_VERSION
+from cortex.render.face_crop import resolve_static_face_crop
 from cortex.render.captions import build_caption_cues, build_timeline_words, render_srt
 from cortex.render.remotion import (
     RemotionOverlayCancelled,
@@ -82,7 +85,13 @@ def _export_render_files(
         raise RenderPreconditionError("diretório de exportação inválido")
     destination = Path(export_directory.strip()).expanduser()
     if not destination.is_absolute():
-        destination = config.paths.output_dir / destination
+        output_root = config.paths.output_dir.resolve()
+        # The Studio documents paths relative to data/output. Accept callers
+        # that include that prefix without nesting data/output/data/output.
+        candidate = destination.resolve()
+        destination = candidate if candidate.is_relative_to(output_root) else (output_root / destination).resolve()
+        if not destination.is_relative_to(output_root):
+            raise RenderPreconditionError("diretório de exportação relativo escapa de data/output")
     try:
         destination.mkdir(parents=True, exist_ok=True)
         destination = destination.resolve()
@@ -197,6 +206,8 @@ def _filtergraph(
     overlay_input_index: int | None = None,
     camera_plan: CameraEditPlanDocument | None = None,
     source_input_indices: dict[str, int] | None = None,
+    framing_mode: str = "vertical_crop",
+    static_face_crops: dict[int, dict[str, int]] | None = None,
 ) -> tuple[str, str, str]:
     video_parts: list[str] = []
     audio_parts: list[str] = []
@@ -206,6 +217,41 @@ def _filtergraph(
         for shot in camera_plan.shots:
             shots_by_segment.setdefault(shot.edit_segment_order, []).append(shot)
     source_input_indices = source_input_indices or {plan.source_asset_id: 0}
+
+    def compose_video(input_filter: str, output_label: str, segment_order: int) -> str:
+        if framing_mode == "vertical_crop":
+            return (
+                f"{input_filter},fps={fps},scale={width}:{height}:"
+                f"force_original_aspect_ratio=increase,crop={width}:{height},"
+                f"setsar=1,format=yuv420p{output_label}"
+            )
+        if framing_mode == "blurred_background":
+            label_name = output_label[1:-1]
+            blur_width = max(160, (width // 4) // 2 * 2)
+            blur_height = max(160, (height // 4) // 2 * 2)
+            background_raw = f"[{label_name}_bgraw]"
+            foreground_raw = f"[{label_name}_fgraw]"
+            background = f"[{label_name}_bg]"
+            foreground = f"[{label_name}_fg]"
+            return (
+                f"{input_filter},fps={fps},split=2{background_raw}{foreground_raw};"
+                f"{background_raw}scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
+                f"crop={blur_width}:{blur_height},gblur=sigma=12:steps=2,"
+                f"scale={width}:{height},setsar=1{background};"
+                f"{foreground_raw}scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"setsar=1{foreground};{background}{foreground}"
+                f"overlay=(W-w)/2:(H-h)/2:format=yuv420,format=yuv420p{output_label}"
+            )
+        if framing_mode == "face_static_crop":
+            crop = (static_face_crops or {}).get(segment_order)
+            if crop is None:
+                raise RenderPreconditionError("crop facial estático ausente para segmento")
+            return (
+                f"{input_filter},fps={fps},crop={crop['crop_width']}:{crop['crop_height']}:"
+                f"{crop['crop_x']}:{crop['crop_y']},scale={width}:{height},"
+                f"setsar=1,format=yuv420p{output_label}"
+            )
+        raise RenderPreconditionError(f"modo de enquadramento não suportado: {framing_mode}")
     for index, segment in enumerate(plan.segments):
         duration = segment.end - segment.start
         if duration <= 0:
@@ -218,13 +264,11 @@ def _filtergraph(
                 input_index = source_input_indices[shot.video_source_asset_id]
                 label = f"[vs{index}_{shot_index}]"
                 shot_labels.append(label)
-                video_parts.append(
+                video_parts.append(compose_video(
                     f"[{input_index}:v]trim=start={shot.source_start_us / 1_000_000:.6f}:"
-                    f"end={shot.source_end_us / 1_000_000:.6f},setpts=PTS-STARTPTS,"
-                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
-                    f"format=yuv420p{label}"
-                )
+                    f"end={shot.source_end_us / 1_000_000:.6f},setpts=PTS-STARTPTS",
+                    label, segment.timeline_order,
+                ))
             if len(shot_labels) == 1:
                 video_parts.append(f"{shot_labels[0]}null[v{index}]")
             else:
@@ -232,12 +276,10 @@ def _filtergraph(
                     f"{''.join(shot_labels)}concat=n={len(shot_labels)}:v=1:a=0[v{index}]"
                 )
         else:
-            video_parts.append(
-                f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},"
-                f"setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
-                f"format=yuv420p[v{index}]"
-            )
+            video_parts.append(compose_video(
+                f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},setpts=PTS-STARTPTS",
+                f"[v{index}]", segment.timeline_order,
+            ))
         audio_parts.append(
             f"[0:a]atrim=start={segment.start:.6f}:end={segment.end:.6f},"
             f"asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:"
@@ -556,6 +598,9 @@ class RenderService:
         *,
         edit_plan_artifact: StageArtifact,
         camera_edit_plan_artifact: StageArtifact | None = None,
+        face_index_artifact: StageArtifact | None = None,
+        identity_index_artifact: StageArtifact | None = None,
+        target_identity_id: str | None = None,
         encoder: str | None,
         headline: str | None,
         progress_cb: Callable[[float, str], None],
@@ -596,8 +641,8 @@ class RenderService:
                 camera_plan_path.read_text(encoding="utf-8")
             )
             if (
-                camera_plan.schema_version != 2
-                or camera_edit_plan_artifact.schema_version != 2
+                camera_plan.schema_version not in {2, 3}
+                or camera_edit_plan_artifact.schema_version not in {2, 3}
                 or camera_plan.project_id != plan.project_id
                 or camera_edit_plan_artifact.project_id != plan.project_id
                 or camera_plan.source_asset_id != source.id
@@ -612,6 +657,16 @@ class RenderService:
             segment_orders = {segment.timeline_order for segment in plan.segments}
             if any(shot.edit_segment_order not in segment_orders for shot in camera_plan.shots):
                 raise RenderPreconditionError("camera plan referencia segmento inexistente")
+            if camera_plan.schema_version == 3:
+                for shot in camera_plan.shots:
+                    if shot.visual_origin == "reaction_reuse" and (
+                        shot.video_source_asset_id != source.id
+                        or shot.audio_source_asset_id != source.id
+                        or shot.reaction_candidate_artifact_id != camera_plan.reaction_candidate_artifact_id
+                    ):
+                        raise RenderPreconditionError(
+                            "reaction do camera plan não preserva o master e áudio primário"
+                        )
             normalized_shots: list[CameraEditShot] = []
             for segment in plan.segments:
                 shots = sorted(
@@ -700,6 +755,50 @@ class RenderService:
                 ),
             }),
         })
+        static_face_crops: list[dict[str, object]] = []
+        static_face_crop_map: dict[int, dict[str, int]] = {}
+        if effective_settings.framing.mode == "face_static_crop":
+            if camera_edit_plan_artifact is not None:
+                raise RenderPreconditionError("face_static_crop ainda não aceita camera_edit_plan")
+            if not (face_index_artifact and identity_index_artifact and target_identity_id):
+                raise RenderPreconditionError(
+                    "face_static_crop exige face_index, identity_index e identidade alvo explícita"
+                )
+            if face_index_artifact.stage != "face_index" or identity_index_artifact.stage != "identity_index":
+                raise RenderPreconditionError("artifacts inválidos para face_static_crop")
+            face_doc = FaceIndexDocument.model_validate_json(Path(face_index_artifact.path).read_text())
+            identity_doc = IdentityIndexDocument.model_validate_json(Path(identity_index_artifact.path).read_text())
+            if (
+                face_index_artifact.project_id != plan.project_id
+                or identity_index_artifact.project_id != plan.project_id
+                or face_doc.project_id != plan.project_id
+                or identity_doc.project_id != plan.project_id
+                or face_doc.source_asset_id != source.id
+                or identity_doc.source_asset_id != source.id
+                or identity_doc.face_index_artifact_id != face_index_artifact.id
+                or identity_doc.face_index_input_hash != face_index_artifact.input_hash
+                or face_doc.source_sha256 != source.sha256
+                or identity_doc.source_sha256 != source.sha256
+            ):
+                raise RenderPreconditionError("cadeia de face/identidade não corresponde à fonte")
+            if not any(item.identity_id == target_identity_id and item.status == "confirmed" for item in identity_doc.identities):
+                raise RenderPreconditionError("identidade alvo não está confirmada")
+            probe = source.probe or probe_media(self._config.render.ffprobe, source_path)
+            video_stream = next((item for item in probe.get("streams", []) if item.get("codec_type") == "video"), None)
+            if not video_stream:
+                raise RenderPreconditionError("fonte sem dimensões de vídeo para crop facial")
+            for segment in plan.segments:
+                resolved = resolve_static_face_crop(
+                    face_doc, start_seconds=segment.start, end_seconds=segment.end,
+                    source_width=int(video_stream["width"]), source_height=int(video_stream["height"]),
+                    canvas_width=effective_settings.canvas.width, canvas_height=effective_settings.canvas.height,
+                    identity_index=identity_doc, target_identity_id=target_identity_id,
+                )
+                crop = {"crop_x": resolved.crop_x, "crop_y": resolved.crop_y,
+                        "crop_width": resolved.crop_width, "crop_height": resolved.crop_height}
+                static_face_crop_map[segment.timeline_order] = crop
+                static_face_crops.append({"segment_order": segment.timeline_order, **crop,
+                                          "provenance": resolved.provenance})
         canvas_key = _safe_zone_key(effective_settings.canvas.width, effective_settings.canvas.height)
         safe_zone = SAFE_ZONES.get(canvas_key)
         if safe_zone is None:
@@ -746,6 +845,10 @@ class RenderService:
                 _sha256(Path(camera_edit_plan_artifact.path))
                 if camera_edit_plan_artifact is not None else None
             ),
+            "face_index_sha256": _sha256(Path(face_index_artifact.path)) if face_index_artifact else None,
+            "identity_index_sha256": _sha256(Path(identity_index_artifact.path)) if identity_index_artifact else None,
+            "target_identity_id": target_identity_id,
+            "static_face_crops": static_face_crops,
             "render_sources": {
                 source_id: asset.sha256 for source_id, asset in sorted(render_sources.items())
             },
@@ -844,6 +947,8 @@ class RenderService:
             effective_settings.canvas.fps,
             self._config.render.loudness_target_lufs,
             self._config.render.true_peak_limit_dbfs,
+            framing_mode=effective_settings.framing.mode,
+            static_face_crops=static_face_crop_map,
             overlay_input_index=(len(ordered_source_ids) if overlay_manifest is not None else None),
             camera_plan=camera_plan,
             source_input_indices=source_input_indices,
@@ -1001,6 +1106,10 @@ class RenderService:
                     camera_edit_plan_artifact.id
                     if camera_edit_plan_artifact is not None else None
                 ),
+                face_index_artifact_id=face_index_artifact.id if face_index_artifact else None,
+                identity_index_artifact_id=identity_index_artifact.id if identity_index_artifact else None,
+                target_identity_id=target_identity_id,
+                static_face_crops=static_face_crops,
                 sources=[
                     RenderSourceInfo(
                         source_asset_id=source_id,

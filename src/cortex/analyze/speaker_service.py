@@ -28,7 +28,7 @@ from cortex.domain.models import SourceAsset, StageArtifact
 from cortex.domain.store import DomainStore
 from cortex.paths import speakers_dir
 
-SPEAKER_ALGORITHM_VERSION = "1.0.0"
+SPEAKER_ALGORITHM_VERSION = "1.1.0"
 SPEAKER_FRAME_WIDTH = 320
 MOTION_THRESHOLD = 0.08
 WINNER_MARGIN = 0.03
@@ -213,7 +213,8 @@ def _segments_from_observations(
             observation_cursor < len(observations)
             and observations[observation_cursor].time_us < end_us
         ):
-            matching.append(observations[observation_cursor])
+            if observations[observation_cursor].speech_active:
+                matching.append(observations[observation_cursor])
             observation_cursor += 1
         groups: list[tuple[int, int, str, str | None, list[float]]] = []
         if not matching:
@@ -384,14 +385,15 @@ class SpeakerTimelineService:
 
         observations: list[SpeakerObservation] = []
         for record in records:
-            if not record["speech_active"]:
-                continue
-            state, speaker_track_id, confidence = select_speaker(
-                record["scores"], threshold=MOTION_THRESHOLD, margin=WINNER_MARGIN
-            )
+            if record["speech_active"]:
+                state, speaker_track_id, confidence = select_speaker(
+                    record["scores"], threshold=MOTION_THRESHOLD, margin=WINNER_MARGIN
+                )
+            else:
+                state, speaker_track_id, confidence = "no_speech", None, 1.0
             observations.append(SpeakerObservation(
                 time_us=round(record["time"] * 1_000_000), scene_index=record["scene_index"],
-                speech_active=True, state=state, speaker_track_id=speaker_track_id,
+                speech_active=record["speech_active"], state=state, speaker_track_id=speaker_track_id,
                 confidence=round(confidence, 6),
                 track_scores=[
                     TrackScore(

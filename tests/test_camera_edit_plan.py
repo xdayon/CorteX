@@ -8,6 +8,7 @@ import pytest
 from cortex.analyze.camera_schemas import CameraScene, CameraTimelineDocument
 from cortex.analyze.identity_schemas import IdentityIndexDocument
 from cortex.analyze.identity_service import IdentityIndexService
+from cortex.analyze.reaction_candidate_schemas import ReactionCandidateIndexDocument
 from cortex.analyze.face_schemas import FaceIndexDocument
 from cortex.analyze.multicam_visual_schemas import MulticamVisualIndexDocument
 from cortex.analyze.scene_schemas import SceneIndexDocument
@@ -178,6 +179,39 @@ def _iso_manifest(tmp_path: Path, domain, project) -> StageArtifact:
     )
 
 
+def _reaction_candidates(tmp_path: Path, domain, project, camera, identity, quality) -> StageArtifact:
+    document = ReactionCandidateIndexDocument.model_validate({
+        "project_id": project.id, "source_asset_id": "source-id", "source_sha256": "source-sha",
+        "speaker_timeline_artifact_id": "speaker-id", "speaker_timeline_input_hash": "speaker-hash",
+        "camera_timeline_artifact_id": camera.id, "camera_timeline_input_hash": camera.input_hash,
+        "identity_index_artifact_id": identity.id, "identity_index_input_hash": identity.input_hash,
+        "visual_quality_artifact_id": quality.id, "visual_quality_input_hash": quality.input_hash,
+        "interviewer_identity_id": "identity-host", "input_hash": "reaction-doc",
+        "candidates": [{
+            "candidate_id": "reaction-safe", "source_start_us": 4_000_000,
+            "source_end_us": 5_000_000, "duration_us": 1_000_000,
+            "scene_index": 3, "layout_id": "host-listening",
+            "interviewer_identity_id": "identity-host", "interviewer_track_id": "host-track",
+            "speech_context": "adjacent_silence", "reference_speaker_identity_id": "identity-guest",
+            "reference_speech_time_us": 3_500_000, "reference_speech_distance_us": 500_000,
+            "observation_count": 4, "mean_mouth_motion": 0.01, "max_mouth_motion": 0.02,
+            "minimum_speaker_confidence": 0.9, "visual_quality_score": 1.0, "confidence": 0.9,
+            "evidence": ["test"],
+        }],
+        "diagnostics": {"candidate_count": 1, "inspected_observation_count": 4,
+                        "qualifying_observation_count": 4, "rejected_observation_counts": {}},
+        "engine": {"algorithm": "test", "algorithm_version": "1", "minimum_duration_us": 700_000,
+                   "maximum_mouth_motion": 0.08, "maximum_sample_gap_us": 400_000,
+                   "maximum_silence_distance_us": 1_000_000,
+                   "identity_scope": "cross_layout_face_embedding",
+                   "role_assignment": "explicit_interviewer_identity_id",
+                   "audio_policy": "mute_reaction_source_preserve_editorial_audio"},
+    })
+    return _write_artifact(
+        domain, project.id, "reaction_candidate_index", tmp_path / "reactions.json", document,
+    )
+
+
 def test_camera_plan_persists_linked_shots_filters_quality_and_caches(tmp_path: Path) -> None:
     config, domain, project, edit, camera, identity, quality = _planner_fixture(tmp_path)
     service = CameraEditPlanService(config, domain)
@@ -199,7 +233,7 @@ def test_camera_plan_persists_linked_shots_filters_quality_and_caches(tmp_path: 
     assert all(shot.source_start_us == shot.audio_source_start_us for shot in document.shots)
     assert all(shot.source_end_us == shot.audio_source_end_us for shot in document.shots)
     assert document.diagnostics.reaction_shots_enabled is False
-    assert "alternate_camera_source_unavailable" in document.diagnostics.reaction_shots_blocked_by
+    assert "reaction_candidate_index_unavailable" in document.diagnostics.reaction_shots_blocked_by
     assert document.engine.temporal_reuse_allowed is False
     assert second["cached"] is True
     assert len(domain.list_stage_artifacts(project.id, "camera_edit_plan")) == 1
@@ -227,8 +261,31 @@ def test_camera_plan_v2_replaces_only_fallback_with_synchronized_iso_context(tmp
     assert (iso_shot.audio_source_start_us, iso_shot.audio_source_end_us) == (2_000_000, 3_000_000)
     assert iso_shot.sync_offset_us == 800_000
     assert document.diagnostics.iso_context_shot_count == 1
-    assert "alternate_camera_source_unavailable" not in document.diagnostics.reaction_shots_blocked_by
+    assert "reaction_candidate_index_unavailable" in document.diagnostics.reaction_shots_blocked_by
     assert document.engine.audio_continuity_mode == "primary_source_continuous"
+
+
+def test_camera_plan_reuses_safe_single_master_reaction_with_primary_audio(tmp_path: Path) -> None:
+    config, domain, project, edit, camera, identity, quality = _planner_fixture(tmp_path)
+    reactions = _reaction_candidates(tmp_path, domain, project, camera, identity, quality)
+    result = CameraEditPlanService(config, domain).run(
+        edit_plan_artifact=edit, camera_timeline_artifact=camera,
+        identity_index_artifact=identity, visual_quality_artifact=quality,
+        reaction_candidate_artifact=reactions,
+        progress_cb=lambda *_args: None, should_cancel=lambda: False,
+    )
+    document = CameraEditPlanDocument.model_validate_json(
+        Path(result["camera_edit_plan_path"]).read_text(encoding="utf-8")
+    )
+    reaction = next(shot for shot in document.shots if shot.intent == "reaction")
+
+    assert reaction.video_source_asset_id == reaction.audio_source_asset_id == "source-id"
+    assert (reaction.source_start_us, reaction.source_end_us) == (4_000_000, 5_000_000)
+    assert (reaction.audio_source_start_us, reaction.audio_source_end_us) == (2_000_000, 3_000_000)
+    assert reaction.visual_origin == "reaction_reuse"
+    assert reaction.reaction_candidate_id == "reaction-safe"
+    assert document.diagnostics.reaction_shots_enabled is True
+    assert document.diagnostics.reused_candidate_ids == ["reaction-safe"]
 
 
 def test_camera_plan_rejects_mismatched_visual_chain(tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ class JobType(StrEnum):
     CAMERA_ANALYSIS = "camera_analysis"
     VISUAL_QUALITY_ANALYSIS = "visual_quality_analysis"
     IDENTITY_ANALYSIS = "identity_analysis"
+    REACTION_CANDIDATE_ANALYSIS = "reaction_candidate_analysis"
     CAMERA_PLANNING = "camera_planning"
     MULTICAM_SYNC = "multicam_sync"
     MULTICAM_VISUAL_INDEX = "multicam_visual_index"
@@ -72,6 +73,7 @@ class Job(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     result: dict[str, Any] | None = None
     error: str | None = None
+    worker_pid: int | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

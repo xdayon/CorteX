@@ -1,5 +1,9 @@
 # Handoff para Fable-5 - CorteX
 
+Plano operacional ate o release candidate: `docs/PRODUCTION_COMPLETION_PLAN.md`.
+Novas sessoes devem escolher um unico gate desse documento e manter
+`docs/ROADMAP.md` como contrato de produto.
+
 Data: 2026-07-11
 Repositorio: `/var/home/dx/Projects/CorteX`
 Branch atual no momento do handoff: `feature/audio-aware-editing`
@@ -1052,3 +1056,252 @@ cores, borda e sombra ao vivo e oferecer seletor visual de cores com hex opciona
 
 Proximo gate: banco persistido de reaction candidates do entrevistador no master
 unico, seguido de planner e render com video emprestado/audio editorial continuo.
+
+## Atualizacao 2026-07-12 - banco single-source de reaction candidates
+
+O primeiro gate apos a correcao de produto foi concluido com o artifact versionado
+`reaction_candidate_index`. Ele deriva exclusivamente de `speaker_timeline` +
+`camera_timeline` + `identity_index` + `visual_quality_index`, valida a cadeia da
+mesma fonte e persiste janelas em microssegundos, identidade/track do entrevistador,
+speaker concorrente confirmado e distinto, mouth motion, qualidade, confianca,
+rejeicoes e evidencias auditaveis.
+
+O papel do entrevistador nao e inferido por posicao ou frequencia. O job/API exige
+`interviewer_identity_id` explicito e recusa qualquer identidade que nao esteja
+`confirmed` pelo SFace cross-layout. O artifact registra a politica
+`mute_reaction_source_preserve_editorial_audio`, mas ainda nao altera camera plan
+nem render.
+
+Arquivos principais:
+
+- `src/cortex/analyze/reaction_candidate_schemas.py`;
+- `src/cortex/analyze/reaction_candidate_service.py`;
+- `src/cortex/api.py`, `src/cortex/worker.py` e `src/cortex/schemas.py`;
+- `tests/test_reaction_candidates.py`.
+
+Validacao focada: 17 testes passaram cobrindo o novo artifact, fail-closed,
+cache, worker/API e regressoes de identidade/camera plan.
+
+Proximo gate: camera planner single-source consumindo o banco. Ele deve preservar
+primeiro aparicoes naturais do entrevistador que ja cruzem a EDL e permitir video
+emprestado de outro tempo apenas com limite de reutilizacao, proximidade temporal,
+origem editorial/origem visual separadas e audio primario continuamente intacto.
+
+## Atualizacao 2026-07-12 - reactions em silencio adjacente
+
+O banco foi ampliado para episodios em que o master mostra quase sempre quem esta
+falando. `speaker_timeline` v2 agora persiste observacoes `no_speech` com mouth
+motion nas margens antes/depois do VAD; o padding visual default passou de 0,15 s
+para 1,0 s. Essas observacoes sao explicitamente filtradas da construcao dos
+segmentos, portanto nao reclassificam fala acustica como silencio.
+
+`reaction_candidate_index` v2 distingue `concurrent_speech` de
+`adjacent_silence`. Uma reaction silenciosa so e aceita quando possui identidade
+do entrevistador confirmada, track unico, qualidade utilizavel, mouth motion baixo
+e uma fala visual proxima de outra identidade confirmada. O artifact registra
+identidade, timestamp e distancia dessa fala de referencia; sem essa evidencia,
+o candidato e recusado. O audio-fonte da reaction continua sempre proibido.
+
+O proximo gate permanece o camera planner single-source. Ainda nao ha insercao
+automatica nem alteracao do render neste incremento.
+
+## Atualizacao 2026-07-12 - planner single-source e contrato de render
+
+`camera_edit_plan` v3 consome opcionalmente `reaction_candidate_index` e registra
+por shot a origem visual (`primary_in_place`, `reaction_reuse` ou o caminho ISO
+legado isolado), candidate, identidade, score e intervalos de video/audio. O
+planner preserva primeiro todos os planos naturais da EDL; somente um shot
+`fallback` pode receber video emprestado, se um candidate seguro couber por inteiro,
+nao sobrepuser o audio editorial e ainda nao tiver sido reutilizado no corte.
+
+O audio continua sempre na fonte primaria e cobre a EDL sem gaps/sobreposicoes. O
+render agora aceita o plano v3 e rejeita uma reaction que tente usar outra fonte ou
+audio diferente do master. A composicao FFmpeg ja recorta video e audio em ramos
+separados, portanto o video emprestado do mesmo master nao reutiliza seu audio.
+
+O proximo gate e ampliar o render com regressao sintetica dedicada para provar,
+por pixels e frequencia, video emprestado do master com audio editorial continuo;
+depois disso, remover os caminhos experimentais ISO e portar somente esses testes
+de continuidade uteis.
+
+## Atualizacao 2026-07-12 - render de reaction single-source validado
+
+O renderer recebeu regressao de ponta a ponta para o contrato do planner v3. O
+fixture cria um unico master com dois trechos de video visualmente distintos e
+audio editorial continuo. Um `reaction_reuse` usa o video do segundo trecho
+enquanto o intervalo editorial e o audio permanecem no primeiro.
+
+O MP4 publicado foi verificado por pixel central (video emprestado) e frequencia
+dominante (audio de 440 Hz do trecho editorial). O manifesto confirma a unica
+fonte como `video_used=true` e `audio_used=true`. Assim, o caminho nao reutiliza
+o audio da reaction e o contrato fail-closed do render v3 fica coberto por teste
+real de FFmpeg.
+
+Validacoes nesta fatia:
+
+- `tests/test_reaction_candidates.py`, `tests/test_camera_edit_plan.py` e
+  `tests/test_render.py`: 17 testes passaram;
+- Ruff e `git diff --check`: passaram;
+- `cd apps/web && npm run build`: passou.
+
+`.venv/bin/pytest -q` continua sem concluir no sandbox, parando apos os dois
+primeiros testes de integracao, como nas rodadas anteriores. Repetir a suite no
+host antes do merge.
+
+Proximo gate: remover o ramo experimental ISO (`multicam_sync`,
+`multicam_visual_index` e o suporte de render associado), preservando somente os
+testes de continuidade audio/video que sustentam o planner single-source.
+
+## Atualizacao 2026-07-12 - confirmacao de exportacao no Studio
+
+- A etapa Render agora preserva no estado de cada corte os caminhos retornados
+  pelo job (`export_path` e `export_subtitles_path`) e os exibe junto do
+  manifesto. Assim, quando o usuario configura um diretorio de exportacao, a UI
+  confirma a copia persistida do MP4 e do SRT, alem dos downloads seguros do
+  artifact canonico do projeto.
+- A copia continua atomica e e repetida tambem em cache; ela nao altera o
+  artifact de render nem seu hash, pois o diretorio de destino e uma decisao de
+  entrega, nao uma configuracao de composicao.
+- Validado no host: `tests/test_render.py` com 7 testes passou em 23,48 s,
+  incluindo render Remotion real, overlay alpha/karaoke, SRT, cache e o video
+  de reaction com audio editorial continuo. `tests/test_render_captions.py` (2),
+  `tests/test_render_settings.py` (6) e `tests/test_render_media_api.py` (2)
+  tambem passaram. Builds de `apps/web` e `apps/remotion`, `compileall` e
+  `git diff --check` passaram.
+- A execucao agregada de `.venv/bin/pytest -q` voltou a nao emitir resumo neste
+  ambiente depois de avancar a 38%; nao usar essa saida como evidencia de suite
+  completa. Repetir no host interativo antes de merge/release.
+
+## Atualizacao 2026-07-12 - presets persistidos por projeto
+
+- `render_presets` persiste snapshots completos e validados de `RenderSettings`,
+  com nome unico por projeto, timestamps e isolamento entre projetos;
+- o Studio lista, aplica, cria e atualiza presets sem incluir diretorio de
+  exportacao ou overrides por corte, que continuam sendo dados do job;
+- a API expoe `GET/POST /projects/{id}/render-presets` e
+  `PUT /projects/{id}/render-presets/{preset_id}`;
+- validacao focada: tres testes cobriram store, handlers HTTP, round-trip,
+  atualizacao e isolamento. `compileall`, build do Studio e `git diff --check`
+  passaram. O E2E com `TestClient` permanece um gate de host por causa do
+  bloqueio conhecido do sandbox.
+
+## Atualizacao 2026-07-12 - fila persistida e retomada segura
+
+- o Studio enfileira todos os planos de edicao selecionados antes de aguardar
+  qualquer render, portanto a fila continua no SQLite depois que a pagina fecha;
+- jobs `running` registram o PID do worker que os reivindicou; no startup, o
+  worker reenfileira somente jobs sem PID ou cujo processo local nao existe,
+  evitando duplicar trabalho de outro worker ativo;
+- a recuperacao preserva ID, payload, progresso e FIFO, e adiciona uma mensagem
+  auditavel ao job recuperado;
+- validacao focada: 14 testes cobriram recovery, PID vivo, FIFO de 25 jobs,
+  presets e handlers. Builds web/Remotion, `compileall` e `git diff --check`
+  passaram.
+
+## Atualizacao 2026-07-12 - enquadramento vertical e background desfocado
+
+- `RenderSettings.framing` persiste dois modos efetivos no job, preset, hash e
+  manifesto: `vertical_crop` e `blurred_background`;
+- `vertical_crop` amplia e recorta centralmente a fonte para preencher o canvas,
+  sem `pad` ou barras pretas;
+- `blurred_background` preserva o quadro 16:9 nítido no centro e preenche o
+  canvas com o proprio video ampliado e Gaussian blur em resolucao reduzida;
+- o Studio expoe a escolha antes do editor, e overrides por corte agora usam a
+  mesma chave com que foram salvos;
+- E2E real aprovado no episodio de 98 minutos: artifact
+  `6377de0342874e009f842cb5cee51f87`, MP4 de 76 MB, SRT, NVENC, quality gate e
+  export em `data/output/e2e-framing-blur`;
+- validacao focada: 12 testes passaram; builds web/Remotion, `compileall` e
+  `git diff --check` passaram.
+
+Proximo gate: `face_static_crop` usando `face_index` + `identity_index`
+persistidos. O enquadramento deve calcular uma unica posicao horizontal robusta
+para cada segmento editorial e mante-la fixa durante todo o segmento, sem pan,
+tracking, EMA ou movimento continuo de camera. O alvo deve ser uma identidade
+explicitamente confirmada; sem evidencia suficiente, usar crop central com
+fallback registrado no manifesto.
+
+## Handoff da sessao - proximo orquestrador
+
+Data: 2026-07-12. Nao ha worker, pytest ou render Remotion ativo no encerramento.
+O worktree possui uma fatia grande e coerente ainda nao commitada; preservar tudo,
+rodar os gates abaixo e criar um checkpoint antes de abrir outra frente.
+
+### Estado validado nesta sessao
+
+- export real funciona com MP4, SRT, preview/download, copia atomica e quality gate;
+- presets nomeados por projeto estao persistidos e reaplicaveis no Studio;
+- fila de ate 25 renders e persistida antes do acompanhamento; jobs abandonados
+  sao recuperados por PID sem reenfileirar worker vivo;
+- safe zone da legenda foi corrigida sem reduzir a fonte: stroke/sombra agora
+  possuem inset inferior de 20 px no overlay Remotion;
+- `vertical_crop` preenche o canvas sem `pad`/barras pretas;
+- `blurred_background` mantem o 16:9 nitido sobre o proprio video ampliado e
+  desfocado; o blur roda em proxy 270x480 e volta a 1080x1920 antes da composicao;
+- o Studio expoe os dois modos e presets/overrides persistem a escolha;
+- E2E real aprovado: job `284a25477fb44609988c6118056e845a`, artifact
+  `6377de0342874e009f842cb5cee51f87`, MP4/SRT em
+  `data/output/e2e-framing-blur/`, NVENC e quality gate aprovados;
+- o job `08cbadc6c9884542b88049433476e74b` falhou intencionalmente porque o E2E
+  full-resolution foi interrompido para testar a versao otimizada; nao e regressao.
+
+### Proximo gate exato - crop facial estatico
+
+O usuario rejeitou tracking continuo por causar movimento/vertigem. Nao
+implementar pan, keyframes, EMA ou camera seguindo o rosto.
+
+Fundacao pronta:
+
+- `src/cortex/render/face_crop.py` resolve um unico crop por intervalo usando
+  mediana ponderada por area/confianca, clamp e fallback central;
+- o resolvedor aceita `identity_index` + `target_identity_id` confirmado, registra
+  provenance e retorna `temporal_motion=false`;
+- `tests/test_face_crop.py`: 7 testes passaram.
+
+Ainda falta integrar, nesta ordem:
+
+1. adicionar `face_static_crop` a `RenderFramingSettings` e ao tipo web;
+2. estender `RenderRequest` com `face_index_artifact_id`,
+   `identity_index_artifact_id` e `target_identity_id` explicitos;
+3. validar no API/worker que artifacts, fonte, hashes e identidade confirmada
+   pertencem ao mesmo projeto; nunca escolher pessoa silenciosamente;
+4. no `RenderService`, resolver um crop fixo por segmento antes do input hash,
+   incluir a trajetoria estatica/provenance no cache e manifesto, e aplicar
+   `scale=...:force_original_aspect_ratio=increase,crop=w:h:x:y` com x/y constantes;
+5. primeira entrega deve rejeitar `camera_edit_plan` + `face_static_crop` ate haver
+   FaceIndex por fonte/shot, evitando usar coordenadas da fonte errada;
+6. no Studio, expor uma escolha visual e explicita "este sou eu" para identidade
+   confirmada. O frontend ainda nao orquestra camera/identity/reaction, embora os
+   endpoints backend existam; nao usar apenas o maior rosto como substituto;
+7. persistir target, crop por segmento, amostras, fallback e requested/effective
+   mode no manifesto; adicionar E2E real sem movimento entre frames.
+
+### Comandos de retomada
+
+```bash
+git status --short
+git diff --check
+.venv/bin/pytest -q tests/test_face_crop.py
+.venv/bin/pytest -q tests/test_render.py -k 'camera_plan_v2 or camera_plan_v3 or camera_plan_filtergraph'
+.venv/bin/pytest -q tests/test_render_settings.py tests/test_render_quality_report.py
+(cd apps/web && npm run build)
+(cd apps/remotion && npm run build)
+```
+
+Antes de merge/release, executar no host:
+
+```bash
+.venv/bin/pytest -q
+./scripts/check_gpu.sh
+```
+
+### Riscos conhecidos
+
+- a suite agregada pode travar no sandbox em `fastapi.testclient`; nao interpretar
+  ausencia de resumo como sucesso. Os testes focados acima concluem normalmente;
+- `track_id` do FaceIndex e posicional/local; para garantir "meu rosto", cruzar
+  observacoes exatas com `identity_index` confirmado;
+- o modo blur ainda custa varios minutos para 70 s em 1080x1920, apesar da
+  otimizacao do background. Medir antes de otimizar novamente;
+- existem mudancas nao commitadas em backend, frontend, docs e testes. Nao
+  restaurar arquivos nem separar partes sem entender a dependencia da fatia.

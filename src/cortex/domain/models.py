@@ -70,3 +70,16 @@ class StageArtifact(BaseModel):
     input_hash: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class RenderPreset(BaseModel):
+    """A named, project-scoped render settings snapshot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    project_id: str
+    name: str = Field(min_length=1, max_length=120)
+    settings: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)

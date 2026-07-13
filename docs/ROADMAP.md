@@ -1,5 +1,8 @@
 # Roadmap de consolidacao
 
+Ordem operacional, gates de aceite e roteiro para novas sessoes:
+`docs/PRODUCTION_COMPLETION_PLAN.md`.
+
 ## Fase 0 - Fundacao (concluida)
 
 - manifests Python/Node e configuracao central;
@@ -48,8 +51,10 @@
 - [x] canvas, fonte, tamanho, outline, headline, encoder e SRT efetivos no Studio;
 - [x] template `Editorial Quote` baseado na referencia do usuario;
 - [x] 9:16, 1:1 e 16:9; H.264/H.265, CQ, FPS, AAC e SRT;
+- [x] enquadramento efetivo sem barras pretas: crop para preencher o canvas ou
+  fonte 16:9 sobre background do proprio video com Gaussian blur;
 - [x] overrides por corte;
-- presets salvos (nomeados, persistidos e reaplicaveis) - ainda nao implementado;
+- [x] presets salvos por projeto (nomeados, persistidos e reaplicaveis no Studio);
 - [x] editor visual completo com cores/animacoes efetivas, safe zones (validacao por
   pixels do overlay alpha) e relatorio de publicacao.
 
@@ -82,17 +87,24 @@
   somente quando a mesma identidade aparece em layouts distintos;
 - [x] indices de cenas, faces, speaker visual, identidade e qualidade para o
   master unico ja comutado pelo estudio/OBS;
-- banco persistido de aparicoes seguras do entrevistador no proprio master:
-  identidade distinta do convidado, boca sem fala, imagem utilizavel e duracao
-  suficiente, com origem temporal e confianca auditaveis;
-- planner single-source que prioriza aparicoes naturais do entrevistador dentro
-  do corte e, quando necessario, permite reutilizacao temporal controlada de um
-  reaction shot silencioso de outro ponto do episodio;
-- render de reaction shot com video emprestado do mesmo master e audio continuo
+- [x] banco persistido de aparicoes seguras do entrevistador no proprio master
+  (`reaction_candidate_index`), com identidade do entrevistador explicitamente
+  confirmada, speaker concorrente distinto, mouth motion baixo, qualidade visual,
+  duracao suficiente, rejeicoes, cache, confianca e tempos de origem auditaveis;
+- [x] reactions em silencio adjacente: `speaker_timeline` v2 persiste mouth motion
+  tambem nas margens VAD, sem alterar segmentos de fala, e o banco v2 exige uma
+  fala proxima de identidade distinta como referencia auditavel;
+- [x] planner single-source que preserva aparicoes naturais do entrevistador dentro
+  do corte e, apenas em shots de fallback, permite reutilizacao temporal controlada
+  de um reaction seguro do mesmo master, com candidate, tempos visual/editorial,
+  confianca e audio primario auditaveis;
+- [x] render de reaction shot com video emprestado do mesmo master e audio continuo
   do trecho editorial, sem reutilizar o audio do reaction;
 - regra de diversidade: evitar cortes mostrando somente o convidado quando
   existir imagem segura do entrevistador, sem fabricar reaction em baixa confianca;
 - J-cut, L-cut e punch-in editaveis;
+- crop facial estatico: enquadrar uma identidade confirmada com posicao fixa por
+  segmento, sem tracking ou movimento continuo, e fallback central auditavel;
 - remover o ramo experimental de fontes ISO (`multicam_sync`,
   `multicam_visual_index` e caminhos v2 associados) apos portar os testes uteis
   de continuidade de audio para o planner single-source.
@@ -100,7 +112,7 @@
 ## Fase 6 - Producao
 
 - E2E com episodio real e benchmark CPU/GPU;
-- retomada apos interrupcao e fila de 25 cortes;
+- [x] retomada apos interrupcao e fila persistida de ate 25 cortes;
 - relatorio de QA e comparacao antes/depois;
 - remocao definitiva de `mods/`, `reference/` e `apply.sh` apos paridade.
 

@@ -39,6 +39,8 @@ def _payload() -> dict:
 def test_render_settings_are_versioned_and_reject_unsupported_encoder() -> None:
     settings = RenderSettings.model_validate(_payload())
     assert settings.schema_version == 1
+    assert settings.framing.schema_version == 1
+    assert settings.framing.mode == "vertical_crop"
 
     invalid = _payload()
     invalid["encoder"] = "h265_nvenc"
@@ -67,6 +69,25 @@ def test_render_request_accepts_explicit_export_directory() -> None:
         export_directory="cortes/aprovados",
     )
     assert request.export_directory == "cortes/aprovados"
+
+
+def test_face_static_crop_request_requires_complete_explicit_identity_chain() -> None:
+    settings = RenderSettings.model_validate({
+        **_payload(), "framing": {"mode": "face_static_crop"},
+    })
+    with pytest.raises(ValidationError, match="face_static_crop exige"):
+        RenderRequest(edit_plan_artifact_id="plan", render_settings=settings)
+    with pytest.raises(ValidationError, match="face_static_crop exige"):
+        RenderRequest(
+            edit_plan_artifact_id="plan", render_settings=settings,
+            face_index_artifact_id="faces",
+        )
+    request = RenderRequest(
+        edit_plan_artifact_id="plan", render_settings=settings,
+        face_index_artifact_id="faces", identity_index_artifact_id="identities",
+        target_identity_id="identity-me",
+    )
+    assert request.target_identity_id == "identity-me"
 
 
 def test_export_render_files_copies_video_and_subtitles_atomically(tmp_path: Path) -> None:
@@ -115,6 +136,7 @@ def test_render_settings_validate_colors_and_animation_enums() -> None:
 def test_render_settings_patch_merges_nested_fields_field_by_field() -> None:
     base = RenderSettings.model_validate(_payload())
     patch = RenderSettingsPatch.model_validate({
+        "framing": {"mode": "blurred_background"},
         "captions": {
             "text_color": "#112233",
             "animation": {"style": "none", "duration_seconds": 0.15},
@@ -125,6 +147,8 @@ def test_render_settings_patch_merges_nested_fields_field_by_field() -> None:
         },
     })
     merged = _merge_render_settings(base, patch)
+    assert merged.framing.mode == "blurred_background"
+    assert merged.framing.schema_version == 1
     assert merged.captions.text_color == "#112233"
     assert merged.captions.karaoke_color == base.captions.karaoke_color
     assert merged.captions.animation.style == "none"

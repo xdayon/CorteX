@@ -51,6 +51,14 @@ def test_safe_zone_issues_detect_real_overlay_overflow(tmp_path: Path) -> None:
         overlay_path=str(inside), width=_WIDTH, height=_HEIGHT, safe_zone=zone
     ) == []
 
+    # A caption whose ink begins exactly at the 16% lower margin would spill
+    # once its stroke/shadow is included. The renderer keeps a 20px inset.
+    inset = tmp_path / "caption-inset.webm"
+    _make_overlay(ffmpeg, inset, [(200, 1590, 400, 20)])
+    assert service._safe_zone_issues(
+        overlay_path=str(inset), width=_WIDTH, height=_HEIGHT, safe_zone=zone
+    ) == []
+
     outside = tmp_path / "outside.webm"
     # caixa colada no canto superior esquerdo (viola top+left) e caixa que
     # ultrapassa a margem inferior.

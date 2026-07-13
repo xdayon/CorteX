@@ -126,7 +126,8 @@ export const Overlay = ({caption, headline, words}: OverlayPayload) => {
             position: 'absolute',
             left: width * 0.075,
             right: width * 0.075,
-            bottom: height * 0.16,
+            // Reserve space for the visible stroke and shadow inside the safe zone.
+            bottom: height * 0.16 + 20 * scale,
             display: 'flex',
             flexWrap: 'wrap',
             justifyContent: 'center',

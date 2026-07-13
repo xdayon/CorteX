@@ -61,6 +61,10 @@ def identities_dir(config: CortexConfig, project_id: str) -> Path:
     return project_dir(config, project_id) / "identities"
 
 
+def reaction_candidates_dir(config: CortexConfig, project_id: str) -> Path:
+    return project_dir(config, project_id) / "reaction_candidates"
+
+
 def camera_plans_dir(config: CortexConfig, project_id: str) -> Path:
     return project_dir(config, project_id) / "camera_plans"
 

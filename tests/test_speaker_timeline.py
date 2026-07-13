@@ -241,12 +241,16 @@ def test_service_emits_speaker_from_synthetic_visual_observations(
     Path(face.path).write_text(json.dumps(face_payload), encoding="utf-8")
 
     def synthetic_frames(*_args, **_kwargs):
-        for time in (0.5, 1.0, 1.5, 2.0):
-            yield time, np.zeros((180, 320, 3), dtype=np.uint8)
+        for time in (0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0):
+            value = 255 if 0.5 <= time < 2.5 else 0
+            yield time, np.full((180, 320, 3), value, dtype=np.uint8)
 
     monkeypatch.setattr("cortex.analyze.speaker_service.ffmpeg_version", lambda _path: "test")
     monkeypatch.setattr("cortex.analyze.speaker_service._iter_chunk_frames", synthetic_frames)
-    monkeypatch.setattr("cortex.analyze.speaker_service.compensated_motion", lambda *_args: 0.25)
+    monkeypatch.setattr(
+        "cortex.analyze.speaker_service.compensated_motion",
+        lambda _previous, current, *_faces: 0.25 if current.mean() else 0.01,
+    )
 
     result = _run_service(config, domain, source, scene, face, analysis)
     document = SpeakerTimelineDocument.model_validate_json(
@@ -255,6 +259,8 @@ def test_service_emits_speaker_from_synthetic_visual_observations(
 
     speaker_observations = [item for item in document.observations if item.state == "speaker"]
     assert speaker_observations
+    silent_observations = [item for item in document.observations if item.state == "no_speech"]
+    assert any(item.time_us == 3_000_000 and item.track_scores for item in silent_observations)
     assert all(item.speaker_track_id == "person_left" for item in speaker_observations)
     assert any(
         item.state == "speaker" and item.speaker_track_id == "person_left"
@@ -290,6 +296,8 @@ def test_vad_chunks_and_observation_segments() -> None:
         SpeakerObservation(time_us=1_800_000, scene_index=0, speech_active=True,
                            state="speaker", speaker_track_id="person_left",
                            confidence=0.6, track_scores=[]),
+        SpeakerObservation(time_us=1_900_000, scene_index=0, speech_active=False,
+                           state="no_speech", confidence=1.0, track_scores=[]),
     ]
     segments = _segments_from_observations(observations, fixture_analysis, 8_000_000)
     assert segments[0].state == "no_speech" and segments[0].end_us == 1_000_000

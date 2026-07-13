@@ -12,7 +12,7 @@ from cortex.config import CortexConfig, load_config  # noqa: E402
 from cortex.domain.models import SourceAsset, SourceKind  # noqa: E402
 from cortex.domain.store import DomainStore  # noqa: E402
 from cortex.jobs import JobStore  # noqa: E402
-from cortex.schemas import JobCreate, JobStatus, JobType  # noqa: E402
+from cortex.schemas import JobCreate, JobStatus, JobType, JobUpdate  # noqa: E402
 from cortex.transcribe.engine import TranscriptionEngineError  # noqa: E402
 from cortex.transcribe.service import TranscribeService  # noqa: E402
 from cortex.worker import process_next, run_transcription_job  # noqa: E402
@@ -92,6 +92,62 @@ class JobClaimRaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             store = JobStore(Path(d) / "jobs.sqlite3")
             self.assertIsNone(store.claim_next())
+
+
+class JobRecoveryTests(unittest.TestCase):
+    def test_recovery_does_not_requeue_a_live_worker_job(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = JobStore(Path(d) / "jobs.sqlite3")
+            created = store.create(JobCreate(type=JobType.TRANSCRIPTION))
+
+            running = store.claim_next()
+            self.assertIsNotNone(running)
+            self.assertEqual(running.id, created.id)
+            self.assertEqual(store.recover_abandoned_jobs(), [])
+            self.assertEqual(store.get(created.id).status, JobStatus.RUNNING)
+
+    def test_recover_abandoned_job_is_claimable_by_new_store_instance(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "jobs.sqlite3"
+            original_store = JobStore(db_path)
+            created = original_store.create(JobCreate(
+                type=JobType.TRANSCRIPTION,
+                payload={"source_asset_id": "source-1"},
+            ))
+            running = original_store.claim_next(worker_pid=999_999_999)
+            assert running is not None
+            running = original_store.update(created.id, JobUpdate(progress=42.0))
+
+            restarted_store = JobStore(db_path)
+            recovered = restarted_store.recover_abandoned_jobs()
+
+            self.assertEqual([job.id for job in recovered], [created.id])
+            self.assertEqual(recovered[0].status, JobStatus.QUEUED)
+            self.assertEqual(recovered[0].payload, created.payload)
+            self.assertEqual(recovered[0].progress, 42.0)
+            self.assertIn("Recuperado", recovered[0].message)
+            claimed = restarted_store.claim_next()
+            self.assertIsNotNone(claimed)
+            self.assertEqual(claimed.id, created.id)
+            self.assertEqual(claimed.status, JobStatus.RUNNING)
+
+    def test_recovery_of_twenty_five_jobs_preserves_fifo_without_duplicate_claims(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "jobs.sqlite3"
+            store = JobStore(db_path)
+            created = [store.create(JobCreate(type=JobType.TRANSCRIPTION)) for _ in range(25)]
+            initially_claimed = [store.claim_next(worker_pid=999_999_999) for _ in created]
+            self.assertEqual([job.id for job in initially_claimed if job], [job.id for job in created])
+
+            restarted_store = JobStore(db_path)
+            recovered = restarted_store.recover_abandoned_jobs()
+            claimed = [restarted_store.claim_next() for _ in created]
+
+            self.assertEqual([job.id for job in recovered], [job.id for job in created])
+            claimed_ids = [job.id for job in claimed if job]
+            self.assertEqual(claimed_ids, [job.id for job in created])
+            self.assertEqual(len(claimed_ids), len(set(claimed_ids)))
+            self.assertIsNone(restarted_store.claim_next())
 
 
 class TranscribeServiceCacheTests(unittest.TestCase):

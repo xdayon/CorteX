@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from "react";
-import { api, type AnalysisDocument, type ApiJob, type EditPlanDocument, type FaceIndexDocument, type RenderDocument, type RenderSettings, type RenderSettingsPatch, type SceneIndexDocument, type SuggestedClip, type SuggestionBrief, type SuggestionSelection, type Telemetry, type TranscriptDocument, type TranscribeOverrides } from "./api";
+import { api, type AnalysisDocument, type ApiJob, type EditPlanDocument, type FaceIndexDocument, type IdentityIndexDocument, type ProjectStatus, type RenderDocument, type RenderPreset, type RenderSettings, type RenderSettingsPatch, type SceneIndexDocument, type SuggestedClip, type SuggestionBrief, type SuggestionSelection, type Telemetry, type TranscriptDocument, type TranscribeOverrides } from "./api";
 
 type IconName = "spark" | "upload" | "link" | "wave" | "brain" | "cut" | "type" | "play" | "cpu" | "check" | "chevron" | "folder" | "settings" | "queue" | "save" | "film" | "clock" | "sliders" | "pause";
 
@@ -48,6 +48,7 @@ const defaultRenderSettings: RenderSettings = {
   schema_version: 1,
   encoder: "h264_nvenc",
   canvas: { width: 1080, height: 1920, fps: 30 },
+  framing: { schema_version: 1, mode: "vertical_crop" },
   captions: {
     enabled: true, font_family: "Montserrat", font_size: 28, words_per_cue: 5,
     outline: true, shadow: true, karaoke: true,
@@ -119,6 +120,16 @@ function ComputeDeck({ telemetry, online, jobs }: { telemetry: Required<Telemetr
     <div className="deck-mini"><div><span>CPU</span><b>{Math.round(telemetry.cpu_utilization)}%</b></div><div><span>RAM</span><b>{telemetry.ram_used_gb.toFixed(1)} GB</b></div></div>
     {active && <div className="active-job"><div><span>{active.stage || active.type || "PROCESSO"}</span><b>{Math.round(active.progress || 0)}%</b></div><div className="job-track"><i style={{ width: `${active.progress || 0}%` }} /></div></div>}
   </aside>;
+}
+
+function ProjectStatusView({ status, error, onRefresh }: { status: ProjectStatus | null; error: string | null; onRefresh: () => void }) {
+  if (!status) return <section className="project-status enter"><div className="page-heading"><div><span className="eyebrow">PROJECT PULSE // PLANEJAMENTO</span><h1>Visão do desenvolvimento</h1><p>O painel lê o roadmap versionado do CorteX e não inventa estado de implementação.</p></div></div><div className="status-empty glass"><Icon name="queue" size={28}/><b>{error ? "Não foi possível carregar o roadmap" : "Carregando planejamento"}</b><small>{error || "Conectando à API local"}</small><button className="btn secondary" onClick={onRefresh}>Tentar novamente</button></div></section>;
+  const updatedAt = new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(status.updated_at));
+  return <section className="project-status enter"><div className="page-heading"><div><span className="eyebrow">PROJECT PULSE // PLANEJAMENTO</span><h1>O que já avançou, o que falta.</h1><p>Leitura direta de <code>{status.source}</code>. Atualiza automaticamente a cada 30 segundos enquanto esta tela estiver aberta.</p></div><button className="btn secondary status-refresh" onClick={onRefresh}><Icon name="queue"/> Atualizar</button></div>
+    <div className="status-hero glass"><div className="status-progress"><b>{status.summary.progress_percent}%</b><span>DO ROADMAP</span><i><em style={{ width: `${status.summary.progress_percent}%` }} /></i></div><div><b>{status.summary.completed}</b><span>entregas concluídas</span></div><div><b>{status.summary.pending}</b><span>itens pendentes</span></div><div><b>{status.phases.length}</b><span>fases mapeadas</span></div></div>
+    <div className="status-meta"><span><i /> ROADMAP VERSIONADO</span><small>Atualizado em {updatedAt}</small></div>
+    <div className="phase-list">{status.phases.map((phase) => { const done = phase.items.filter((item) => item.completed).length; const percent = phase.items.length ? Math.round((done / phase.items.length) * 100) : 0; return <details className="phase-card glass" key={phase.name} open={phase.status.includes("andamento") || phase.status.includes("pendente")}><summary><span className={`phase-state ${phase.status.includes("conclu") ? "done" : phase.status.includes("andamento") ? "active" : "pending"}`}><Icon name={phase.status.includes("conclu") ? "check" : "clock"}/></span><div><b>{phase.name}</b><small>{phase.status} · {done}/{phase.items.length} itens concluídos</small></div><strong>{percent}%</strong><Icon name="chevron" size={16}/></summary><div className="phase-items">{phase.items.map((item) => <div className={item.completed ? "complete" : ""} key={item.label}><span>{item.completed ? <Icon name="check" size={14}/> : null}</span><p>{item.label}</p></div>)}</div></details>; })}</div>
+  </section>;
 }
 
 function SourceStep({ sourceMode, setSourceMode, fileName, setFile, youtube, setYoutube, onNext }: {
@@ -312,12 +323,20 @@ function PhonePreview({ platform, headline, headlineEnabled, captions, wireframe
   return <div className="phone-stage"><div className={`phone ${platform !== "clean" ? "with-overlay" : ""}`}><div className="video-noise"/><div className="speaker speaker-a"><span/></div><div className="speaker speaker-b"><span/></div>{headlineEnabled && <div className="headline-preview"><i>“</i>{headline.split("\n").map((line, index) => <b key={`${index}-${line}`}>{line}</b>)}</div>}{captions.enabled && <div className="caption-preview" style={captionStyle}>UMA BOA HISTÓRIA <strong style={highlightStyle}>MUDA</strong> TUDO</div>}{platform === "reels" && <ReelsOverlay description={description}/>}{platform === "tiktok" && <TikTokOverlay description={description}/>}{wireframe && <div className="safe-guides"><span>SAFE TITLE</span><i>SAFE CAPTION</i></div>}</div></div>;
 }
 
-function StudioStep({ settings, onChange, exportDirectory, onExportDirectoryChange, onNext }: { settings: RenderSettings; onChange: (settings: RenderSettings) => void; exportDirectory: string; onExportDirectoryChange: (value: string) => void; onNext: () => void }) {
+function FramingSelector({ settings, onChange, identityIndex, targetIdentityId, onTargetIdentity, preparing, progress, message, error, onPrepare }: { settings: RenderSettings; onChange: (settings: RenderSettings) => void; identityIndex: IdentityIndexDocument | null; targetIdentityId: string; onTargetIdentity: (id: string) => void; preparing: boolean; progress: number; message: string; error: string | null; onPrepare: () => void }) {
+  const confirmed = identityIndex?.identities.filter((item) => item.status === "confirmed") ?? [];
+  const faceReady = confirmed.some((item) => item.identity_id === targetIdentityId);
+  return <div className="framing-selector glass"><div><span className="eyebrow">ENQUADRAMENTO EFETIVO</span><b>Como o vídeo ocupa o canvas</b></div><select value={settings.framing.mode} onChange={(event) => onChange({ ...settings, framing: { ...settings.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } })}><option value="vertical_crop">9:16 preenchido · recorte central</option><option value="blurred_background">16:9 completo · fundo desfocado</option><option value="face_static_crop" disabled={!faceReady}>Rosto fixo · sem movimento</option></select>{!identityIndex && <button className="btn secondary" disabled={preparing} onClick={onPrepare}>{preparing ? `Preparando ${Math.round(progress)}%` : "Preparar identidades"}</button>}{identityIndex && <Field label="Este sou eu" hint="Selecione explicitamente uma identidade confirmada"><select value={targetIdentityId} onChange={(event) => onTargetIdentity(event.target.value)}><option value="">Selecione uma pessoa</option>{confirmed.map((item) => <option key={item.identity_id} value={item.identity_id}>{item.identity_id} · {item.sample_count} amostras · {item.layout_ids.length} layouts</option>)}</select></Field>}<small>{message || "O rosto usa uma posição fixa por segmento; nunca segue a pessoa durante o vídeo."}</small>{error && <small className="quality-failed">{error}</small>}</div>;
+}
+
+function StudioStep({ settings, onChange, exportDirectory, onExportDirectoryChange, onNext, projectId, presets, onSavePreset }: { settings: RenderSettings; onChange: (settings: RenderSettings) => void; exportDirectory: string; onExportDirectoryChange: (value: string) => void; onNext: () => void; projectId?: string; presets: RenderPreset[]; onSavePreset: (name: string, presetId?: string) => Promise<void> }) {
   const [tab, setTab] = useState<"caption" | "headline" | "output">("caption"); const [platform, setPlatform] = useState("reels"); const [wireframe, setWireframe] = useState(true);
+  const [presetId, setPresetId] = useState(""); const [presetName, setPresetName] = useState(""); const [presetError, setPresetError] = useState<string | null>(null);
   const canvasValue = `${settings.canvas.width}x${settings.canvas.height}`;
   const setCaptions = (captions: Partial<RenderSettings["captions"]>) => onChange({ ...settings, captions: { ...settings.captions, ...captions } });
   const setHeadline = (headline: Partial<RenderSettings["headline"]>) => onChange({ ...settings, headline: { ...settings.headline, ...headline } });
   return <section className="step-content studio-wide enter"><div className="studio-toolbar"><div><span className="eyebrow">05 / VISUAL LAB <i>編集</i></span><h1>Estúdio visual</h1></div><div className="preview-switch"><button className={platform === "clean" ? "active" : ""} onClick={() => setPlatform("clean")}>Limpo</button><button className={platform === "tiktok" ? "active" : ""} onClick={() => setPlatform("tiktok")}>TikTok</button><button className={platform === "reels" ? "active" : ""} onClick={() => setPlatform("reels")}>Reels</button><button className={wireframe ? "safe active" : "safe"} onClick={() => setWireframe(!wireframe)}>Safe zones</button></div></div>
+    <div className="preset-bar glass"><span className="eyebrow">PRESET DO PROJETO</span><select value={presetId} onChange={(event) => { const selected = presets.find((preset) => preset.id === event.target.value); setPresetId(event.target.value); setPresetName(selected?.name ?? ""); if (selected) onChange(selected.settings); }}><option value="">Novo preset</option>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><input value={presetName} maxLength={120} placeholder="Nome do preset" onChange={(event) => setPresetName(event.target.value)} /><button className="btn secondary" disabled={!projectId || !presetName.trim()} onClick={() => { void onSavePreset(presetName.trim(), presetId || undefined).then(() => setPresetError(null)).catch((error) => setPresetError(error instanceof Error ? error.message : "Não foi possível salvar o preset")); }}><Icon name="save"/> {presetId ? "Atualizar" : "Salvar"}</button>{presetError && <small className="quality-failed">{presetError}</small>}</div>
     <div className="studio-layout"><div className="inspector glass"><div className="inspector-tabs"><button className={tab === "caption" ? "active" : ""} onClick={() => setTab("caption")}>Legenda</button><button className={tab === "headline" ? "active" : ""} onClick={() => setTab("headline")}>Headline</button><button className={tab === "output" ? "active" : ""} onClick={() => setTab("output")}>Saída</button></div>
       {tab === "caption" && <div className="inspector-body"><Toggle checked={settings.captions.enabled} onChange={(enabled) => setCaptions({ enabled })} label="Queimar legendas no vídeo"/><Toggle checked={settings.captions.karaoke} onChange={(karaoke) => setCaptions({ karaoke })} label="Karaoke palavra por palavra"/><Field label="Fonte instalada"><select value={settings.captions.font_family} onChange={(event) => setCaptions({ font_family: event.target.value })}><option>Montserrat</option><option>Liberation Sans</option><option>Noto Sans</option></select></Field><ColorField label="Cor do texto" value={settings.captions.text_color} onChange={(text_color) => setCaptions({ text_color })}/><ColorField label="Cor do karaoke" value={settings.captions.karaoke_color} onChange={(karaoke_color) => setCaptions({ karaoke_color })}/><ColorField label="Cor da borda" value={settings.captions.outline_color} onChange={(outline_color) => setCaptions({ outline_color })}/><ColorField label="Cor da sombra" value={settings.captions.shadow_color} onChange={(shadow_color) => setCaptions({ shadow_color })}/><Field label="Animação"><select value={settings.captions.animation.style} onChange={(event) => setCaptions({ animation: { ...settings.captions.animation, style: event.target.value as RenderSettings["captions"]["animation"]["style"] } })}><option value="none">none</option><option value="fade">fade</option><option value="pop">pop</option></select></Field><Range label="Duração da animação" value={settings.captions.animation.duration_seconds} min={0.05} max={1.5} suffix="s" onChange={(duration_seconds) => setCaptions({ animation: { ...settings.captions.animation, duration_seconds } })}/><Range label="Tamanho" value={settings.captions.font_size} min={12} max={52} suffix="px" onChange={(font_size) => setCaptions({ font_size })}/><Range label="Palavras por legenda" value={settings.captions.words_per_cue} min={2} max={9} onChange={(words_per_cue) => setCaptions({ words_per_cue })}/><Toggle checked={settings.captions.outline} onChange={(outline) => setCaptions({ outline })} label="Borda nos caracteres"/><Toggle checked={settings.captions.shadow} onChange={(shadow) => setCaptions({ shadow })} label="Sombra tipográfica"/></div>}
       {tab === "headline" && <div className="inspector-body"><Toggle checked={settings.headline.enabled} onChange={(enabled) => setHeadline({ enabled })} label="Renderizar headline"/><Field label="Texto da headline" hint="vazio usa o título de cada corte"><textarea value={settings.headline.text} maxLength={120} onChange={(event) => setHeadline({ text: event.target.value })} rows={4}/></Field><Field label="Fonte instalada"><select value={settings.headline.font_family} onChange={(event) => setHeadline({ font_family: event.target.value })}><option>Montserrat</option><option>Liberation Sans</option><option>Noto Sans</option></select></Field><ColorField label="Cor da faixa" value={settings.headline.strip_color} onChange={(strip_color) => setHeadline({ strip_color })}/><ColorField label="Cor do burst" value={settings.headline.burst_color} onChange={(burst_color) => setHeadline({ burst_color })}/><ColorField label="Cor do texto" value={settings.headline.text_color} onChange={(text_color) => setHeadline({ text_color })}/><Field label="Animação de entrada"><select value={settings.headline.animation.entrance} onChange={(event) => setHeadline({ animation: { ...settings.headline.animation, entrance: event.target.value as RenderSettings["headline"]["animation"]["entrance"] } })}><option value="none">none</option><option value="fade">fade</option><option value="slide">slide</option></select></Field><Field label="Animação de saída"><select value={settings.headline.animation.exit} onChange={(event) => setHeadline({ animation: { ...settings.headline.animation, exit: event.target.value as RenderSettings["headline"]["animation"]["exit"] } })}><option value="none">none</option><option value="fade">fade</option><option value="slide">slide</option></select></Field><Range label="Duração da animação" value={settings.headline.animation.duration_seconds} min={0.05} max={1.5} suffix="s" onChange={(duration_seconds) => setHeadline({ animation: { ...settings.headline.animation, duration_seconds } })}/><Range label="Tamanho" value={settings.headline.font_size} min={28} max={72} suffix="px" onChange={(font_size) => setHeadline({ font_size })}/><Range label="Duração" value={settings.headline.duration_seconds} min={2} max={8} suffix="s" onChange={(duration_seconds) => setHeadline({ duration_seconds })}/></div>}
@@ -327,7 +346,12 @@ function StudioStep({ settings, onChange, exportDirectory, onExportDirectoryChan
   </section>;
 }
 
-type RenderResult = { artifactId: string; document: RenderDocument };
+type RenderResult = {
+  artifactId: string;
+  document: RenderDocument;
+  exportPath?: string;
+  exportSubtitlesPath?: string;
+};
 type RenderItemStatus = { state: "queued" | "rendering" | "ready" | "failed"; progress: number; error?: string };
 
 function RenderStep({ onStart, running, progress, clips, error, projectId, editPlanArtifactIds, results, statuses, settings, overrides, setOverrides }: { onStart: () => void; running: boolean; progress: number; clips: SuggestedClip[]; error: string | null; projectId?: string; editPlanArtifactIds: Record<string, string>; results: Record<string, RenderResult>; statuses: Record<string, RenderItemStatus>; settings: RenderSettings; overrides: Record<string, RenderSettingsPatch>; setOverrides: (value: Record<string, RenderSettingsPatch>) => void }) {
@@ -382,6 +406,8 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
                   <small>
                     {result ? `${timestamp(result.document.quality.actual_duration_seconds).slice(3)} · ${result.document.engine.width} × ${result.document.engine.height} · ${result.document.engine.effective_encoder}` : `${timestamp(clip.estimated_duration).slice(3)} · aguardando manifesto`}
                   </small>
+                  {result?.exportPath && <small className="export-path">Exportado: {result.exportPath}</small>}
+                  {result?.exportSubtitlesPath && <small className="export-path">SRT exportado: {result.exportSubtitlesPath}</small>}
                   {quality && (
                     <small className={quality.passed ? "quality-ok" : "quality-failed"}>
                       {quality.passed ? `Quality gate aprovado · ${quality.caption_cue_count} legendas` : `Quality gate reprovado: ${quality.issues.join(", ") || "sem detalhe"}`}
@@ -516,17 +542,19 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
 
 export default function App() {
   const [step, setStep] = useState(0); const [sourceMode, setSourceMode] = useState<"file" | "youtube">("file"); const [file, setFile] = useState<File | null>(null); const [youtube, setYoutube] = useState("");
-  const [health, setHealth] = useState(false); const [telemetry, setTelemetry] = useState<Required<Telemetry>>(mockTelemetry); const [jobs, setJobs] = useState<ApiJob[]>([]); const [mobileNav, setMobileNav] = useState(false);
+  const [health, setHealth] = useState(false); const [telemetry, setTelemetry] = useState<Required<Telemetry>>(mockTelemetry); const [jobs, setJobs] = useState<ApiJob[]>([]); const [mobileNav, setMobileNav] = useState(false); const [showProjectStatus, setShowProjectStatus] = useState(false); const [projectStatus, setProjectStatus] = useState<ProjectStatus | null>(null); const [projectStatusError, setProjectStatusError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false); const [transcriptionProgress, setTranscriptionProgress] = useState(0); const [transcriptionMessage, setTranscriptionMessage] = useState(""); const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptDocument | null>(null); const [analysis, setAnalysis] = useState<AnalysisDocument | null>(null);
   const [suggesting, setSuggesting] = useState(false); const [suggestionProgress, setSuggestionProgress] = useState(0); const [suggestionMessage, setSuggestionMessage] = useState(""); const [suggestionError, setSuggestionError] = useState<string | null>(null); const [selection, setSelection] = useState<SuggestionSelection | null>(null);
   const [editPlans, setEditPlans] = useState<Record<string, EditPlanDocument>>({}); const [editPlanArtifactIds, setEditPlanArtifactIds] = useState<Record<string, string>>({}); const [preparedClipKeys, setPreparedClipKeys] = useState<string[]>([]); const [planning, setPlanning] = useState(false); const [planProgress, setPlanProgress] = useState(0); const [planMessage, setPlanMessage] = useState(""); const [planError, setPlanError] = useState<string | null>(null);
   const [sceneIndex, setSceneIndex] = useState<SceneIndexDocument | null>(null); const [sceneIndexArtifactId, setSceneIndexArtifactId] = useState<string | null>(null); const [detectingScenes, setDetectingScenes] = useState(false); const [sceneProgress, setSceneProgress] = useState(0); const [sceneMessage, setSceneMessage] = useState(""); const [sceneError, setSceneError] = useState<string | null>(null);
-  const [faceIndex, setFaceIndex] = useState<FaceIndexDocument | null>(null); const [detectingFaces, setDetectingFaces] = useState(false); const [faceProgress, setFaceProgress] = useState(0); const [faceMessage, setFaceMessage] = useState(""); const [faceError, setFaceError] = useState<string | null>(null);
+  const [faceIndex, setFaceIndex] = useState<FaceIndexDocument | null>(null); const [faceIndexArtifactId, setFaceIndexArtifactId] = useState<string | null>(null); const [detectingFaces, setDetectingFaces] = useState(false); const [faceProgress, setFaceProgress] = useState(0); const [faceMessage, setFaceMessage] = useState(""); const [faceError, setFaceError] = useState<string | null>(null);
+  const [identityIndex, setIdentityIndex] = useState<IdentityIndexDocument | null>(null); const [identityIndexArtifactId, setIdentityIndexArtifactId] = useState<string | null>(null); const [targetIdentityId, setTargetIdentityId] = useState(""); const [preparingIdentities, setPreparingIdentities] = useState(false); const [identityProgress, setIdentityProgress] = useState(0); const [identityMessage, setIdentityMessage] = useState(""); const [identityError, setIdentityError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false); const [renderProgress, setRenderProgress] = useState(0); const [renderError, setRenderError] = useState<string | null>(null);
   const [renderResults, setRenderResults] = useState<Record<string, RenderResult>>({}); const [renderStatuses, setRenderStatuses] = useState<Record<string, RenderItemStatus>>({});
   const [renderOverrides, setRenderOverrides] = useState<Record<string, RenderSettingsPatch>>({});
   const [renderSettings, setRenderSettings] = useState<RenderSettings>(defaultRenderSettings);
+  const [renderPresets, setRenderPresets] = useState<RenderPreset[]>([]);
   const [exportDirectory, setExportDirectory] = useState("");
   const projectRef = useRef<{ projectId: string; sourceAssetId: string; transcriptArtifactId?: string; analysisArtifactId?: string } | null>(null);
   const fileName = file?.name ?? "";
@@ -558,6 +586,22 @@ export default function App() {
     refresh(); const timer = window.setInterval(refresh, 2500); return () => { alive = false; window.clearInterval(timer); };
   }, []);
 
+  async function refreshProjectStatus() {
+    try {
+      setProjectStatus(await api.projectStatus());
+      setProjectStatusError(null);
+    } catch (error) {
+      setProjectStatusError(error instanceof Error ? error.message : "Falha ao consultar o roadmap");
+    }
+  }
+
+  useEffect(() => {
+    if (!showProjectStatus) return;
+    void refreshProjectStatus();
+    const timer = window.setInterval(() => void refreshProjectStatus(), 30000);
+    return () => window.clearInterval(timer);
+  }, [showProjectStatus]);
+
   async function ensureSourceAsset(): Promise<{ projectId: string; sourceAssetId: string }> {
     if (projectRef.current) return projectRef.current;
     const projectName = sourceMode === "file" ? fileName.replace(/\.[^.]+$/, "") || "Novo episódio" : youtube;
@@ -585,7 +629,19 @@ export default function App() {
       if (!sourceAssetId) throw new Error("Ingestão terminou sem source_asset_id");
     }
     projectRef.current = { projectId: project.id, sourceAssetId };
+    try { setRenderPresets(await api.renderPresets(project.id)); } catch { setRenderPresets([]); }
     return projectRef.current;
+  }
+
+  async function saveRenderPreset(name: string, presetId?: string) {
+    const current = projectRef.current;
+    if (!current) throw new Error("Crie o projeto antes de salvar um preset");
+    const saved = presetId
+      ? await api.updateRenderPreset(current.projectId, presetId, name, renderSettings)
+      : await api.createRenderPreset(current.projectId, name, renderSettings);
+    setRenderPresets((items) => presetId
+      ? items.map((item) => item.id === saved.id ? saved : item)
+      : [saved, ...items]);
   }
 
   async function startTranscription(overrides: TranscribeOverrides) {
@@ -662,7 +718,7 @@ export default function App() {
       setSceneError("Conclua a ingestão da fonte antes de detectar cenas");
       return;
     }
-    setDetectingScenes(true); setSceneError(null); setSceneProgress(0); setSceneMessage("Detecção de cenas na fila"); setFaceIndex(null);
+    setDetectingScenes(true); setSceneError(null); setSceneProgress(0); setSceneMessage("Detecção de cenas na fila"); setFaceIndex(null); setFaceIndexArtifactId(null); setIdentityIndex(null); setIdentityIndexArtifactId(null); setTargetIdentityId("");
     try {
       const job = await api.startSceneIndex(current.projectId, current.sourceAssetId);
       setJobs((items) => [job, ...items]);
@@ -702,12 +758,50 @@ export default function App() {
       const artifactId = String(finished.result?.face_index_artifact_id ?? "");
       if (!artifactId) throw new Error("Job terminou sem face_index_artifact_id");
       const envelope = await api.faceIndex(current.projectId, artifactId);
-      setFaceIndex(envelope.document); setFaceProgress(100);
+      setFaceIndex(envelope.document); setFaceIndexArtifactId(envelope.artifact.id); setFaceProgress(100);
     } catch (error) {
       setFaceError(error instanceof Error ? error.message : String(error));
     } finally {
       setDetectingFaces(false);
     }
+  }
+
+  async function prepareIdentities() {
+    const current = projectRef.current;
+    if (!health || preparingIdentities || !current?.analysisArtifactId || !sceneIndexArtifactId || !faceIndexArtifactId) {
+      setIdentityError("Conclua análise, cenas e rostos antes de preparar identidades");
+      return;
+    }
+    setPreparingIdentities(true); setIdentityError(null); setIdentityProgress(0);
+    try {
+      const stages = [
+        { label: "Movimento labial", start: () => api.startSpeakerTimeline(current.projectId, current.sourceAssetId, sceneIndexArtifactId, faceIndexArtifactId, current.analysisArtifactId!), result: "speaker_timeline_artifact_id" },
+      ];
+      setIdentityMessage(stages[0].label);
+      const speakerJob = await stages[0].start(); setJobs((items) => [speakerJob, ...items]);
+      const speakerDone = await api.watchJob(speakerJob.id, (job) => { setIdentityProgress((job.progress ?? 0) / 3); setIdentityMessage(job.message || stages[0].label); setJobs((items) => items.map((item) => item.id === job.id ? job : item)); });
+      if (speakerDone.status !== "succeeded") throw new Error(speakerDone.error || "Falha ao gerar timeline de interlocutores");
+      const speakerId = String(speakerDone.result?.speaker_timeline_artifact_id ?? "");
+      if (!speakerId) throw new Error("Timeline de interlocutores sem artifact");
+
+      setIdentityMessage("Planos de câmera");
+      const cameraJob = await api.startCameraTimeline(current.projectId, sceneIndexArtifactId, faceIndexArtifactId, speakerId); setJobs((items) => [cameraJob, ...items]);
+      const cameraDone = await api.watchJob(cameraJob.id, (job) => { setIdentityProgress(33 + (job.progress ?? 0) / 3); setIdentityMessage(job.message || "Planos de câmera"); setJobs((items) => items.map((item) => item.id === job.id ? job : item)); });
+      if (cameraDone.status !== "succeeded") throw new Error(cameraDone.error || "Falha ao gerar timeline de câmera");
+      const cameraId = String(cameraDone.result?.camera_timeline_artifact_id ?? "");
+      if (!cameraId) throw new Error("Timeline de câmera sem artifact");
+
+      setIdentityMessage("Continuidade de identidade");
+      const identityJob = await api.startIdentityIndex(current.projectId, faceIndexArtifactId, cameraId); setJobs((items) => [identityJob, ...items]);
+      const identityDone = await api.watchJob(identityJob.id, (job) => { setIdentityProgress(66 + (job.progress ?? 0) / 3); setIdentityMessage(job.message || "Continuidade de identidade"); setJobs((items) => items.map((item) => item.id === job.id ? job : item)); });
+      if (identityDone.status !== "succeeded") throw new Error(identityDone.error || "Falha ao confirmar identidades");
+      const identityId = String(identityDone.result?.identity_index_artifact_id ?? "");
+      if (!identityId) throw new Error("Índice de identidades sem artifact");
+      const envelope = await api.identityIndex(current.projectId, identityId);
+      setIdentityIndex(envelope.document); setIdentityIndexArtifactId(envelope.artifact.id); setTargetIdentityId(""); setIdentityProgress(100); setIdentityMessage("Escolha explicitamente quem deve ser enquadrado");
+    } catch (error) {
+      setIdentityError(error instanceof Error ? error.message : String(error));
+    } finally { setPreparingIdentities(false); }
   }
 
   async function prepareEditPlans(clips: SuggestedClip[]): Promise<boolean> {
@@ -757,53 +851,81 @@ export default function App() {
     const current = projectRef.current;
     const artifactIds = preparedClipKeys.map((key) => editPlanArtifactIds[key]).filter(Boolean);
     if (!current || artifactIds.length !== preparedClipKeys.length) { setRenderError("Há EDLs sem artifact persistido"); return; }
+    const faceRequested = renderSettings.framing.mode === "face_static_crop" || preparedClipKeys.some((key) => renderOverrides[key]?.framing?.mode === "face_static_crop");
+    if (faceRequested && (!faceIndexArtifactId || !identityIndexArtifactId || !targetIdentityId)) { setRenderError("Escolha uma identidade confirmada para o crop facial"); return; }
     setRendering(true); setRenderProgress(0); setRenderError(null);
-    let activeEditPlanArtifactId = "";
     try {
+      const queued: Array<{ editPlanArtifactId: string; job: ApiJob }> = [];
       for (let index = 0; index < artifactIds.length; index += 1) {
         const editPlanArtifactId = artifactIds[index];
-        activeEditPlanArtifactId = editPlanArtifactId;
-        setRenderStatuses((items) => ({ ...items, [editPlanArtifactId]: { state: "rendering", progress: 0 } }));
         const clip = (selection?.clips ?? []).find((item) => clipKey(item) === preparedClipKeys[index]);
         const effectiveSettings = renderSettings.headline.enabled && !renderSettings.headline.text.trim()
           ? { ...renderSettings, headline: { ...renderSettings.headline, text: clip?.title ?? "" } }
           : renderSettings;
-        const job = await api.startRender(current.projectId, editPlanArtifactId, effectiveSettings, renderOverrides[editPlanArtifactId], exportDirectory);
+        const job = await api.startRender(current.projectId, editPlanArtifactId, effectiveSettings, renderOverrides[preparedClipKeys[index]], exportDirectory, faceRequested ? { faceIndexArtifactId: faceIndexArtifactId!, identityIndexArtifactId: identityIndexArtifactId!, targetIdentityId } : undefined);
+        queued.push({ editPlanArtifactId, job });
         setJobs((items) => [job, ...items]);
-        const finished = await api.watchJob(job.id, (update) => {
-          const itemProgress = update.progress ?? 0;
-          setRenderProgress(((index + itemProgress / 100) / artifactIds.length) * 100);
-          setRenderStatuses((items) => ({ ...items, [editPlanArtifactId]: { state: "rendering", progress: itemProgress } }));
-          setJobs((items) => items.map((item) => item.id === update.id ? update : item));
-        });
-        if (finished.status !== "succeeded") throw new Error(finished.error || `Render terminou como ${finished.status}`);
-        const artifactId = String(finished.result?.render_artifact_id ?? "");
-        if (!artifactId) throw new Error("Render terminou sem render_artifact_id");
-        const envelope = await api.render(current.projectId, artifactId);
-        setRenderResults((items) => ({ ...items, [editPlanArtifactId]: { artifactId: envelope.artifact.id, document: envelope.document } }));
-        setRenderStatuses((items) => ({ ...items, [editPlanArtifactId]: { state: "ready", progress: 100 } }));
+        setRenderStatuses((items) => ({ ...items, [editPlanArtifactId]: { state: "queued", progress: 0 } }));
       }
+
+      const progressByPlan = Object.fromEntries(queued.map(({ editPlanArtifactId }) => [editPlanArtifactId, 0]));
+      await Promise.all(queued.map(async ({ editPlanArtifactId, job }) => {
+        try {
+          const finished = await api.watchJob(job.id, (update) => {
+            const itemProgress = update.progress ?? 0;
+            progressByPlan[editPlanArtifactId] = itemProgress;
+            setRenderProgress(Object.values(progressByPlan).reduce((sum, value) => sum + value, 0) / queued.length);
+            setRenderStatuses((items) => ({ ...items, [editPlanArtifactId]: { state: "rendering", progress: itemProgress } }));
+            setJobs((items) => items.map((item) => item.id === update.id ? update : item));
+          });
+          if (finished.status !== "succeeded") throw new Error(finished.error || `Render terminou como ${finished.status}`);
+          const artifactId = String(finished.result?.render_artifact_id ?? "");
+          if (!artifactId) throw new Error("Render terminou sem render_artifact_id");
+          const envelope = await api.render(current.projectId, artifactId);
+          const exportPath = typeof finished.result?.export_path === "string"
+            ? finished.result.export_path
+            : undefined;
+          const exportSubtitlesPath = typeof finished.result?.export_subtitles_path === "string"
+            ? finished.result.export_subtitles_path
+            : undefined;
+          setRenderResults((items) => ({
+            ...items,
+            [editPlanArtifactId]: {
+              artifactId: envelope.artifact.id,
+              document: envelope.document,
+              exportPath,
+              exportSubtitlesPath,
+            },
+          }));
+          setRenderStatuses((items) => ({ ...items, [editPlanArtifactId]: { state: "ready", progress: 100 } }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setRenderStatuses((items) => ({ ...items, [editPlanArtifactId]: { state: "failed", progress: progressByPlan[editPlanArtifactId], error: message } }));
+          setRenderError((currentError) => currentError ?? message);
+        }
+      }));
       setRenderProgress(100);
-    } catch (error) { const message = error instanceof Error ? error.message : String(error); if (activeEditPlanArtifactId) setRenderStatuses((items) => ({ ...items, [activeEditPlanArtifactId]: { state: "failed", progress: items[activeEditPlanArtifactId]?.progress ?? 0, error: message } })); setRenderError(message); } finally {
+    } catch (error) { setRenderError(error instanceof Error ? error.message : String(error)); } finally {
       setRendering(false);
     }
   }
 
   const displayJobs = jobs;
   function resetSourceArtifacts() {
-    projectRef.current = null; setTranscript(null); setAnalysis(null); setSelection(null); setEditPlans({}); setEditPlanArtifactIds({}); setPreparedClipKeys([]); setRenderResults({}); setRenderStatuses({}); setRenderOverrides({}); setTranscriptionError(null); setSceneIndex(null); setSceneIndexArtifactId(null); setSceneError(null); setFaceIndex(null); setFaceError(null);
+    projectRef.current = null; setTranscript(null); setAnalysis(null); setSelection(null); setEditPlans({}); setEditPlanArtifactIds({}); setPreparedClipKeys([]); setRenderResults({}); setRenderStatuses({}); setRenderOverrides({}); setTranscriptionError(null); setSceneIndex(null); setSceneIndexArtifactId(null); setSceneError(null); setFaceIndex(null); setFaceIndexArtifactId(null); setFaceError(null); setIdentityIndex(null); setIdentityIndexArtifactId(null); setTargetIdentityId(""); setIdentityError(null);
   }
 
   return <div className="app-shell">
-    <header className="topbar"><button className="mobile-menu" onClick={() => setMobileNav(!mobileNav)} aria-label="Abrir navegação"><span/><span/><span/></button><div className="brand"><span className="brand-mark">CX<i/></span><div><b>Corte<span>X</span></b><small>AN HITECHX SYSTEM</small></div></div><div className="project-pill"><Icon name="folder"/><span><small>PROJETO ATUAL</small><b>{fileName ? fileName.replace(/\.[^.]+$/, "") : "Novo episódio"}</b></span><Icon name="chevron" size={14}/></div><div className="system-status"><span className={health ? "online" : "standby"}/><div><small>SYSTEM</small><b>{health ? "ONLINE" : "LOCAL MODE"}</b></div></div><button className="icon-button" aria-label="Configurações"><Icon name="settings"/></button></header>
+    <header className="topbar"><button className="mobile-menu" onClick={() => setMobileNav(!mobileNav)} aria-label="Abrir navegação"><span/><span/><span/></button><div className="brand"><span className="brand-mark">CX<i/></span><div><b>Corte<span>X</span></b><small>AN HITECHX SYSTEM</small></div></div><div className="project-pill"><Icon name="folder"/><span><small>PROJETO ATUAL</small><b>{fileName ? fileName.replace(/\.[^.]+$/, "") : "Novo episódio"}</b></span><Icon name="chevron" size={14}/></div><button className={`planning-button ${showProjectStatus ? "active" : ""}`} onClick={() => setShowProjectStatus((value) => !value)}><Icon name="queue"/> Planejamento</button><div className="system-status"><span className={health ? "online" : "standby"}/><div><small>SYSTEM</small><b>{health ? "ONLINE" : "LOCAL MODE"}</b></div></div><button className="icon-button" aria-label="Configurações"><Icon name="settings"/></button></header>
     <aside className={`step-rail ${mobileNav ? "open" : ""}`}><div className="rail-label">PIPELINE // ワークフロー</div>{steps.map((item, index) => <button key={item.label} className={`${step === index ? "active" : ""} ${step > index ? "done" : ""}`} onClick={() => { setStep(index); setMobileNav(false); }}><span className="step-index">{step > index ? <Icon name="check" size={15}/> : String(index + 1).padStart(2, "0")}</span><span className="step-copy"><i>{item.jp}</i><b>{item.label}</b><small>{item.sub}</small></span><Icon name={item.icon}/></button>)}<div className="rail-foot"><span>CORE BUILD</span><b>v0.1.0-alpha</b><small>GPU-FIRST PIPELINE</small></div></aside>
     <main className="workspace">
+      {showProjectStatus ? <ProjectStatusView status={projectStatus} error={projectStatusError} onRefresh={() => void refreshProjectStatus()}/> : <>
       {step === 0 && <SourceStep sourceMode={sourceMode} setSourceMode={setSourceMode} fileName={fileName} setFile={(value) => { setFile(value); resetSourceArtifacts(); }} youtube={youtube} setYoutube={(value) => { setYoutube(value); resetSourceArtifacts(); }} onNext={() => setStep(1)}/>}
       {step === 1 && <TranscriptionStep onStart={startTranscription} running={transcribing} progress={transcriptionProgress} message={transcriptionMessage} error={transcriptionError}/>}
       {step === 2 && <BriefStep onAnalyze={startSuggestion} running={suggesting} progress={suggestionProgress} message={suggestionMessage} error={suggestionError}/>} 
       {step === 3 && <CurateStep clips={selection?.clips ?? []} notes={selection?.selection_notes ?? "Execute a seleção editorial na etapa anterior."} transcript={transcript} analysis={analysis} plans={editPlans} planning={planning} planProgress={planProgress} planMessage={planMessage} planError={planError} onPlan={prepareEditPlans} onNext={prepareAndOpenStudio} sceneIndex={sceneIndex} sceneIndexArtifactId={sceneIndexArtifactId} detectingScenes={detectingScenes} sceneProgress={sceneProgress} sceneMessage={sceneMessage} sceneError={sceneError} onDetectScenes={() => void detectScenes()} faceIndex={faceIndex} detectingFaces={detectingFaces} faceProgress={faceProgress} faceMessage={faceMessage} faceError={faceError} onDetectFaces={() => void detectFaces()}/>}
-      {step === 4 && <StudioStep settings={renderSettings} onChange={setRenderSettings} exportDirectory={exportDirectory} onExportDirectoryChange={setExportDirectory} onNext={() => setStep(5)}/>}
-      {step === 5 && <RenderStep onStart={startRender} running={rendering} progress={renderProgress} clips={(selection?.clips ?? []).filter((clip) => preparedClipKeys.includes(clipKey(clip)))} error={renderError} projectId={projectRef.current?.projectId} editPlanArtifactIds={editPlanArtifactIds} results={renderResults} statuses={renderStatuses} settings={renderSettings} overrides={renderOverrides} setOverrides={setRenderOverrides}/>}
+      {step === 4 && <><FramingSelector settings={renderSettings} onChange={setRenderSettings} identityIndex={identityIndex} targetIdentityId={targetIdentityId} onTargetIdentity={setTargetIdentityId} preparing={preparingIdentities} progress={identityProgress} message={identityMessage} error={identityError} onPrepare={() => void prepareIdentities()}/><StudioStep settings={renderSettings} onChange={setRenderSettings} exportDirectory={exportDirectory} onExportDirectoryChange={setExportDirectory} onNext={() => setStep(5)} projectId={projectRef.current?.projectId} presets={renderPresets} onSavePreset={saveRenderPreset}/></>}
+      {step === 5 && <RenderStep onStart={startRender} running={rendering} progress={renderProgress} clips={(selection?.clips ?? []).filter((clip) => preparedClipKeys.includes(clipKey(clip)))} error={renderError} projectId={projectRef.current?.projectId} editPlanArtifactIds={editPlanArtifactIds} results={renderResults} statuses={renderStatuses} settings={renderSettings} overrides={renderOverrides} setOverrides={setRenderOverrides}/>}</>}
     </main>
     <ComputeDeck telemetry={telemetry} online={health} jobs={displayJobs}/>
   </div>;

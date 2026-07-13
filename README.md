@@ -3,13 +3,11 @@
 Editor local, GPU-first e retomavel da HiTechX para transformar episodios de
 podcast em cortes profissionais para Reels e TikTok.
 
-> Estado: P0 de ingestao e transcricao standalone concluido. Upload/YouTube,
-> worker local, faster-whisper CUDA, artifacts, SSE e Studio possuem fonte
-> propria neste repositorio. A selecao editorial ja possui job real via Codex
-> CLI autenticado pela assinatura, fallback Claude, JSON Schema, cache e
-> provenance. Analise
-> audiovisual, edicao e render ainda estao sendo portados e nao devem ser
-> considerados prontos para producao.
+> Estado: MVP funcional para ingestao, transcricao, analise, selecao, EDL e
+> exportacao persistida de cortes. O Studio produz MP4/SRT, preview/download e
+> presets por projeto. Ainda nao e um release de producao: faltam validacao E2E
+> com episodios reais, benchmark GPU/NVENC, retomada de fila e os gates listados
+> no roadmap.
 
 ## Produto
 

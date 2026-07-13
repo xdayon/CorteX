@@ -25,6 +25,10 @@ from typing import Any
 from cortex.analyze.camera_service import CameraTimelineJobCancelled, CameraTimelineService
 from cortex.analyze.face_service import FaceIndexJobCancelled, FaceIndexService
 from cortex.analyze.identity_service import IdentityIndexJobCancelled, IdentityIndexService
+from cortex.analyze.reaction_candidate_service import (
+    ReactionCandidateJobCancelled,
+    ReactionCandidateService,
+)
 from cortex.analyze.multicam_sync_service import MulticamSyncJobCancelled, MulticamSyncService
 from cortex.analyze.multicam_visual_service import (
     MulticamVisualIndexService,
@@ -631,6 +635,16 @@ def run_camera_planning_job(
         upstreams[expected_stage] = artifact
 
     multicam_visual = None
+    reaction_candidates = None
+    reaction_candidate_id = job.payload.get("reaction_candidate_artifact_id")
+    if reaction_candidate_id:
+        reaction_candidates = domain.get_stage_artifact(reaction_candidate_id)
+        if (
+            reaction_candidates.project_id != job.project_id
+            or reaction_candidates.stage != "reaction_candidate_index"
+            or not Path(reaction_candidates.path).exists()
+        ):
+            raise ValueError("ReactionCandidateIndexArtifact do camera plan não pertence ao projeto")
     multicam_visual_id = job.payload.get("multicam_visual_artifact_id")
     if multicam_visual_id:
         multicam_visual = domain.get_stage_artifact(multicam_visual_id)
@@ -655,6 +669,7 @@ def run_camera_planning_job(
             camera_timeline_artifact=upstreams["camera_timeline"],
             identity_index_artifact=upstreams["identity_index"],
             visual_quality_artifact=upstreams["visual_quality_index"],
+            reaction_candidate_artifact=reaction_candidates,
             multicam_visual_artifact=multicam_visual,
             progress_cb=progress_cb,
             should_cancel=should_cancel,
@@ -667,6 +682,65 @@ def run_camera_planning_job(
             status=JobStatus.SUCCEEDED,
             stage=PipelineStage.COMPLETE,
             message="Camera edit plan concluído",
+            result=result,
+        ),
+    )
+
+
+def run_reaction_candidate_analysis_job(
+    job: Job,
+    config: CortexConfig,
+    jobs: JobStore,
+    domain: DomainStore,
+) -> None:
+    upstream_specs = (
+        ("speaker_timeline_artifact_id", "speaker_timeline", "SpeakerTimelineArtifact"),
+        ("camera_timeline_artifact_id", "camera_timeline", "CameraTimelineArtifact"),
+        ("identity_index_artifact_id", "identity_index", "IdentityIndexArtifact"),
+        ("visual_quality_artifact_id", "visual_quality_index", "VisualQualityArtifact"),
+    )
+    upstreams = {}
+    for payload_key, expected_stage, label in upstream_specs:
+        artifact_id = job.payload.get(payload_key)
+        if not artifact_id:
+            raise ValueError(f"payload de reaction candidates sem {payload_key}")
+        artifact = domain.get_stage_artifact(artifact_id)
+        if artifact.project_id != job.project_id or artifact.stage != expected_stage:
+            raise ValueError(f"{label} de reaction candidates não pertence ao projeto")
+        if not Path(artifact.path).exists():
+            raise ValueError(f"arquivo do {label} de reaction candidates não está disponível")
+        upstreams[expected_stage] = artifact
+    interviewer_identity_id = job.payload.get("interviewer_identity_id")
+    if not isinstance(interviewer_identity_id, str) or not interviewer_identity_id:
+        raise ValueError("payload de reaction candidates sem interviewer_identity_id")
+
+    service = ReactionCandidateService(config, domain)
+
+    def progress_cb(progress_percent: float, message: str) -> None:
+        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.ANALYZE)
+
+    def should_cancel() -> bool:
+        return _job_is_cancelled(jobs, job.id)
+
+    try:
+        result = service.run(
+            speaker_timeline_artifact=upstreams["speaker_timeline"],
+            camera_timeline_artifact=upstreams["camera_timeline"],
+            identity_index_artifact=upstreams["identity_index"],
+            visual_quality_artifact=upstreams["visual_quality_index"],
+            interviewer_identity_id=interviewer_identity_id,
+            min_duration_seconds=job.payload.get("min_duration_seconds"),
+            progress_cb=progress_cb,
+            should_cancel=should_cancel,
+        )
+    except ReactionCandidateJobCancelled:
+        return
+    jobs.update(
+        job.id,
+        JobUpdate(
+            status=JobStatus.SUCCEEDED,
+            stage=PipelineStage.COMPLETE,
+            message="Banco de reaction candidates concluído",
             result=result,
         ),
     )
@@ -835,6 +909,16 @@ def run_render_job(
         camera_plan = domain.get_stage_artifact(camera_plan_id)
         if camera_plan.project_id != job.project_id or camera_plan.stage != "camera_edit_plan":
             raise ValueError("CameraEditPlanArtifact do render não pertence ao projeto")
+    visual_artifacts = {}
+    for payload_key, stage in (("face_index_artifact_id", "face_index"), ("identity_index_artifact_id", "identity_index")):
+        artifact_id = job.payload.get(payload_key)
+        if artifact_id is not None:
+            artifact = domain.get_stage_artifact(artifact_id)
+            if artifact.project_id != job.project_id or artifact.stage != stage:
+                raise ValueError(f"{stage} do render não pertence ao projeto")
+            if not Path(artifact.path).is_file():
+                raise ValueError(f"arquivo de {stage} do render não está disponível")
+            visual_artifacts[stage] = artifact
     service = RenderService(config, domain)
 
     def progress_cb(progress_percent: float, message: str) -> None:
@@ -845,6 +929,9 @@ def run_render_job(
         result = service.run(
             edit_plan_artifact=edit_plan,
             camera_edit_plan_artifact=camera_plan,
+            face_index_artifact=visual_artifacts.get("face_index"),
+            identity_index_artifact=visual_artifacts.get("identity_index"),
+            target_identity_id=job.payload.get("target_identity_id"),
             encoder=job.payload.get("encoder"),
             headline=job.payload.get("headline"),
             progress_cb=progress_cb,
@@ -876,6 +963,7 @@ _HANDLERS: dict[JobType, Any] = {
     JobType.CAMERA_ANALYSIS: run_camera_analysis_job,
     JobType.VISUAL_QUALITY_ANALYSIS: run_visual_quality_analysis_job,
     JobType.IDENTITY_ANALYSIS: run_identity_analysis_job,
+    JobType.REACTION_CANDIDATE_ANALYSIS: run_reaction_candidate_analysis_job,
     JobType.CAMERA_PLANNING: run_camera_planning_job,
     JobType.MULTICAM_SYNC: run_multicam_sync_job,
     JobType.MULTICAM_VISUAL_INDEX: run_multicam_visual_index_job,
@@ -929,6 +1017,7 @@ def run_worker(
     config = config or load_config()
     config.ensure_runtime_dirs()
     jobs = JobStore(config.paths.database)
+    jobs.recover_abandoned_jobs()
     domain = DomainStore(config.paths.database)
     engine = FasterWhisperEngine()
     suggestion_provider = build_suggestion_provider(

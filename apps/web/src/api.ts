@@ -44,10 +44,37 @@ export type ApiJob = {
   created_at?: string;
 };
 
+export type ProjectStatusItem = {
+  label: string;
+  completed: boolean;
+};
+
+export type ProjectStatusPhase = {
+  name: string;
+  status: string;
+  items: ProjectStatusItem[];
+};
+
+export type ProjectStatus = {
+  source: string;
+  updated_at: string;
+  summary: { completed: number; pending: number; total: number; progress_percent: number };
+  phases: ProjectStatusPhase[];
+};
+
 export type Project = {
   id: string;
   name: string;
   created_at?: string;
+};
+
+export type RenderPreset = {
+  id: string;
+  project_id: string;
+  name: string;
+  settings: RenderSettings;
+  created_at?: string;
+  updated_at?: string;
 };
 
 export type SourceAsset = {
@@ -255,6 +282,19 @@ export type FaceIndexDocument = {
   };
 };
 
+export type IdentityIndexDocument = {
+  schema_version: number;
+  source_asset_id: string;
+  face_index_artifact_id: string;
+  identities: Array<{
+    identity_id: string;
+    status: "confirmed" | "single_layout" | "ambiguous";
+    sample_count: number;
+    layout_ids: string[];
+    evidence: string[];
+  }>;
+};
+
 export type RenderSettings = {
   schema_version: 1;
   encoder: "h264_nvenc" | "libx264";
@@ -262,6 +302,10 @@ export type RenderSettings = {
     width: 1080 | 1920;
     height: 1080 | 1920;
     fps: 30;
+  };
+  framing: {
+    schema_version: 1;
+    mode: "vertical_crop" | "blurred_background" | "face_static_crop";
   };
   captions: {
     enabled: boolean;
@@ -301,6 +345,7 @@ export type RenderSettings = {
 export type RenderSettingsPatch = {
   encoder?: RenderSettings["encoder"];
   canvas?: Partial<RenderSettings["canvas"]>;
+  framing?: Partial<Pick<RenderSettings["framing"], "mode">>;
   captions?: Partial<RenderSettings["captions"]>;
   headline?: Partial<RenderSettings["headline"]>;
   subtitles?: Partial<RenderSettings["subtitles"]>;
@@ -382,6 +427,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<Record<string, unknown>>("/api/v1/health"),
+  projectStatus: () => request<ProjectStatus>("/api/v1/project-status"),
   hardware: () => request<HardwareSnapshot>("/api/v1/hardware"),
   jobs: () => request<ApiJob[] | { jobs: ApiJob[] }>("/api/v1/jobs"),
   createJob: (type: "transcription" | "analysis" | "suggestion" | "render" | "pipeline", payload: Record<string, unknown>, projectId?: string) =>
@@ -389,6 +435,19 @@ export const api = {
 
   createProject: (name: string) =>
     request<Project>("/api/v1/projects", { method: "POST", body: JSON.stringify({ name }) }),
+
+  renderPresets: (projectId: string) =>
+    request<RenderPreset[]>(`/api/v1/projects/${projectId}/render-presets`),
+
+  createRenderPreset: (projectId: string, name: string, settings: RenderSettings) =>
+    request<RenderPreset>(`/api/v1/projects/${projectId}/render-presets`, {
+      method: "POST", body: JSON.stringify({ name, settings }),
+    }),
+
+  updateRenderPreset: (projectId: string, presetId: string, name: string | undefined, settings: RenderSettings | undefined) =>
+    request<RenderPreset>(`/api/v1/projects/${projectId}/render-presets/${presetId}`, {
+      method: "PUT", body: JSON.stringify({ ...(name === undefined ? {} : { name }), ...(settings === undefined ? {} : { settings }) }),
+    }),
 
   createYoutubeSource: (projectId: string, url: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/sources/youtube`, { method: "POST", body: JSON.stringify({ url }) }),
@@ -441,10 +500,22 @@ export const api = {
   faceIndex: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<FaceIndexDocument>>(`/api/v1/projects/${projectId}/faces/${artifactId}`),
 
+  startSpeakerTimeline: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string, faceIndexArtifactId: string, analysisArtifactId: string) =>
+    request<ApiJob>(`/api/v1/projects/${projectId}/speakers`, { method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId, face_index_artifact_id: faceIndexArtifactId, analysis_artifact_id: analysisArtifactId }) }),
+
+  startCameraTimeline: (projectId: string, sceneIndexArtifactId: string, faceIndexArtifactId: string, speakerTimelineArtifactId: string) =>
+    request<ApiJob>(`/api/v1/projects/${projectId}/cameras`, { method: "POST", body: JSON.stringify({ scene_index_artifact_id: sceneIndexArtifactId, face_index_artifact_id: faceIndexArtifactId, speaker_timeline_artifact_id: speakerTimelineArtifactId }) }),
+
+  startIdentityIndex: (projectId: string, faceIndexArtifactId: string, cameraTimelineArtifactId: string) =>
+    request<ApiJob>(`/api/v1/projects/${projectId}/identities`, { method: "POST", body: JSON.stringify({ face_index_artifact_id: faceIndexArtifactId, camera_timeline_artifact_id: cameraTimelineArtifactId }) }),
+
+  identityIndex: (projectId: string, artifactId: string) =>
+    request<ArtifactEnvelope<IdentityIndexDocument>>(`/api/v1/projects/${projectId}/identities/${artifactId}`),
+
   editPlan: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<EditPlanDocument>>(`/api/v1/projects/${projectId}/edit-plans/${artifactId}`),
 
-  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, renderSettingsOverride?: RenderSettingsPatch, exportDirectory?: string) =>
+  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, renderSettingsOverride?: RenderSettingsPatch, exportDirectory?: string, faceCrop?: { faceIndexArtifactId: string; identityIndexArtifactId: string; targetIdentityId: string }) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/renders`, {
       method: "POST",
       body: JSON.stringify({
@@ -452,6 +523,9 @@ export const api = {
         render_settings: renderSettings,
         render_settings_override: renderSettingsOverride,
         export_directory: exportDirectory?.trim() || null,
+        face_index_artifact_id: faceCrop?.faceIndexArtifactId ?? null,
+        identity_index_artifact_id: faceCrop?.identityIndexArtifactId ?? null,
+        target_identity_id: faceCrop?.targetIdentityId ?? null,
       }),
     }),
 

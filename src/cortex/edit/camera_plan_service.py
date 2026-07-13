@@ -8,6 +8,7 @@ from pathlib import Path
 from cortex.analyze.camera_schemas import CameraTimelineDocument
 from cortex.analyze.face_schemas import FaceIndexDocument
 from cortex.analyze.identity_schemas import IdentityIndexDocument
+from cortex.analyze.reaction_candidate_schemas import ReactionCandidateIndexDocument
 from cortex.analyze.multicam_visual_schemas import MulticamVisualIndexDocument
 from cortex.analyze.scene_schemas import SceneIndexDocument
 from cortex.analyze.visual_quality_schemas import VisualQualityDocument
@@ -25,7 +26,7 @@ from cortex.edit.camera_planner import classify_shot_intent
 from cortex.edit.schemas import EditPlanDocument
 from cortex.paths import camera_plans_dir
 
-CAMERA_PLAN_ALGORITHM_VERSION = "2.0.0"
+CAMERA_PLAN_ALGORITHM_VERSION = "3.0.0"
 BASE_REACTION_BLOCKERS = [
     "acoustic_speaker_identity_unavailable",
     "listening_posture_unavailable",
@@ -147,6 +148,7 @@ class CameraEditPlanService:
             "layout_id": f"iso-{source_id[:8]}-scene-{scene.index}",
             "camera_role": summary.dominant_shot_type,
             "intent": "context",
+            "visual_origin": "iso_synced",
             "confirmed_identity_ids": [],
             "visual_quality_usable": True,
             "evidence": [
@@ -167,6 +169,7 @@ class CameraEditPlanService:
         camera_timeline_artifact: StageArtifact,
         identity_index_artifact: StageArtifact,
         visual_quality_artifact: StageArtifact,
+        reaction_candidate_artifact: StageArtifact | None = None,
         multicam_visual_artifact: StageArtifact | None = None,
         progress_cb: Callable[[float, str], None],
         should_cancel: Callable[[], bool],
@@ -177,6 +180,8 @@ class CameraEditPlanService:
             edit_plan_artifact, camera_timeline_artifact,
             identity_index_artifact, visual_quality_artifact,
         ]
+        if reaction_candidate_artifact is not None:
+            artifacts.append(reaction_candidate_artifact)
         if multicam_visual_artifact is not None:
             artifacts.append(multicam_visual_artifact)
         paths = [Path(artifact.path) for artifact in artifacts]
@@ -187,8 +192,15 @@ class CameraEditPlanService:
         cameras = CameraTimelineDocument.model_validate_json(paths[1].read_text(encoding="utf-8"))
         identities = IdentityIndexDocument.model_validate_json(paths[2].read_text(encoding="utf-8"))
         quality = VisualQualityDocument.model_validate_json(paths[3].read_text(encoding="utf-8"))
+        reaction_index = (
+            ReactionCandidateIndexDocument.model_validate_json(paths[4].read_text(encoding="utf-8"))
+            if reaction_candidate_artifact is not None else None
+        )
+        multicam_path_index = 5 if reaction_candidate_artifact is not None else 4
         multicam = (
-            MulticamVisualIndexDocument.model_validate_json(paths[4].read_text(encoding="utf-8"))
+            MulticamVisualIndexDocument.model_validate_json(
+                paths[multicam_path_index].read_text(encoding="utf-8")
+            )
             if multicam_visual_artifact is not None else None
         )
         if any(artifact.project_id != edit_plan.project_id for artifact in artifacts):
@@ -206,6 +218,14 @@ class CameraEditPlanService:
             or quality.face_index_artifact_id != cameras.face_index_artifact_id
         ):
             raise CameraEditPlanPreconditionError("visual_quality não corresponde à cadeia visual")
+        if reaction_index is not None and (
+            reaction_index.project_id != edit_plan.project_id
+            or reaction_index.source_asset_id != edit_plan.source_asset_id
+            or reaction_index.camera_timeline_artifact_id != camera_timeline_artifact.id
+            or reaction_index.identity_index_artifact_id != identity_index_artifact.id
+            or reaction_index.visual_quality_artifact_id != visual_quality_artifact.id
+        ):
+            raise CameraEditPlanPreconditionError("reaction_candidate_index não corresponde à cadeia visual")
         if multicam is not None and (
             multicam.project_id != edit_plan.project_id
             or multicam.primary_source_asset_id != edit_plan.source_asset_id
@@ -213,9 +233,9 @@ class CameraEditPlanService:
             raise CameraEditPlanPreconditionError("multicam_visual não corresponde à EDL primária")
 
         iso_cameras = self._load_iso_cameras(multicam) if multicam is not None else []
-        reaction_blockers = list(BASE_REACTION_BLOCKERS)
-        if not iso_cameras:
-            reaction_blockers.append("alternate_camera_source_unavailable")
+        reaction_blockers = [] if reaction_index is not None else ["reaction_candidate_index_unavailable"]
+        if reaction_index is not None and not reaction_index.candidates:
+            reaction_blockers.append("no_safe_reaction_candidates")
 
         hash_payload = {
             "algorithm": CAMERA_PLAN_ALGORITHM_VERSION,
@@ -224,8 +244,12 @@ class CameraEditPlanService:
             "camera_timeline": [camera_timeline_artifact.id, camera_timeline_artifact.input_hash],
             "identity_index": [identity_index_artifact.id, identity_index_artifact.input_hash],
             "visual_quality": [visual_quality_artifact.id, visual_quality_artifact.input_hash],
+            "reaction_candidate_index": (
+                [reaction_candidate_artifact.id, reaction_candidate_artifact.input_hash]
+                if reaction_candidate_artifact is not None else None
+            ),
             "audio_continuity_mode": "primary_source_continuous",
-            "temporal_reuse_allowed": False,
+            "temporal_reuse_allowed": reaction_index is not None,
             "reaction_blockers": reaction_blockers,
         }
         if multicam_visual_artifact is not None:
@@ -259,6 +283,7 @@ class CameraEditPlanService:
                 )
 
         shots: list[CameraEditShot] = []
+        used_candidate_ids: set[str] = set()
         total_segments = max(len(edit_plan.segments), 1)
         for segment_position, segment in enumerate(edit_plan.segments):
             segment_start = round(segment.start * 1_000_000)
@@ -286,12 +311,47 @@ class CameraEditPlanService:
                         quality_by_scene.get(camera.scene_index)
                         and quality_by_scene[camera.scene_index].usable
                     ),
-                    evidence=[*evidence, "audio_video_linked", "temporal_reuse_forbidden"],
+                    evidence=[*evidence, "audio_video_linked"],
                 )
-                shots.append(
-                    self._select_iso_context(primary_shot, iso_cameras)
-                    if primary_shot.intent == "fallback" else primary_shot
-                )
+                selected_shot = primary_shot
+                if primary_shot.intent == "fallback" and reaction_index is not None:
+                    duration_us = primary_shot.audio_source_end_us - primary_shot.audio_source_start_us
+                    candidates = [
+                        candidate for candidate in reaction_index.candidates
+                        if candidate.candidate_id not in used_candidate_ids
+                        and candidate.duration_us >= duration_us
+                        and (candidate.source_end_us <= primary_shot.audio_source_start_us
+                             or candidate.source_start_us >= primary_shot.audio_source_end_us)
+                    ]
+                    if candidates:
+                        candidate = min(candidates, key=lambda item: (
+                            abs(item.reference_speech_time_us - primary_shot.audio_source_start_us),
+                            -item.confidence, item.candidate_id,
+                        ))
+                        used_candidate_ids.add(candidate.candidate_id)
+                        selected_shot = primary_shot.model_copy(update={
+                            "source_start_us": candidate.source_start_us,
+                            "source_end_us": candidate.source_start_us + duration_us,
+                            "camera_role": "interviewer_reaction",
+                            "intent": "reaction",
+                            "confirmed_identity_ids": [candidate.interviewer_identity_id],
+                            "visual_origin": "reaction_reuse",
+                            "reaction_candidate_id": candidate.candidate_id,
+                            "reaction_candidate_artifact_id": reaction_candidate_artifact.id,
+                            "reaction_candidate_input_hash": reaction_candidate_artifact.input_hash,
+                            "interviewer_identity_id": candidate.interviewer_identity_id,
+                            "selection_score": candidate.confidence,
+                            "evidence": [
+                                *primary_shot.evidence,
+                                "single_master_video_reused",
+                                "primary_audio_continuous",
+                                f"reaction_candidate:{candidate.candidate_id}",
+                                f"reaction_source_start_us:{candidate.source_start_us}",
+                            ],
+                        })
+                elif primary_shot.intent == "fallback":
+                    selected_shot = self._select_iso_context(primary_shot, iso_cameras)
+                shots.append(selected_shot)
             progress_cb(
                 10.0 + 75.0 * (segment_position + 1) / total_segments,
                 f"Planejando cameras do segmento {segment.timeline_order}",
@@ -311,6 +371,9 @@ class CameraEditPlanService:
                 shot.video_source_asset_id != edit_plan.source_asset_id for shot in shots
             ),
             indexed_iso_camera_count=len(iso_cameras),
+            reaction_shots_enabled=bool(used_candidate_ids),
+            reaction_shot_count=sum(shot.intent == "reaction" for shot in shots),
+            reused_candidate_ids=sorted(used_candidate_ids),
             reaction_shots_blocked_by=reaction_blockers,
         )
         document = CameraEditPlanDocument(
@@ -324,6 +387,13 @@ class CameraEditPlanService:
             identity_index_input_hash=identity_index_artifact.input_hash,
             visual_quality_artifact_id=visual_quality_artifact.id,
             visual_quality_input_hash=visual_quality_artifact.input_hash,
+            reaction_candidate_artifact_id=(
+                reaction_candidate_artifact.id if reaction_candidate_artifact is not None else None
+            ),
+            reaction_candidate_input_hash=(
+                reaction_candidate_artifact.input_hash
+                if reaction_candidate_artifact is not None else None
+            ),
             multicam_visual_artifact_id=(
                 multicam_visual_artifact.id if multicam_visual_artifact is not None else None
             ),
@@ -335,8 +405,9 @@ class CameraEditPlanService:
             shots=shots,
             diagnostics=diagnostics,
             engine=CameraEditEngineInfo(
-                algorithm="synchronized_iso_context_selection",
+                algorithm="single_master_reaction_selection",
                 algorithm_version=CAMERA_PLAN_ALGORITHM_VERSION,
+                temporal_reuse_allowed=reaction_index is not None,
             ),
         )
         progress_cb(90.0, "Persistindo CameraEditPlanArtifact")
@@ -363,12 +434,15 @@ class CameraEditPlanService:
                 "camera_timeline_artifact_id": camera_timeline_artifact.id,
                 "identity_index_artifact_id": identity_index_artifact.id,
                 "visual_quality_artifact_id": visual_quality_artifact.id,
+                "reaction_candidate_artifact_id": (
+                    reaction_candidate_artifact.id if reaction_candidate_artifact is not None else None
+                ),
                 "multicam_visual_artifact_id": (
                     multicam_visual_artifact.id if multicam_visual_artifact is not None else None
                 ),
                 "shot_count": len(shots),
                 "iso_context_shot_count": diagnostics.iso_context_shot_count,
-                "reaction_shots_enabled": False,
+                "reaction_shots_enabled": bool(used_candidate_ids),
                 "audio_continuity_mode": "primary_source_continuous",
             },
         ))

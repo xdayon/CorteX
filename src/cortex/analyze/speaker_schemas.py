@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SPEAKER_TIMELINE_SCHEMA_VERSION = 1
+SPEAKER_TIMELINE_SCHEMA_VERSION = 2
 SpeakerState = Literal["no_speech", "speaker", "unknown", "overlap"]
 
 

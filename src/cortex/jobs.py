@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -109,7 +110,7 @@ class JobStore:
             message="Cancelamento solicitado",
         ))
 
-    def claim_next(self) -> Job | None:
+    def claim_next(self, *, worker_pid: int | None = None) -> Job | None:
         """Atomically claim the oldest queued job, marking it running.
 
         Uses a guarded UPDATE (WHERE status='queued') so concurrent workers
@@ -118,15 +119,20 @@ class JobStore:
         """
         connection = self._connect()
         try:
+            # Hold the queue selection and status transition in one write
+            # transaction so recovery and concurrent workers cannot interleave.
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT id, data FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
             ).fetchone()
             if row is None:
+                connection.commit()
                 return None
             job = Job.model_validate_json(row["data"])
             claimed = job.model_copy(update={
                 "status": JobStatus.RUNNING,
                 "message": "Em execução",
+                "worker_pid": worker_pid if worker_pid is not None else os.getpid(),
                 "updated_at": utc_now(),
             })
             payload = json.dumps(claimed.model_dump(mode="json"), ensure_ascii=False)
@@ -139,6 +145,43 @@ class JobStore:
             if cursor.rowcount == 0:
                 return None
             return claimed
+        finally:
+            connection.close()
+
+    def recover_abandoned_jobs(self) -> list[Job]:
+        """Requeue jobs left running by a stopped worker process.
+
+        A live local worker is never recovered, preventing a second worker
+        startup from duplicating work. Recovery changes only operational fields. The original job identity,
+        payload, progress, and timestamps created before the interruption are
+        retained so a restarted worker can safely resume FIFO claims.
+        """
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, data FROM jobs WHERE status = 'running' ORDER BY created_at ASC"
+            ).fetchall()
+            recovered: list[Job] = []
+            for row in rows:
+                job = Job.model_validate_json(row["data"])
+                if job.worker_pid is not None and _pid_is_alive(job.worker_pid):
+                    continue
+                requeued = job.model_copy(update={
+                    "status": JobStatus.QUEUED,
+                    "message": "Recuperado apos interrupcao; reenfileirado",
+                    "worker_pid": None,
+                    "updated_at": utc_now(),
+                })
+                payload = json.dumps(requeued.model_dump(mode="json"), ensure_ascii=False)
+                connection.execute(
+                    "UPDATE jobs SET data = ?, status = ?, updated_at = ? "
+                    "WHERE id = ? AND status = 'running'",
+                    (payload, requeued.status.value, requeued.updated_at.isoformat(), job.id),
+                )
+                recovered.append(requeued)
+            connection.commit()
+            return recovered
         finally:
             connection.close()
 
@@ -159,3 +202,14 @@ class JobStore:
                 ),
             )
 
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
