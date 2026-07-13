@@ -23,14 +23,160 @@ from cortex.edit.camera_plan_schemas import (
     CameraEditShot,
 )
 from cortex.edit.camera_planner import classify_shot_intent
+from cortex.edit.diversity_policy import (
+    DIVERSITY_POLICY_VERSION,
+    MAXIMUM_REACTION_SHARE,
+    MINIMUM_GAP_BETWEEN_REACTIONS_US,
+    MINIMUM_REACTION_CONFIDENCE,
+    MONOTONY_MINIMUM_DURATION_US,
+    MONOTONY_THRESHOLD,
+)
 from cortex.edit.schemas import EditPlanDocument
 from cortex.paths import camera_plans_dir
 
-CAMERA_PLAN_ALGORITHM_VERSION = "3.0.0"
+CAMERA_PLAN_ALGORITHM_VERSION = "4.0.0"
+
+REACTION_BLOCKER_ACOUSTIC_IDENTITY_UNAVAILABLE = "acoustic_speaker_identity_unavailable"
+REACTION_BLOCKER_LISTENING_POSTURE_UNAVAILABLE = "listening_posture_unavailable"
+REACTION_BLOCKER_INDEX_UNAVAILABLE = "reaction_candidate_index_unavailable"
+REACTION_BLOCKER_NO_SAFE_CANDIDATES = "no_safe_reaction_candidates"
+REACTION_BLOCKER_LOW_CONFIDENCE = "low_confidence_candidates"
+REACTION_BLOCKER_SHARE_LIMIT = "reaction_share_limit_reached"
+REACTION_BLOCKER_SPACING_LIMIT = "spacing_limit"
+REACTION_BLOCKER_NO_TEMPORAL_FIT = "no_temporal_fit"
+
+# Canonical set of reaction-blocker reasons. Diagnostics and per-shot
+# `reaction_blocked_by` values are always drawn from this list instead of
+# loose string literals.
 BASE_REACTION_BLOCKERS = [
-    "acoustic_speaker_identity_unavailable",
-    "listening_posture_unavailable",
+    REACTION_BLOCKER_ACOUSTIC_IDENTITY_UNAVAILABLE,
+    REACTION_BLOCKER_LISTENING_POSTURE_UNAVAILABLE,
+    REACTION_BLOCKER_INDEX_UNAVAILABLE,
+    REACTION_BLOCKER_NO_SAFE_CANDIDATES,
+    REACTION_BLOCKER_LOW_CONFIDENCE,
+    REACTION_BLOCKER_SHARE_LIMIT,
+    REACTION_BLOCKER_SPACING_LIMIT,
+    REACTION_BLOCKER_NO_TEMPORAL_FIT,
 ]
+
+
+def _interval_gap_us(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
+    if a_end <= b_start:
+        return b_start - a_end
+    if b_end <= a_start:
+        return a_start - b_end
+    return 0
+
+
+def _reaction_policy_blockers(
+    *,
+    shot_start_us: int,
+    shot_end_us: int,
+    total_duration_us: int,
+    total_reaction_duration_us: int,
+    reaction_positions: list[tuple[int, int]],
+) -> set[str]:
+    blockers: set[str] = set()
+    shot_duration_us = shot_end_us - shot_start_us
+    if total_duration_us > 0:
+        projected_share = (total_reaction_duration_us + shot_duration_us) / total_duration_us
+        if projected_share > MAXIMUM_REACTION_SHARE:
+            blockers.add(REACTION_BLOCKER_SHARE_LIMIT)
+    for start, end in reaction_positions:
+        gap = _interval_gap_us(shot_start_us, shot_end_us, start, end)
+        if gap < MINIMUM_GAP_BETWEEN_REACTIONS_US:
+            blockers.add(REACTION_BLOCKER_SPACING_LIMIT)
+            break
+    return blockers
+
+
+def _select_reaction_candidate(
+    shot: CameraEditShot,
+    reaction_index: ReactionCandidateIndexDocument,
+    used_candidate_ids: set[str],
+):
+    duration_us = shot.audio_source_end_us - shot.audio_source_start_us
+    eligible = [
+        candidate for candidate in reaction_index.candidates
+        if candidate.candidate_id not in used_candidate_ids
+    ]
+    if not eligible:
+        return None, set()
+    temporal_fit = [
+        candidate for candidate in eligible
+        if candidate.duration_us >= duration_us
+        and (candidate.source_end_us <= shot.audio_source_start_us
+             or candidate.source_start_us >= shot.audio_source_end_us)
+    ]
+    if not temporal_fit:
+        return None, {REACTION_BLOCKER_NO_TEMPORAL_FIT}
+    confident = [
+        candidate for candidate in temporal_fit
+        if candidate.confidence >= MINIMUM_REACTION_CONFIDENCE
+    ]
+    if not confident:
+        return None, {REACTION_BLOCKER_LOW_CONFIDENCE}
+    candidate = min(confident, key=lambda item: (
+        abs(item.reference_speech_time_us - shot.audio_source_start_us),
+        -item.confidence, item.candidate_id,
+    ))
+    return candidate, set()
+
+
+def _build_reaction_shot(
+    primary_shot: CameraEditShot, candidate, reaction_candidate_artifact: StageArtifact,
+) -> CameraEditShot:
+    duration_us = primary_shot.audio_source_end_us - primary_shot.audio_source_start_us
+    return primary_shot.model_copy(update={
+        "video_source_asset_id": primary_shot.audio_source_asset_id,
+        "sync_offset_us": 0,
+        "source_start_us": candidate.source_start_us,
+        "source_end_us": candidate.source_start_us + duration_us,
+        "camera_role": "interviewer_reaction",
+        "intent": "reaction",
+        "confirmed_identity_ids": [candidate.interviewer_identity_id],
+        "visual_origin": "reaction_reuse",
+        "reaction_candidate_id": candidate.candidate_id,
+        "reaction_candidate_artifact_id": reaction_candidate_artifact.id,
+        "reaction_candidate_input_hash": reaction_candidate_artifact.input_hash,
+        "interviewer_identity_id": candidate.interviewer_identity_id,
+        "selection_score": candidate.confidence,
+        "reaction_blocked_by": [],
+        "evidence": [
+            *primary_shot.evidence,
+            "single_master_video_reused",
+            "primary_audio_continuous",
+            f"reaction_candidate:{candidate.candidate_id}",
+            f"reaction_source_start_us:{candidate.source_start_us}",
+        ],
+    })
+
+
+def _accumulate_seconds(
+    shots: list[CameraEditShot],
+) -> tuple[dict[str, float], dict[str, float]]:
+    seconds_by_identity: dict[str, float] = {}
+    seconds_by_role: dict[str, float] = {}
+    for shot in shots:
+        duration_seconds = (shot.audio_source_end_us - shot.audio_source_start_us) / 1_000_000
+        for identity_id in shot.confirmed_identity_ids:
+            seconds_by_identity[identity_id] = round(
+                seconds_by_identity.get(identity_id, 0.0) + duration_seconds, 6
+            )
+        seconds_by_role[shot.camera_role] = round(
+            seconds_by_role.get(shot.camera_role, 0.0) + duration_seconds, 6
+        )
+    return seconds_by_identity, seconds_by_role
+
+
+def _dominant_identity(
+    seconds_by_identity: dict[str, float], total_duration_seconds: float,
+) -> tuple[str | None, float]:
+    if not seconds_by_identity or total_duration_seconds <= 0:
+        return None, 0.0
+    identity_id, seconds = min(seconds_by_identity.items(), key=lambda item: (-item[1], item[0]))
+    share = min(1.0, seconds / total_duration_seconds)
+    return identity_id, round(share, 6)
 
 
 class CameraEditPlanJobCancelled(RuntimeError):
@@ -233,13 +379,16 @@ class CameraEditPlanService:
             raise CameraEditPlanPreconditionError("multicam_visual não corresponde à EDL primária")
 
         iso_cameras = self._load_iso_cameras(multicam) if multicam is not None else []
-        reaction_blockers = [] if reaction_index is not None else ["reaction_candidate_index_unavailable"]
+        availability_blockers: list[str] = (
+            [] if reaction_index is not None else [REACTION_BLOCKER_INDEX_UNAVAILABLE]
+        )
         if reaction_index is not None and not reaction_index.candidates:
-            reaction_blockers.append("no_safe_reaction_candidates")
+            availability_blockers.append(REACTION_BLOCKER_NO_SAFE_CANDIDATES)
 
         hash_payload = {
             "algorithm": CAMERA_PLAN_ALGORITHM_VERSION,
             "schema_version": CAMERA_EDIT_PLAN_SCHEMA_VERSION,
+            "diversity_policy_version": DIVERSITY_POLICY_VERSION,
             "edit_plan": [edit_plan_artifact.id, edit_plan_artifact.input_hash],
             "camera_timeline": [camera_timeline_artifact.id, camera_timeline_artifact.input_hash],
             "identity_index": [identity_index_artifact.id, identity_index_artifact.input_hash],
@@ -250,7 +399,7 @@ class CameraEditPlanService:
             ),
             "audio_continuity_mode": "primary_source_continuous",
             "temporal_reuse_allowed": reaction_index is not None,
-            "reaction_blockers": reaction_blockers,
+            "reaction_blockers": availability_blockers,
         }
         if multicam_visual_artifact is not None:
             hash_payload["multicam_visual"] = [
@@ -284,6 +433,13 @@ class CameraEditPlanService:
 
         shots: list[CameraEditShot] = []
         used_candidate_ids: set[str] = set()
+        reaction_blocker_reasons: set[str] = set(availability_blockers)
+        total_reaction_duration_us = 0
+        reaction_positions: list[tuple[int, int]] = []
+        total_duration_us = sum(
+            round(segment.end * 1_000_000) - round(segment.start * 1_000_000)
+            for segment in edit_plan.segments
+        )
         total_segments = max(len(edit_plan.segments), 1)
         for segment_position, segment in enumerate(edit_plan.segments):
             segment_start = round(segment.start * 1_000_000)
@@ -315,39 +471,35 @@ class CameraEditPlanService:
                 )
                 selected_shot = primary_shot
                 if primary_shot.intent == "fallback" and reaction_index is not None:
-                    duration_us = primary_shot.audio_source_end_us - primary_shot.audio_source_start_us
-                    candidates = [
-                        candidate for candidate in reaction_index.candidates
-                        if candidate.candidate_id not in used_candidate_ids
-                        and candidate.duration_us >= duration_us
-                        and (candidate.source_end_us <= primary_shot.audio_source_start_us
-                             or candidate.source_start_us >= primary_shot.audio_source_end_us)
-                    ]
-                    if candidates:
-                        candidate = min(candidates, key=lambda item: (
-                            abs(item.reference_speech_time_us - primary_shot.audio_source_start_us),
-                            -item.confidence, item.candidate_id,
-                        ))
+                    policy_blockers = _reaction_policy_blockers(
+                        shot_start_us=primary_shot.audio_source_start_us,
+                        shot_end_us=primary_shot.audio_source_end_us,
+                        total_duration_us=total_duration_us,
+                        total_reaction_duration_us=total_reaction_duration_us,
+                        reaction_positions=reaction_positions,
+                    )
+                    candidate = None
+                    if policy_blockers:
+                        blockers = policy_blockers
+                    else:
+                        candidate, blockers = _select_reaction_candidate(
+                            primary_shot, reaction_index, used_candidate_ids,
+                        )
+                    if candidate is not None:
+                        selected_shot = _build_reaction_shot(
+                            primary_shot, candidate, reaction_candidate_artifact,
+                        )
                         used_candidate_ids.add(candidate.candidate_id)
+                        total_reaction_duration_us += (
+                            primary_shot.audio_source_end_us - primary_shot.audio_source_start_us
+                        )
+                        reaction_positions.append(
+                            (primary_shot.audio_source_start_us, primary_shot.audio_source_end_us)
+                        )
+                    elif blockers:
+                        reaction_blocker_reasons.update(blockers)
                         selected_shot = primary_shot.model_copy(update={
-                            "source_start_us": candidate.source_start_us,
-                            "source_end_us": candidate.source_start_us + duration_us,
-                            "camera_role": "interviewer_reaction",
-                            "intent": "reaction",
-                            "confirmed_identity_ids": [candidate.interviewer_identity_id],
-                            "visual_origin": "reaction_reuse",
-                            "reaction_candidate_id": candidate.candidate_id,
-                            "reaction_candidate_artifact_id": reaction_candidate_artifact.id,
-                            "reaction_candidate_input_hash": reaction_candidate_artifact.input_hash,
-                            "interviewer_identity_id": candidate.interviewer_identity_id,
-                            "selection_score": candidate.confidence,
-                            "evidence": [
-                                *primary_shot.evidence,
-                                "single_master_video_reused",
-                                "primary_audio_continuous",
-                                f"reaction_candidate:{candidate.candidate_id}",
-                                f"reaction_source_start_us:{candidate.source_start_us}",
-                            ],
+                            "reaction_blocked_by": sorted(blockers),
                         })
                 elif primary_shot.intent == "fallback":
                     selected_shot = self._select_iso_context(primary_shot, iso_cameras)
@@ -359,6 +511,90 @@ class CameraEditPlanService:
 
         if not shots and edit_plan.segments:
             raise CameraEditPlanPreconditionError("camera_timeline não cobre os segmentos da EDL")
+
+        seconds_by_identity, _ = _accumulate_seconds(shots)
+        total_duration_seconds = total_duration_us / 1_000_000
+        dominant_identity_id, dominant_identity_share = _dominant_identity(
+            seconds_by_identity, total_duration_seconds,
+        )
+        if (
+            reaction_index is not None
+            and dominant_identity_id is not None
+            and total_duration_us >= MONOTONY_MINIMUM_DURATION_US
+            and dominant_identity_share >= MONOTONY_THRESHOLD
+        ):
+            other_identity_shots = [
+                shot for shot in shots
+                if any(
+                    identity_id != dominant_identity_id
+                    for identity_id in shot.confirmed_identity_ids
+                )
+            ]
+            eligible_indices = [
+                index for index, shot in enumerate(shots)
+                if shot.intent != "reaction"
+                and all(
+                    identity_id == dominant_identity_id
+                    for identity_id in shot.confirmed_identity_ids
+                )
+            ]
+            if eligible_indices:
+                def _distance(index: int) -> int:
+                    shot = shots[index]
+                    if not other_identity_shots:
+                        return total_duration_us
+                    return min(
+                        _interval_gap_us(
+                            shot.audio_source_start_us, shot.audio_source_end_us,
+                            other.audio_source_start_us, other.audio_source_end_us,
+                        )
+                        for other in other_identity_shots
+                    )
+                target_index = max(
+                    eligible_indices,
+                    key=lambda index: (
+                        _distance(index),
+                        shots[index].audio_source_end_us - shots[index].audio_source_start_us,
+                        -shots[index].audio_source_start_us,
+                    ),
+                )
+                target = shots[target_index]
+                policy_blockers = _reaction_policy_blockers(
+                    shot_start_us=target.audio_source_start_us,
+                    shot_end_us=target.audio_source_end_us,
+                    total_duration_us=total_duration_us,
+                    total_reaction_duration_us=total_reaction_duration_us,
+                    reaction_positions=reaction_positions,
+                )
+                candidate = None
+                if policy_blockers:
+                    blockers = policy_blockers
+                else:
+                    candidate, blockers = _select_reaction_candidate(
+                        target, reaction_index, used_candidate_ids,
+                    )
+                if candidate is not None:
+                    shots[target_index] = _build_reaction_shot(
+                        target, candidate, reaction_candidate_artifact,
+                    )
+                    used_candidate_ids.add(candidate.candidate_id)
+                    total_reaction_duration_us += (
+                        target.audio_source_end_us - target.audio_source_start_us
+                    )
+                    reaction_positions.append(
+                        (target.audio_source_start_us, target.audio_source_end_us)
+                    )
+                elif blockers:
+                    reaction_blocker_reasons.update(blockers)
+                    shots[target_index] = target.model_copy(update={
+                        "reaction_blocked_by": sorted(set(target.reaction_blocked_by) | blockers),
+                    })
+            seconds_by_identity, _ = _accumulate_seconds(shots)
+            dominant_identity_id, dominant_identity_share = _dominant_identity(
+                seconds_by_identity, total_duration_seconds,
+            )
+
+        seconds_by_identity, seconds_by_role = _accumulate_seconds(shots)
         diagnostics = CameraEditDiagnostics(
             shot_count=len(shots),
             speaker_shot_count=sum(shot.intent == "speaker" for shot in shots),
@@ -374,7 +610,11 @@ class CameraEditPlanService:
             reaction_shots_enabled=bool(used_candidate_ids),
             reaction_shot_count=sum(shot.intent == "reaction" for shot in shots),
             reused_candidate_ids=sorted(used_candidate_ids),
-            reaction_shots_blocked_by=reaction_blockers,
+            reaction_shots_blocked_by=sorted(reaction_blocker_reasons),
+            seconds_by_identity=seconds_by_identity,
+            seconds_by_role=seconds_by_role,
+            dominant_identity_id=dominant_identity_id,
+            dominant_identity_share=dominant_identity_share,
         )
         document = CameraEditPlanDocument(
             project_id=edit_plan.project_id,

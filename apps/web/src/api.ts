@@ -340,6 +340,61 @@ export type IdentityIndexDocument = {
   }>;
 };
 
+export type CameraEditShot = {
+  edit_segment_order: number;
+  video_source_asset_id: string;
+  audio_source_asset_id: string;
+  source_start_us: number;
+  source_end_us: number;
+  audio_source_start_us: number;
+  audio_source_end_us: number;
+  sync_offset_us: number;
+  scene_index: number;
+  layout_id: string;
+  camera_role: string;
+  intent: "speaker" | "context" | "fallback" | "reaction";
+  confirmed_identity_ids: string[];
+  visual_quality_usable: boolean;
+  visual_origin: "primary_in_place" | "reaction_reuse" | "iso_synced";
+  reaction_candidate_id?: string | null;
+  interviewer_identity_id?: string | null;
+  selection_score?: number | null;
+  reaction_blocked_by: string[];
+  evidence: string[];
+};
+
+export type CameraEditDiagnostics = {
+  shot_count: number;
+  speaker_shot_count: number;
+  context_shot_count: number;
+  fallback_shot_count: number;
+  unusable_scene_count: number;
+  iso_context_shot_count: number;
+  indexed_iso_camera_count: number;
+  reaction_shots_enabled: boolean;
+  reaction_shot_count: number;
+  reused_candidate_ids: string[];
+  reaction_shots_blocked_by: string[];
+  seconds_by_identity: Record<string, number>;
+  seconds_by_role: Record<string, number>;
+  dominant_identity_id: string | null;
+  dominant_identity_share: number;
+};
+
+export type CameraEditPlanDocument = {
+  schema_version: number;
+  project_id: string;
+  source_asset_id: string;
+  shots: CameraEditShot[];
+  diagnostics: CameraEditDiagnostics;
+  engine: {
+    algorithm: string;
+    algorithm_version: string;
+    audio_continuity_mode: string;
+    temporal_reuse_allowed: boolean;
+  };
+};
+
 export type RenderSettings = {
   schema_version: 1;
   encoder: "h264_nvenc" | "libx264";
@@ -556,6 +611,9 @@ export const api = {
 
   identityIndex: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<IdentityIndexDocument>>(`/api/v1/projects/${projectId}/identities/${artifactId}`),
+
+  cameraPlan: (projectId: string, artifactId: string) =>
+    request<ArtifactEnvelope<CameraEditPlanDocument>>(`/api/v1/projects/${projectId}/camera-plans/${artifactId}`),
 
   editPlan: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<EditPlanDocument>>(`/api/v1/projects/${projectId}/edit-plans/${artifactId}`),

@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-CAMERA_EDIT_PLAN_SCHEMA_VERSION = 3
+CAMERA_EDIT_PLAN_SCHEMA_VERSION = 4
 ShotIntent = Literal["speaker", "context", "fallback", "reaction"]
 VisualOrigin = Literal["primary_in_place", "reaction_reuse", "iso_synced"]
 
@@ -32,6 +32,7 @@ class CameraEditShot(BaseModel):
     reaction_candidate_input_hash: str | None = None
     interviewer_identity_id: str | None = None
     selection_score: float | None = Field(default=None, ge=0, le=1)
+    reaction_blocked_by: list[str] = Field(default_factory=list)
     evidence: list[str]
 
     @model_validator(mode="after")
@@ -77,6 +78,10 @@ class CameraEditDiagnostics(BaseModel):
     reaction_shot_count: int = Field(default=0, ge=0)
     reused_candidate_ids: list[str] = Field(default_factory=list)
     reaction_shots_blocked_by: list[str]
+    seconds_by_identity: dict[str, float] = Field(default_factory=dict)
+    seconds_by_role: dict[str, float] = Field(default_factory=dict)
+    dominant_identity_id: str | None = None
+    dominant_identity_share: float = Field(default=0.0, ge=0, le=1)
 
 
 class CameraEditEngineInfo(BaseModel):

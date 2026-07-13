@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from "react";
-import { api, type AnalysisDocument, type ApiJob, type EditPlanDocument, type FaceIndexDocument, type IdentityIndexDocument, type ProjectStatus, type RenderDocument, type RenderPreset, type RenderSettings, type RenderSettingsPatch, type SceneIndexDocument, type SuggestedClip, type SuggestionBrief, type SuggestionSelection, type Telemetry, type TranscriptDocument, type TranscribeOverrides } from "./api";
+import { api, type AnalysisDocument, type ApiJob, type CameraEditPlanDocument, type EditPlanDocument, type FaceIndexDocument, type IdentityIndexDocument, type ProjectStatus, type RenderDocument, type RenderPreset, type RenderSettings, type RenderSettingsPatch, type SceneIndexDocument, type SuggestedClip, type SuggestionBrief, type SuggestionSelection, type Telemetry, type TranscriptDocument, type TranscribeOverrides } from "./api";
 
 type IconName = "spark" | "upload" | "link" | "wave" | "brain" | "cut" | "type" | "play" | "cpu" | "check" | "chevron" | "folder" | "settings" | "queue" | "save" | "film" | "clock" | "sliders" | "pause";
 
@@ -356,6 +356,76 @@ function FramingSelector({ settings, onChange, identityIndex, targetIdentityId, 
   const confirmed = identityIndex?.identities.filter((item) => item.status === "confirmed") ?? [];
   const faceReady = confirmed.some((item) => item.identity_id === targetIdentityId);
   return <div className="framing-selector glass"><div><span className="eyebrow">ENQUADRAMENTO EFETIVO</span><b>Como o vídeo ocupa o canvas</b></div><select value={settings.framing.mode} onChange={(event) => onChange({ ...settings, framing: { ...settings.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } })}><option value="vertical_crop">9:16 preenchido · recorte central</option><option value="blurred_background">16:9 completo · fundo desfocado</option><option value="face_static_crop" disabled={!faceReady}>Rosto fixo · sem movimento</option></select>{!identityIndex && <button className="btn secondary" disabled={preparing} onClick={onPrepare}>{preparing ? `Preparando ${Math.round(progress)}%` : "Preparar identidades"}</button>}{identityIndex && <Field label="Este sou eu" hint="Selecione explicitamente uma identidade confirmada"><select value={targetIdentityId} onChange={(event) => onTargetIdentity(event.target.value)}><option value="">Selecione uma pessoa</option>{confirmed.map((item) => <option key={item.identity_id} value={item.identity_id}>{item.identity_id} · {item.sample_count} amostras · {item.layout_ids.length} layouts</option>)}</select></Field>}<small>{message || "O rosto usa uma posição fixa por segmento; nunca segue a pessoa durante o vídeo."}</small>{error && <small className="quality-failed">{error}</small>}</div>;
+}
+
+const REACTION_BLOCKER_LABELS: Record<string, string> = {
+  acoustic_speaker_identity_unavailable: "Identidade acústica do falante indisponível",
+  listening_posture_unavailable: "Postura de escuta indisponível",
+  reaction_candidate_index_unavailable: "Banco de reactions não gerado para este plano",
+  no_safe_reaction_candidates: "Nenhum candidato de reaction seguro no banco",
+  low_confidence_candidates: "Candidatos descartados por confiança abaixo do piso",
+  reaction_share_limit_reached: "Limite de reaproveitamento de reaction atingido",
+  spacing_limit: "Espaçamento mínimo entre reactions não respeitado",
+  no_temporal_fit: "Nenhum candidato com duração/tempo compatível",
+};
+
+function reactionBlockerLabel(reason: string): string {
+  return REACTION_BLOCKER_LABELS[reason] ?? reason;
+}
+
+// Superfície de leitura do camera plan: o Estúdio ainda não orquestra a criação
+// de camera plans (não há job de camera planning disparado pelo front), então
+// este painel só busca e exibe o diagnóstico de um artifact_id já existente no
+// projeto, informado manualmente. A integração completa (disparar o job,
+// escolher o artifact automaticamente) fica para uma sessão futura do Estúdio.
+function CameraPlanDiagnosticsPanel({ projectId }: { projectId?: string }) {
+  const [artifactId, setArtifactId] = useState("");
+  const [planDocument, setPlanDocument] = useState<CameraEditPlanDocument | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    if (!projectId || !artifactId.trim()) return;
+    setLoading(true); setError(null);
+    try {
+      const envelope = await api.cameraPlan(projectId, artifactId.trim());
+      setPlanDocument(envelope.document);
+    } catch (err) {
+      setPlanDocument(null);
+      setError(err instanceof Error ? err.message : "Falha ao carregar camera plan");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const diagnostics = planDocument?.diagnostics;
+  return <div className="camera-plan-diagnostics glass">
+    <div><span className="eyebrow">DIAGNÓSTICO DE CAMERA PLAN</span><b>Diversidade visual e reactions</b></div>
+    <div className="camera-plan-lookup"><input type="text" placeholder="ID do artifact camera_edit_plan" value={artifactId} onChange={(event) => setArtifactId(event.target.value)} disabled={!projectId}/><button className="btn secondary" disabled={!projectId || loading || !artifactId.trim()} onClick={() => void load()}>{loading ? "Carregando…" : "Carregar diagnóstico"}</button></div>
+    {!projectId && <small>Crie um projeto para consultar um camera plan.</small>}
+    {error && <small className="quality-failed">{error}</small>}
+    {diagnostics && <div className="camera-plan-stats">
+      <div className="edl-stats">
+        <span><b>{diagnostics.shot_count}</b> shots</span>
+        <span><b>{diagnostics.reaction_shot_count}</b> reactions inseridas</span>
+        <span><b>{diagnostics.iso_context_shot_count}</b> shots ISO</span>
+        <span><b>{diagnostics.unusable_scene_count}</b> cenas inutilizáveis</span>
+      </div>
+      <div>
+        <span className="eyebrow">TEMPO POR IDENTIDADE CONFIRMADA</span>
+        <ul>{Object.entries(diagnostics.seconds_by_identity).map(([identityId, seconds]) => <li key={identityId}>{identityId}: {seconds.toFixed(1)}s</li>)}</ul>
+      </div>
+      <div>
+        <span className="eyebrow">TEMPO POR PAPEL DE CÂMERA</span>
+        <ul>{Object.entries(diagnostics.seconds_by_role).map(([role, seconds]) => <li key={role}>{role}: {seconds.toFixed(1)}s</li>)}</ul>
+      </div>
+      {diagnostics.dominant_identity_id && <small>Identidade dominante: <b>{diagnostics.dominant_identity_id}</b> ({Math.round(diagnostics.dominant_identity_share * 100)}% da timeline)</small>}
+      {diagnostics.reaction_shots_blocked_by.length > 0 && <div>
+        <span className="eyebrow">REACTIONS BLOQUEADAS</span>
+        <ul>{diagnostics.reaction_shots_blocked_by.map((reason) => <li key={reason}>{reactionBlockerLabel(reason)}</li>)}</ul>
+      </div>}
+    </div>}
+  </div>;
 }
 
 function StudioStep({ settings, onChange, exportDirectory, onExportDirectoryChange, onNext, projectId, presets, onSavePreset }: { settings: RenderSettings; onChange: (settings: RenderSettings) => void; exportDirectory: string; onExportDirectoryChange: (value: string) => void; onNext: () => void; projectId?: string; presets: RenderPreset[]; onSavePreset: (name: string, presetId?: string) => Promise<void> }) {
@@ -955,7 +1025,7 @@ export default function App() {
       {step === 1 && <TranscriptionStep onStart={startTranscription} running={transcribing} progress={transcriptionProgress} message={transcriptionMessage} error={transcriptionError} fillers={showFillers} onFillersChange={setShowFillers}/>}
       {step === 2 && <BriefStep onAnalyze={startSuggestion} running={suggesting} progress={suggestionProgress} message={suggestionMessage} error={suggestionError}/>} 
       {step === 3 && <CurateStep clips={selection?.clips ?? []} notes={selection?.selection_notes ?? "Execute a seleção editorial na etapa anterior."} provenance={selection?.provenance} transcript={transcript} analysis={analysis} showFillers={showFillers} plans={editPlans} planning={planning} planProgress={planProgress} planMessage={planMessage} planError={planError} onPlan={prepareEditPlans} onNext={prepareAndOpenStudio} sceneIndex={sceneIndex} sceneIndexArtifactId={sceneIndexArtifactId} detectingScenes={detectingScenes} sceneProgress={sceneProgress} sceneMessage={sceneMessage} sceneError={sceneError} onDetectScenes={() => void detectScenes()} faceIndex={faceIndex} detectingFaces={detectingFaces} faceProgress={faceProgress} faceMessage={faceMessage} faceError={faceError} onDetectFaces={() => void detectFaces()}/>}
-      {step === 4 && <><FramingSelector settings={renderSettings} onChange={setRenderSettings} identityIndex={identityIndex} targetIdentityId={targetIdentityId} onTargetIdentity={setTargetIdentityId} preparing={preparingIdentities} progress={identityProgress} message={identityMessage} error={identityError} onPrepare={() => void prepareIdentities()}/><StudioStep settings={renderSettings} onChange={setRenderSettings} exportDirectory={exportDirectory} onExportDirectoryChange={setExportDirectory} onNext={() => setStep(5)} projectId={projectRef.current?.projectId} presets={renderPresets} onSavePreset={saveRenderPreset}/></>}
+      {step === 4 && <><FramingSelector settings={renderSettings} onChange={setRenderSettings} identityIndex={identityIndex} targetIdentityId={targetIdentityId} onTargetIdentity={setTargetIdentityId} preparing={preparingIdentities} progress={identityProgress} message={identityMessage} error={identityError} onPrepare={() => void prepareIdentities()}/><CameraPlanDiagnosticsPanel projectId={projectRef.current?.projectId}/><StudioStep settings={renderSettings} onChange={setRenderSettings} exportDirectory={exportDirectory} onExportDirectoryChange={setExportDirectory} onNext={() => setStep(5)} projectId={projectRef.current?.projectId} presets={renderPresets} onSavePreset={saveRenderPreset}/></>}
       {step === 5 && <RenderStep onStart={startRender} running={rendering} progress={renderProgress} clips={(selection?.clips ?? []).filter((clip) => preparedClipKeys.includes(clipKey(clip)))} error={renderError} projectId={projectRef.current?.projectId} editPlanArtifactIds={editPlanArtifactIds} results={renderResults} statuses={renderStatuses} settings={renderSettings} overrides={renderOverrides} setOverrides={setRenderOverrides}/>}</>}
     </main>
     <ComputeDeck telemetry={telemetry} online={health} jobs={displayJobs}/>

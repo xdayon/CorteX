@@ -641,8 +641,8 @@ class RenderService:
                 camera_plan_path.read_text(encoding="utf-8")
             )
             if (
-                camera_plan.schema_version not in {2, 3}
-                or camera_edit_plan_artifact.schema_version not in {2, 3}
+                camera_plan.schema_version not in {2, 3, 4}
+                or camera_edit_plan_artifact.schema_version not in {2, 3, 4}
                 or camera_plan.project_id != plan.project_id
                 or camera_edit_plan_artifact.project_id != plan.project_id
                 or camera_plan.source_asset_id != source.id

@@ -1331,3 +1331,15 @@ orquestrador (suite + builds reexecutados antes de cada commit).
   ja levantado (falta: tempo por identidade/role no camera plan, politica
   versionada de diversidade, piso de confianca para reaction, bloqueador
   por-shot e diagnostico na UI; audio editorial ja correto por construcao).
+
+### Gate 3 concluido (mesma sessao)
+
+Diversidade single-source implementada e testada (236 passed): politica
+versionada em src/cortex/edit/diversity_policy.py (v1.0.0, no input_hash),
+camera plan schema v4 + algorithm 4.0.0 com seconds_by_identity/role e
+dominant_identity_share, gatilho de monotonia (>=85%, >=20s) alem do
+fallback, piso de confianca 0.55, share max 0.2, espacamento 15s,
+bloqueadores tipados por-shot (REACTION_BLOCKER_*), preservacao de
+aparicoes naturais, e CameraPlanDiagnosticsPanel (leitura) no Studio.
+Render aceita schema v4 (whitelist {2,3,4}). Pendente para sessao futura
+do Studio: orquestrar criacao do camera plan pela UI.

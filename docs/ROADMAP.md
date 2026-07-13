@@ -100,8 +100,11 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
   confianca e audio primario auditaveis;
 - [x] render de reaction shot com video emprestado do mesmo master e audio continuo
   do trecho editorial, sem reutilizar o audio do reaction;
-- regra de diversidade: evitar cortes mostrando somente o convidado quando
-  existir imagem segura do entrevistador, sem fabricar reaction em baixa confianca;
+- [x] regra de diversidade: evitar cortes mostrando somente o convidado quando
+  existir imagem segura do entrevistador, sem fabricar reaction em baixa confianca
+  (diversity_policy v1.0.0: piso de confianca 0.55, share max 0.2, espacamento 15s,
+  monotonia >=85% em cortes >=20s; bloqueadores tipados por-shot e diagnostics com
+  segundos por identidade/role; painel de leitura no Studio);
 - J-cut, L-cut e punch-in editaveis;
 - crop facial estatico: enquadrar uma identidade confirmada com posicao fixa por
   segmento, sem tracking ou movimento continuo, e fallback central auditavel;
