@@ -1305,3 +1305,29 @@ Antes de merge/release, executar no host:
   otimizacao do background. Medir antes de otimizar novamente;
 - existem mudancas nao commitadas em backend, frontend, docs e testes. Nao
   restaurar arquivos nem separar partes sem entender a dependencia da fatia.
+
+## Sessao 2026-07-13 - Gates 0 e 2 do PRODUCTION_COMPLETION_PLAN
+
+Orquestracao com lanes implementer/Explore. Resultados validados pelo
+orquestrador (suite + builds reexecutados antes de cada commit).
+
+- Gate 0 concluido: suite 201 passed no host, builds web/remotion, diff
+  auditado (sem PodCLI/dependencias novas), checkpoint `360f8f5`.
+- Gate 1 parcial: cobertura fail-closed + regressao sintetica commitadas
+  (`c7e7606`, tests/test_face_static_crop_gate1.py, 10 testes). As
+  validacoes cross-project/cross-source/identidade/arquivo ja existiam
+  no codigo (o final anterior deste handoff estava desatualizado).
+  E2E real no host em andamento (projeto gate1-e2e-face-crop, trecho do
+  episodio Prosa Inversa 20; evidencia esperada em
+  docs/evidence/gate1-face-crop-e2e.md).
+- Gate 2 concluido (`dcbcc19` sessao D, `4dd178e` sessao E): fillers
+  deterministicos (analysis v2, lexicon 1.0.0, cache invalidado via
+  hash), Curadoria com hook/contexto/payoff/headline/subscores/warnings/
+  density/loudness/fillers reais, provenance visivel (incl. fix da
+  resposta cacheada sem provenance), limites 15-180/1-25 com boundary
+  tests, LocalHeuristicProvider opt-in (request.provider ou
+  ai.enable_local_heuristic_fallback) com provenance mode=heuristic.
+- Proximo: fechar Gate 1 (E2E + docs) e iniciar Gate 3 com o gap report
+  ja levantado (falta: tempo por identidade/role no camera plan, politica
+  versionada de diversidade, piso de confianca para reaction, bloqueador
+  por-shot e diagnostico na UI; audio editorial ja correto por construcao).

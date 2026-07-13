@@ -25,7 +25,7 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
 - [x] portar boundary optimizer, quality gates e crossfades ja testados;
 - [x] EDL propria persistida (`edit_plan`), perfis de ritmo (dynamic/balanced/contemplative);
 - [x] integrar EDL resolvida na Curadoria, com segmentos, transicoes e avisos do quality gate;
-- filler preview e loudness na Curadoria;
+- [x] filler preview (deteccao deterministica PT-BR persistida no analysis v2) e loudness na Curadoria;
 - [x] render real curto multi-segmento, crossfades e regressao automatizada;
 - [x] loudness final -14 LUFS, true peak, preview e download do artifact renderizado;
 - [x] captions/headline FFmpeg reais, sidecar SRT persistido e download seguro;
@@ -38,9 +38,9 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
 - [x] prompts PT-BR versionados e saida JSON estruturada;
 - [x] Codex CLI primario e Claude CLI fallback, com timeout, cancelamento e provenance;
 - [x] job, cache por hash, endpoint e curadoria alimentada pela resposta real;
-- duracao 15-180 s e 1-25 sugestoes;
-- hook, contexto, payoff, headline e explicacao do score;
-- fallback local identificado como heuristico;
+- [x] duracao 15-180 s e 1-25 sugestoes (schema minItems=1/minimum=15, config, API, UI clamp, boundary tests);
+- [x] hook, contexto, payoff, headline e explicacao do score exibidos com dados reais na Curadoria;
+- [x] fallback local identificado como heuristico (LocalHeuristicProvider opt-in, mode=heuristic, badge "SEM LLM");
 - conjunto de avaliacao com cortes aprovados/reprovados.
 
 ## Fase 4 - Visual e render
