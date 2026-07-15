@@ -50,3 +50,24 @@ def duration_seconds(probe: dict[str, Any]) -> float:
         if stream.get("duration") is not None:
             return float(stream["duration"])
     return 0.0
+
+
+def usable_av_duration_seconds(probe: dict[str, Any], fallback: float = 0.0) -> float:
+    """Return the physical A/V edit ceiling, not the longest container tail."""
+    stream_durations: list[float] = []
+    for stream in probe.get("streams") or []:
+        if stream.get("codec_type") not in {"audio", "video"}:
+            continue
+        value = stream.get("duration")
+        if value in (None, "N/A"):
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            stream_durations.append(parsed)
+    if stream_durations:
+        return min(stream_durations)
+    probed = duration_seconds(probe)
+    return probed if probed > 0 else fallback

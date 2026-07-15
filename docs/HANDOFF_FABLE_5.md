@@ -1357,15 +1357,17 @@ extrapolado em segmentos que cruzam cortes de cena sem amostras da identidade
 (mitigado por fail-closed com camera_edit_plan; indice por fonte/shot fica
 para depois). Roadmap atualizado.
 
-### Gate 8 concluido (mesma sessao)
+### Gate 8 parcialmente implementado (mesma sessao)
 
 Dataset versionado em eval/dataset (schema draft 2020-12, sem midia privada,
 1a entrada real prosa-inversa-20.json com 15 clips pending_human_review),
 runner offline deterministico em src/cortex/eval/runner.py + CLI
 scripts/eval_selection.py (--check com exit code), baseline/thresholds em
 eval/baseline.json, antes/depois identificavel por input_hash+prompt_sha256+
-provider do provenance. 7 testes. Pendente: veredito humano real para ativar
-os gates de cobertura/rejected no baseline.
+provider do provenance. 7 testes. O aceite permanece pendente: os 15 clips
+ainda aguardam veredito humano real, portanto cobertura/rejected nao formam
+ground truth. As lacunas automatizaveis encontradas na auditoria de 2026-07-14
+foram implementadas na secao de fechamento ao fim deste handoff.
 
 ### Gate 4 concluido (mesma sessao)
 
@@ -1379,3 +1381,149 @@ frequencia que audio e video trocam em instantes distintos; cancelar J/L
 restaura filtergraph byte-identico ao pre-Gate 4). Lacuna consciente: teste
 de encadeamento job->job com jl_cut=true via worker (cobertura funcional
 equivalente existe via service direto).
+
+### Gate 5 concluido - punch-in estatico (2026-07-14)
+
+- `RenderSettings.framing.punch_in` persiste `enabled`, escala limitada a
+  1.0-1.5x, ancora e alternancia; o Studio possui controle global e override
+  por corte.
+- O `RenderService` resolve toda a geometria antes do FFmpeg. Nao ha
+  keyframes, pan ou tracking: cada segmento usa um crop constante. Crop facial
+  sem geometria ou com resolucao efetiva insegura falha antes do encode.
+- O manifesto registra escala solicitada/efetiva, coordenadas, segmentos
+  alternados e a evidencia consolidada no relatorio de publicacao.
+- Validado no sandbox: 21 testes em `tests/test_render_punch_in.py` e
+  `tests/test_render_settings.py`, incluindo render sintetico por pixels,
+  dimensoes, alternancia e estabilidade temporal; mais 5 testes de quality
+  report/visual. Builds Web e Remotion, `compileall` e `git diff --check`
+  passaram. NVENC e episodio real nao foram executados nesta fatia.
+
+Proximo gate: Gate 6 do plano operacional, remover o ramo experimental ISO/
+multicam sem perder as regressoes single-source de continuidade A/V.
+
+### Gate 6 concluido - runtime single-source (2026-07-14)
+
+- Removidos schemas, services, jobs, endpoints, config, paths e testes
+  exclusivos de `multicam_sync` e `multicam_visual_index`; o Studio nao expoe
+  mais tipos ou diagnosticos ISO.
+- `CameraEditPlanDocument` v5 aceita apenas `primary_in_place` e
+  `reaction_reuse`, exigindo audio e video no `source_asset_id` master. Planos
+  legados ou com fonte estrangeira falham na validacao, sem migracao silenciosa.
+- O renderer usa um unico input de midia. Reaction reuse pode buscar outro
+  intervalo visual do mesmo master, mantendo a cobertura continua do audio
+  editorial; carregamento de fontes extras foi removido.
+- Validado no sandbox: 36 testes focados passaram, incluindo planner/worker,
+  OpenAPI sem rotas multicam, fail-closed de fonte estrangeira, punch-in,
+  settings e render FFmpeg real de reaction single-source. Builds Web e
+  Remotion, `compileall` e `git diff --check` passaram.
+- A suite completa do sandbox voltou a encerrar sem resumo apos dois testes,
+  limitacao conhecida de TestClient/browser. Repetir `.venv/bin/pytest -q` no
+  host antes do checkpoint; CUDA/NVENC nao foram exercitados neste gate.
+
+Proximo gate: Gate 7, quality gate audiovisual completo e relatorio de
+publicacao servivel, com reason codes estaveis e UI por verificacao.
+
+### Gate 7 concluido - quality gate audiovisual (2026-07-14)
+
+- Reprovacao pos-render nao descarta mais a evidencia: MP4 de preview,
+  manifesto `RenderDocument`, `publication`, hash real e metadata com
+  `quality_passed=false` sao persistidos como StageArtifact recuperavel.
+- Artifact bloqueado nunca e copiado para `export_directory`, inclusive em
+  cache hit. O resultado do job informa `publish_ready=false`, permitindo que
+  o Studio mostre os reason codes ja suportados em vez de apenas erro textual.
+- Medicoes de loudness e visual agora dependem da presenca do stream
+  correspondente, preservando `audio_stream_missing`/`video_stream_missing`
+  como diagnostico estruturado.
+- Validacao focada acumulada: 44 testes passaram; builds Web/Remotion,
+  `compileall` e `git diff --check` passaram. A suite completa continua
+  pendente no host devido ao encerramento silencioso do sandbox.
+
+Proxima fatia do Gate 7: decode integral, faststart/moov, continuidade de
+PTS/DTS, sync A/V e checks de clicks/clipping/canais com thresholds e reason
+codes persistidos.
+
+Atualizacao da mesma fatia:
+
+- `technical_quality` v1 executa decode integral, inspeciona atoms MP4 para
+  faststart, percorre packets PTS/DTS em streaming e mede sync A/V com limite
+  de 40 ms.
+- O audio e decodificado como PCM em chunks limitados para medir peak,
+  clipping, saltos de waveform e correlacao de fase; canais acima de stereo
+  falham explicitamente. FFmpeg/ffprobe, modo e thresholds ficam no manifesto.
+- `RenderDocument` v9 inclui o relatorio tecnico em `quality` e `publication`;
+  o Studio exibe decode, faststart, sync e contagens PTS/DTS e traduz os novos
+  reason codes.
+- `GET /renders/{artifact_id}/report` serve o manifesto JSON como attachment.
+  O Studio oferece download do relatorio para artifacts aprovados ou
+  bloqueados e oculta o download de MP4 quando `publish_ready=false`.
+- Novas fixtures cobrem faststart, arquivo truncado, clipping, waveform,
+  stereo invertido e audio 5.1 rejeitado. Validacoes acumuladas desta fatia:
+  41 testes de integracao existentes mais 12 testes tecnicos/report/API; build
+  Web passou.
+
+- O relatorio de publicacao agora persiste cada verificacao como check tipado,
+  com `pass`/`warning`/`fail`, severidade, evidencia e thresholds individuais.
+  Avisos proximos dos limites de sync e true peak nao bloqueiam publicacao; as
+  falhas tecnicas permanecem bloqueantes e identificadas por reason code.
+- A matriz do Studio exibe cada gate separadamente, com rotulos neutros para
+  evitar apresentar uma falha como afirmacao positiva. Testes cobrem os tres
+  estados e conferem evidencia e threshold persistidos.
+- Validacao focada final: 50 testes de camera plan, punch-in, settings, render
+  single-source, relatorio, visual, API de media e QA tecnico passaram. Builds
+  Web/Remotion, `compileall` e `git diff --check` passaram nesta fatia; repetir
+  a suite completa no host, pois o sandbox trava no terceiro teste/TestClient
+  sem progresso e precisa ser encerrado externamente.
+
+### Gates 8-10 - auditoria e infraestrutura de fechamento (2026-07-14)
+
+- Gate 8: o runner agora associa episodio fail-closed pelos hashes reais de
+  SourceAsset/transcript, resolve words e VAD via DomainStore, marca boundary
+  safety indisponivel sem evidencia e possui modo `--before`/`--after` com
+  deltas persistidos. 11 testes passaram. O gate continua parcialmente aceito
+  porque os 15 clips reais seguem `pending_human_review`.
+- Gate 9: `scripts/gate9_benchmark.py` valida uma matriz declarativa sem
+  executar comandos do JSON. Confere cobertura local/YouTube, curto/longo,
+  1/10/25 cortes, framing, overlays, reaction/J/L/punch-in, lifecycle,
+  requested/effective engines, hashes confinados ao diretorio, relatorios,
+  tempos, recursos e comparacoes. O template `eval/gate9-matrix.example.json`
+  e explicitamente `not_run`; 5 testes passaram, mas nenhuma matriz real foi
+  alegada. Em 2026-07-14, `check_gpu.sh` passou no host (GTX 1060 6 GB, driver
+  580.159.04, H.264 NVENC e CTranslate2 CUDA `int8`).
+- A suite backend deixou de depender do `TestClient` com thread portal, que
+  deadlockava no Python 3.14 do sandbox. O cliente de teste usa ASGITransport;
+  270 testes passaram no sandbox com 3 skips de browser. No host, a suite final
+  com Remotion real passou integralmente: 273 testes em 79,28 s. Evidencia em
+  `docs/evidence/gate9-host-preflight.md`.
+- Falhas iniciais do processo Node/Remotion agora encerram explicitamente o
+  compositor filho, evitando processos orfaos ate o timeout de 1800 s.
+- Gate 10: `tests/test_audio_editing.py` e `tests/test_video_transitions.py` foram
+  portados para APIs CorteX; `src/`, `apps/`, `scripts/` e `tests/` nao importam
+  mais `mods/runtime` ou `services.*`. `.env.example` usa apenas `CORTEX_*`.
+  A remocao fisica continua bloqueada ate a matriz Gate 9 comprovar paridade.
+
+Proximo gate operacional: obter revisao humana do dataset, executar/persistir a
+matriz Gate 9 restante e somente entao remover o legado do Gate 10.
+
+### Gate 9 - primeira cadeia longa real no host (2026-07-14)
+
+- A API ingeriu o episodio oficial `smZSjkCxK9w` como fonte YouTube real:
+  5901,03 s, 906800143 bytes, probe e SHA-256 persistidos.
+- O transcript completo usou `large-v3-turbo`, CUDA `int8`, batch 8, sem
+  fallback; uma segunda execucao comprovou cache hit no mesmo artifact.
+- Analise local e 25 sugestoes editoriais foram persistidas. A selecao usou
+  explicitamente Codex CLI 0.144.4, `gpt-5.5`, medium e nenhum fallback.
+- O primeiro render real combina blurred background, captions/karaoke,
+  headline, punch-in 1.15x e NVENC. O artifact schema 10 esta
+  `publish_ready=true`; decode integral, faststart e sync A/V de 3,0 ms
+  passaram sem issues ou warnings.
+- A execucao real revelou e corrigiu tres problemas: bootstrap CUDA ausente em
+  `python -m cortex.worker`, crop impossivel no foreground blurred com punch-in
+  e cauda de `loudnorm` que excedia o video em 66,99 ms. O audio agora e
+  limitado a duracao efetiva do video e caches antigos foram invalidados pelo
+  schema 10.
+- Evidencia detalhada: `docs/evidence/gate9-host-preflight.md`. A matriz ainda
+  nao esta aceita: faltam fonte local/curto, 1/10 cortes, CPU, demais framings,
+  lifecycle, consolidacao before/after e revisao humana. Nao remover legado.
+- Verificacao apos as correcoes: 275 testes passaram no sandbox com 3 skips de
+  browser; no host, `CORTEX_RUN_REMOTION_E2E=1 .venv/bin/pytest -q` passou com
+  278 testes em 90,18 s. `git diff --check` permaneceu limpo.

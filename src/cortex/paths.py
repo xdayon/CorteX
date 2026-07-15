@@ -67,11 +67,3 @@ def reaction_candidates_dir(config: CortexConfig, project_id: str) -> Path:
 
 def camera_plans_dir(config: CortexConfig, project_id: str) -> Path:
     return project_dir(config, project_id) / "camera_plans"
-
-
-def multicam_sync_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "multicam_sync"
-
-
-def multicam_visual_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "multicam_visual"

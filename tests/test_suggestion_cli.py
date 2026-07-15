@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from asgi_client import ASGITestClient as TestClient
 from jsonschema import Draft202012Validator
 
 from cortex.api import create_app

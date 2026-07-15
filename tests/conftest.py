@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,12 @@ from cortex.transcribe.engine import (  # noqa: E402
     TranscriptionEngineError,
 )
 from cortex.transcribe.schemas import EngineInfo, TranscriptSegment, TranscriptWord  # noqa: E402
+
+
+requires_remotion_e2e = pytest.mark.skipif(
+    os.environ.get("CORTEX_RUN_REMOTION_E2E") != "1",
+    reason="real Remotion/browser E2E requires CORTEX_RUN_REMOTION_E2E=1 on the host",
+)
 
 
 class FakeTranscriptionEngine:

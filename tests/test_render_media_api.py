@@ -13,6 +13,7 @@ from cortex.domain.models import StageArtifact
 from cortex.render.schemas import (
     RenderDocument,
     RenderEngineInfo,
+    RenderQualityPublicationReport,
     RenderQualityReport,
 )
 
@@ -78,6 +79,30 @@ def _subtitles_endpoint(app: FastAPI) -> Any:
         if route.path == "/api/v1/projects/{project_id}/renders/{artifact_id}/subtitles"
     )
     return route.endpoint
+
+
+def _report_endpoint(app: FastAPI) -> Any:
+    route = next(
+        route
+        for route in app.routes
+        if route.path == "/api/v1/projects/{project_id}/renders/{artifact_id}/report"
+    )
+    return route.endpoint
+
+
+def _publication() -> RenderQualityPublicationReport:
+    return RenderQualityPublicationReport(
+        publish_ready=False,
+        reasons=["full_decode_failed"],
+        loudness={"target_lufs": -14.0},
+        visual={"visual_analysis_performed": True},
+        captions={"cue_count": 0},
+        safe_zones={"version": 1},
+        encoder={"requested": "libx264", "effective": "libx264"},
+        dimensions={"width": 1080, "height": 1920},
+        hashes={"input_hash": "a" * 64},
+        provenance={"ffmpeg": "ffmpeg"},
+    )
 
 
 def test_render_media_is_served_only_from_its_project_render_directory(tmp_path: Path) -> None:
@@ -147,6 +172,39 @@ def test_render_media_is_served_only_from_its_project_render_directory(tmp_path:
     with pytest.raises(HTTPException) as exc_info:
         endpoint(project.id, artifact.id)
     assert exc_info.value.status_code == 410
+
+
+def test_render_quality_report_is_downloadable_for_blocked_artifact(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    app = create_app(config)
+    domain = app.state.domain
+    project = domain.create_project("Report")
+    render_dir = config.paths.projects_dir / project.id / "renders"
+    render_dir.mkdir(parents=True)
+    media_path = render_dir / "blocked.mp4"
+    media_path.write_bytes(b"preview")
+    document = _document(project.id, media_path).model_copy(update={
+        "quality": _document(project.id, media_path).quality.model_copy(update={
+            "passed": False,
+            "issues": ["full_decode_failed"],
+        }),
+        "publication": _publication(),
+    })
+    manifest_path = render_dir / "blocked.json"
+    manifest_path.write_text(document.model_dump_json(), encoding="utf-8")
+    artifact = domain.create_stage_artifact(StageArtifact(
+        project_id=project.id,
+        stage="render",
+        path=str(manifest_path),
+        input_hash="blocked-report",
+    ))
+
+    response = _report_endpoint(app)(project.id, artifact.id)
+
+    assert isinstance(response, FileResponse)
+    assert Path(response.path) == manifest_path
+    assert response.media_type == "application/json"
+    assert "cortex-quality-report" in response.headers["content-disposition"]
 
 
 def test_render_subtitles_are_served_only_from_project_render_directory(tmp_path: Path) -> None:

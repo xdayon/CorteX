@@ -4,12 +4,17 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from cortex.eval.runner import (
     EVAL_RUNNER_SCHEMA_VERSION,
+    EvalDatasetError,
     check_against_baseline,
     evaluate,
     load_dataset,
+    load_suggestion_document,
     run_eval,
 )
 
@@ -109,6 +114,16 @@ def _suggestion_document() -> dict:
             "prompt_sha256": "prompthash123",
             "schema_id": "https://hitechx.local/schemas/clip-selection-1.0.json",
         },
+        "_evaluation_evidence": {
+            "source_sha256": "a" * 64,
+            "transcript_artifact_hash": "b" * 64,
+            "words": [
+                {"start": 11.0, "end": 15.0},
+                {"start": 501.0, "end": 505.0},
+                {"start": 701.0, "end": 705.0},
+            ],
+            "vad_intervals": [],
+        },
         "selection": {
             "schema_version": "1.0",
             "selection_notes": "synthetic",
@@ -190,6 +205,159 @@ def test_check_against_baseline_passes_lenient_baseline():
 
     assert passed is True
     assert failures == []
+
+
+def test_production_baseline_requires_reviewed_and_rejected_decisions():
+    baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+
+    assert baseline["baseline_schema_version"] == 2
+    assert baseline["min_human_confirmed_approved_decisions"] > 0
+    assert baseline["min_rejected_decisions"] > 0
+
+
+@pytest.mark.parametrize(
+    ("metric_field", "baseline_field", "reason_code"),
+    [
+        (
+            "human_confirmed_approved_count",
+            "min_human_confirmed_approved_decisions",
+            "insufficient_human_confirmed_decisions",
+        ),
+        (
+            "rejected_decision_count",
+            "min_rejected_decisions",
+            "insufficient_rejected_decisions",
+        ),
+    ],
+)
+def test_baseline_fails_closed_when_required_decision_count_is_zero(
+    metric_field, baseline_field, reason_code,
+):
+    report = evaluate(_suggestion_document(), [_dataset_entry()])
+    report["metrics"][metric_field] = 0
+
+    passed, failures = check_against_baseline(report, {baseline_field: 1})
+
+    assert passed is False
+    assert any(f"[{reason_code}]" in failure for failure in failures)
+
+
+@pytest.mark.parametrize(
+    ("metric_field", "baseline_field", "reason_code"),
+    [
+        (
+            "human_confirmed_approved_count",
+            "min_human_confirmed_approved_decisions",
+            "human_confirmed_decision_count_unavailable",
+        ),
+        (
+            "rejected_decision_count",
+            "min_rejected_decisions",
+            "rejected_decision_count_unavailable",
+        ),
+    ],
+)
+def test_baseline_fails_closed_when_required_decision_count_is_missing(
+    metric_field, baseline_field, reason_code,
+):
+    report = evaluate(_suggestion_document(), [_dataset_entry()])
+    report["metrics"].pop(metric_field)
+
+    passed, failures = check_against_baseline(report, {baseline_field: 1})
+
+    assert passed is False
+    assert any(f"[{reason_code}]" in failure for failure in failures)
+
+
+def test_legacy_baseline_without_decision_minimums_remains_compatible():
+    report = evaluate(_suggestion_document(), [_dataset_entry()])
+    report["metrics"]["human_confirmed_approved_count"] = 0
+    report["metrics"]["rejected_decision_count"] = 0
+
+    passed, failures = check_against_baseline(report, {
+        "baseline_schema_version": 1,
+        "min_completeness_rate": 0.5,
+    })
+
+    assert passed is True
+    assert failures == []
+
+
+@pytest.mark.parametrize(
+    "baseline_field",
+    ["min_human_confirmed_approved_decisions", "min_rejected_decisions"],
+)
+def test_decision_minimum_must_be_a_positive_integer(baseline_field):
+    report = evaluate(_suggestion_document(), [_dataset_entry()])
+
+    passed, failures = check_against_baseline(report, {baseline_field: 0})
+
+    assert passed is False
+    assert any(f"[invalid_{baseline_field}]" in failure for failure in failures)
+
+
+def test_episode_hash_mismatch_fails_closed():
+    document = _suggestion_document()
+    document["_evaluation_evidence"]["source_sha256"] = "f" * 64
+    document["_evaluation_evidence"]["transcript_artifact_hash"] = "f" * 64
+
+    with pytest.raises(EvalDatasetError, match="match exactly one"):
+        evaluate(document, [_dataset_entry()])
+
+
+def test_boundary_inside_word_is_unsafe_and_missing_evidence_is_unavailable():
+    document = _suggestion_document()
+    document["_evaluation_evidence"]["words"] = [{"start": 9.0, "end": 12.0}]
+    report = evaluate(document, [_dataset_entry()])
+    assert report["metrics"]["boundary_safe_rate"] == 2 / 3
+    assert report["clips"][0]["boundary_evidence"] == "word_timestamps"
+
+    document.pop("_evaluation_evidence")
+    report = evaluate(document, [_dataset_entry()])
+    assert report["metrics"]["boundary_safe_rate"] is None
+    passed, failures = check_against_baseline(report, {"min_boundary_safe_rate": 1.0})
+    assert passed is False
+    assert "words/VAD evidence required" in failures[0]
+
+
+def test_load_suggestion_resolves_hash_words_and_vad_from_artifacts(tmp_path):
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(json.dumps({
+        "segments": [{"words": [{"start": 1.0, "end": 2.0, "word": "teste"}]}],
+    }), encoding="utf-8")
+    analysis_path = tmp_path / "analysis.json"
+    analysis_path.write_text(json.dumps({
+        "vad_intervals": [{"start": 0.5, "end": 2.5}],
+    }), encoding="utf-8")
+    suggestion_path = tmp_path / "suggestion.json"
+    suggestion_path.write_text(json.dumps({
+        "transcript_artifact_id": "transcript-1",
+        "analysis_artifact_id": "analysis-1",
+        "selection": {"clips": []},
+    }), encoding="utf-8")
+
+    class FakeDomainStore:
+        def get_transcript_artifact(self, artifact_id):
+            assert artifact_id == "transcript-1"
+            return SimpleNamespace(
+                path=str(transcript_path), audio_sha256="b" * 64,
+                source_asset_id="source-1",
+            )
+
+        def get_source_asset(self, source_asset_id):
+            assert source_asset_id == "source-1"
+            return SimpleNamespace(sha256="a" * 64)
+
+        def get_stage_artifact(self, artifact_id):
+            assert artifact_id == "analysis-1"
+            return SimpleNamespace(path=str(analysis_path), stage="analysis")
+
+    document = load_suggestion_document(str(suggestion_path), FakeDomainStore())
+    evidence = document["_evaluation_evidence"]
+    assert evidence["source_sha256"] == "a" * 64
+    assert evidence["transcript_artifact_hash"] == "b" * 64
+    assert evidence["words"] == [{"start": 1.0, "end": 2.0}]
+    assert evidence["vad_intervals"] == [{"start": 0.5, "end": 2.5}]
 
 
 def test_run_eval_persists_valid_json_report(tmp_path):
@@ -284,3 +452,30 @@ def test_cli_check_mode_exit_code_zero_above_baseline(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASSED" in result.stdout
+
+
+def test_cli_before_after_persists_comparison(tmp_path):
+    dataset_dir, before_path = _write_cli_fixture(tmp_path)
+    after = _suggestion_document()
+    after["selection"]["clips"] = after["selection"]["clips"][:1]
+    after_path = tmp_path / "after.json"
+    after_path.write_text(json.dumps(after), encoding="utf-8")
+    output_path = tmp_path / "comparison.json"
+
+    result = subprocess.run(
+        [
+            sys.executable, str(CLI_SCRIPT),
+            "--dataset", str(dataset_dir),
+            "--before", str(before_path),
+            "--after", str(after_path),
+            "--output", str(output_path),
+        ],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    comparison = json.loads(output_path.read_text(encoding="utf-8"))
+    assert comparison["eval_comparison_schema_version"] == 1
+    assert comparison["before"]["metrics"]["clip_count"] == 3
+    assert comparison["after"]["metrics"]["clip_count"] == 1
+    assert comparison["metric_deltas_after_minus_before"]["clip_count"] == -2.0

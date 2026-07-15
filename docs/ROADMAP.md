@@ -31,7 +31,10 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
 - [x] captions/headline FFmpeg reais, sidecar SRT persistido e download seguro;
 - [x] configuracao efetiva Studio -> job -> manifesto, sem controles simulados;
 - [x] gate deterministico inicial de frames pretos e congelados;
-- quality gate audiovisual completo e relatorio de publicacao.
+- [x] quality gate audiovisual completo e relatorio de publicacao (decode
+  integral, faststart, PTS/DTS, sync A/V, canais, clipping, waveform, fase,
+  loudness, true peak, captions, preto/freeze e safe zones; checks persistidos
+  com pass/warning/fail, evidencia, thresholds e download no Studio).
 
 ## Fase 3 - Selecao e curadoria
 
@@ -41,7 +44,8 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
 - [x] duracao 15-180 s e 1-25 sugestoes (schema minItems=1/minimum=15, config, API, UI clamp, boundary tests);
 - [x] hook, contexto, payoff, headline e explicacao do score exibidos com dados reais na Curadoria;
 - [x] fallback local identificado como heuristico (LocalHeuristicProvider opt-in, mode=heuristic, badge "SEM LLM");
-- [x] conjunto de avaliacao com cortes aprovados/reprovados (eval/dataset versionado
+- [ ] conjunto de avaliacao com cortes aprovados/reprovados (infraestrutura pronta:
+  eval/dataset versionado
   sem midia privada, runner offline scripts/eval_selection.py com relatorio JSON,
   baseline/thresholds versionados e modo --check; decisoes humanas ainda
   pending_human_review ate revisao real).
@@ -115,22 +119,32 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
   com requested/effective transition; toggle e chips J/L na Curadoria;
   regressao sintetica por pixel e frequencia provando troca em instantes
   distintos);
-- punch-in editavel;
+- [x] punch-in editavel e seguro: zoom estatico por segmento, escala limitada a
+  1.5x, alternancia deterministica em jump cuts, integracao com crop central,
+  fundo desfocado e crop facial estatico, overrides por corte e manifesto com
+  geometria requested/effective; regressao FFmpeg por pixels confirma zoom,
+  dimensoes e ausencia de movimento temporal;
 - [x] crop facial estatico: enquadrar uma identidade confirmada com posicao fixa por
   segmento, sem tracking ou movimento continuo, e fallback central auditavel
   (manifesto v7 com target/samples/fallback/temporal_motion=false; testes
   fail-closed cross-project/source/identidade/arquivo; E2E real no host com
   NVENC e quality gate aprovado — docs/evidence/gate1-face-crop-e2e.md);
-- remover o ramo experimental de fontes ISO (`multicam_sync`,
-  `multicam_visual_index` e caminhos v2 associados) apos portar os testes uteis
-  de continuidade de audio para o planner single-source.
+- [x] remover o ramo experimental de fontes ISO (`multicam_sync`,
+  `multicam_visual_index` e caminhos v2 associados); camera plan v5 aceita
+  somente o master single-source, reactions preservam o audio editorial e os
+  testes de continuidade A/V permanecem no renderer.
 
 ## Fase 6 - Producao
 
-- E2E com episodio real e benchmark CPU/GPU;
+- [ ] E2E com episodio real e benchmark CPU/GPU (harness offline persistente em
+  `scripts/gate9_benchmark.py`, template em `eval/gate9-matrix.example.json`;
+  cadeia YouTube longa, CUDA int8, 25 sugestoes e primeiro render NVENC
+  publicavel registrados em `docs/evidence/gate9-host-preflight.md`; matriz
+  restante do host ainda pendente);
 - [x] retomada apos interrupcao e fila persistida de ate 25 cortes;
-- relatorio de QA e comparacao antes/depois;
-- remocao definitiva de `mods/`, `reference/` e `apply.sh` apos paridade.
+- [ ] relatorio de QA e comparacao antes/depois (Gate 7 e runners prontos;
+  relatorio consolidado Gate 9 depende da matriz real);
+- [ ] remocao definitiva de `mods/`, `reference/` e `apply.sh` apos paridade.
 
 ## Fora de escopo
 

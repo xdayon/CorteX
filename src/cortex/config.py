@@ -67,6 +67,7 @@ class RenderConfig(BaseModel):
     visual_quality_enabled: bool = True
     black_threshold_seconds: float = Field(default=0.5, gt=0.0, le=10.0)
     freeze_threshold_seconds: float = Field(default=1.5, gt=0.0, le=30.0)
+    freeze_block_threshold_seconds: float = Field(default=5.0, gt=0.0, le=60.0)
     safe_zone_sample_fps: float = Field(default=4.0, gt=0.0, le=60.0)
 
 
@@ -78,8 +79,6 @@ class AnalysisConfig(BaseModel):
     speaker_sample_fps: float = Field(default=4.0, ge=1.0, le=10.0)
     speaker_vad_padding_seconds: float = Field(default=1.0, ge=0.0, le=2.0)
     visual_quality_sample_fps: float = Field(default=2.0, gt=0.0, le=10.0)
-    multicam_max_offset_seconds: float = Field(default=120.0, gt=0.0, le=3600.0)
-    multicam_analysis_seconds: float = Field(default=600.0, ge=10.0, le=7200.0)
 
 
 class EditConfig(BaseModel):

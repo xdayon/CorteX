@@ -3,9 +3,11 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-RENDER_SCHEMA_VERSION = 8
+from cortex.render.technical_quality import RenderTechnicalQualityReport
+
+RENDER_SCHEMA_VERSION = 12
 RENDER_SETTINGS_SCHEMA_VERSION = 1
 OVERLAY_SCHEMA_VERSION = 1
 
@@ -66,6 +68,43 @@ class RenderCanvasSettings(BaseModel):
     fps: int = Field(ge=15, le=120)
 
 
+# Hard ceiling on punch_in.scale (Gate 5). The renderer never keyframes or
+# tracks the crop window — it is one static scale/crop per segment — so the
+# only lever that controls how far the digital zoom pushes past native
+# source detail is this scalar. vertical_crop and blurred_background's
+# foreground both already normalize the source to exactly canvas resolution
+# before punch-in ever runs (force_original_aspect_ratio=increase/decrease +
+# a crop/pad to width×height), so punch-in there is a zoom *within* a
+# canvas-resolution frame: a 1.5x ceiling is a fixed product decision (not
+# computed per-source) capping how much of that canvas-resolution frame gets
+# thrown away, chosen so the upscaled result still reads as sharp on typical
+# 1080p+ source footage. face_static_crop already resolves its base crop in
+# native source pixels sized to the canvas aspect ratio; punch-in shrinks
+# that rectangle by up to the same 1.5x, which RenderService validates stays
+# within the source's bounds before encode (see PUNCH_IN_MAX_TOTAL_UPSCALE).
+PUNCH_IN_MAX_SCALE = 1.5
+PUNCH_IN_MIN_SCALE = 1.0
+
+
+class RenderPunchInSettings(BaseModel):
+    """Static, per-segment digital zoom (Gate 5) used to mask jump cuts
+    without introducing camera motion. No keyframes, no pans, no tracking:
+    the effective scale/anchor is resolved once per segment and baked into
+    a constant crop+scale filter pair."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    scale: float = Field(default=1.15, ge=PUNCH_IN_MIN_SCALE, le=PUNCH_IN_MAX_SCALE)
+    anchor: Literal["center", "face"] = "center"
+    # When true, punch-in alternates between consecutive segments of the same
+    # scene (by scene_index when a camera plan is present, else by parity of
+    # the segment's global timeline_order) so consecutive jump cuts read as a
+    # deliberate size change instead of a jarring repeat. When false, every
+    # eligible segment gets the punch-in.
+    alternate_on_jump_cuts: bool = True
+
+
 class RenderFramingSettings(BaseModel):
     """Defines how a landscape source occupies a portrait render canvas."""
 
@@ -73,6 +112,15 @@ class RenderFramingSettings(BaseModel):
 
     schema_version: Literal[1] = 1
     mode: Literal["vertical_crop", "blurred_background", "face_static_crop"] = "vertical_crop"
+    punch_in: RenderPunchInSettings = Field(default_factory=RenderPunchInSettings)
+
+    @model_validator(mode="after")
+    def _validate_punch_in_anchor(self) -> "RenderFramingSettings":
+        if self.punch_in.anchor == "face" and self.mode != "face_static_crop":
+            raise ValueError(
+                "punch_in.anchor 'face' exige framing.mode 'face_static_crop'"
+            )
+        return self
 
 
 class RenderCaptionSettings(BaseModel):
@@ -194,6 +242,10 @@ class RenderFramingSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["vertical_crop", "blurred_background", "face_static_crop"] | None = None
+    # Whole-object override, matching how captions.animation / headline.animation
+    # already behave in this patch model: no partial-field patch for nested
+    # settings, the incoming object fully replaces punch_in when present.
+    punch_in: RenderPunchInSettings | None = None
 
 
 class RenderSettingsPatch(BaseModel):
@@ -253,6 +305,28 @@ class RenderTransitionInfo(BaseModel):
     effective_audio_offset_seconds: float
 
 
+class RenderPunchInInfo(BaseModel):
+    """Requested-vs-effective punch-in actually materialized for one EDL
+    segment (Gate 5), following the same requested_/effective_ pattern used
+    elsewhere in this manifest. ``anchor_x``/``anchor_y`` are the constant
+    top-left offset of the punch-in crop in the coordinate space the segment's
+    framing mode operates in (canvas pixels for vertical_crop and the
+    foreground of blurred_background; native source pixels for
+    face_static_crop). ``applied=False`` means punch-in was configured but
+    this specific segment was skipped (e.g. alternation parity), with
+    ``reason`` explaining why."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    segment_order: int = Field(ge=0)
+    requested_scale: float
+    effective_scale: float
+    anchor_x: int = Field(ge=0)
+    anchor_y: int = Field(ge=0)
+    applied: bool
+    reason: str | None = None
+
+
 class RenderQualityReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -263,6 +337,7 @@ class RenderQualityReport(BaseModel):
     has_video: bool
     has_audio: bool
     issues: list[str]
+    warnings: list[str] = Field(default_factory=list)
     loudness_target_lufs: float | None = None
     integrated_loudness_lufs: float | None = None
     loudness_delta_lu: float | None = Field(default=None, ge=0)
@@ -280,6 +355,7 @@ class RenderQualityReport(BaseModel):
     freeze_interval_count: int = Field(default=0, ge=0)
     freeze_total_duration_seconds: float = Field(default=0, ge=0)
     freeze_max_duration_seconds: float = Field(default=0, ge=0)
+    technical: RenderTechnicalQualityReport | None = None
 
 
 class RenderOverlayInfo(BaseModel):
@@ -328,11 +404,23 @@ class RenderOverlayInfo(BaseModel):
     canvas_safe_zone: str | None = None
 
 
+class RenderQualityCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    status: Literal["pass", "warning", "fail"]
+    severity: Literal["info", "warning", "blocking"]
+    evidence: dict[str, bool | float | int | str | None] = Field(default_factory=dict)
+    thresholds: dict[str, float | int | str] = Field(default_factory=dict)
+
+
 class RenderQualityPublicationReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     publish_ready: bool
     reasons: list[str]
+    warnings: list[str] = Field(default_factory=list)
+    checks: list[RenderQualityCheck] = Field(default_factory=list)
     loudness: dict[str, float | None]
     visual: dict[str, float | int | bool | None]
     captions: dict[str, int | bool | None]
@@ -341,6 +429,8 @@ class RenderQualityPublicationReport(BaseModel):
     dimensions: dict[str, int | float]
     hashes: dict[str, str | None]
     provenance: dict[str, str | None]
+    punch_in: dict[str, object] = Field(default_factory=dict)
+    technical: RenderTechnicalQualityReport | None = None
 
 
 class RenderDocument(BaseModel):
@@ -365,6 +455,7 @@ class RenderDocument(BaseModel):
     timeline_duration_seconds: float = Field(ge=0)
     segment_count: int = Field(ge=1)
     transitions: list[RenderTransitionInfo] = Field(default_factory=list)
+    punch_ins: list[RenderPunchInInfo] = Field(default_factory=list)
     engine: RenderEngineInfo
     requested_settings: RenderSettings | None = None
     effective_settings: RenderSettings | None = None

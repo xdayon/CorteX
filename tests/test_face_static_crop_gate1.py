@@ -487,7 +487,7 @@ def test_face_static_crop_renders_static_target_crop_with_auditable_manifest(tmp
     render_artifact = domain.get_stage_artifact(result["render_artifact_id"])
     document = RenderDocument.model_validate_json(Path(render_artifact.path).read_text())
 
-    assert document.schema_version == 8
+    assert document.schema_version == 11
     assert document.target_identity_id == "me"
     assert document.face_index_artifact_id == face_artifact.id
     assert document.identity_index_artifact_id == identity_artifact.id
@@ -600,7 +600,7 @@ def test_face_static_crop_still_rejects_camera_edit_plan_combination(tmp_path: P
     camera_path = tmp_path / "combo-camera-plan.json"
     camera_path.write_text(camera_plan.model_dump_json(), encoding="utf-8")
     camera_artifact = domain.create_stage_artifact(StageArtifact(
-        project_id=project.id, stage="camera_edit_plan", schema_version=2,
+        project_id=project.id, stage="camera_edit_plan", schema_version=5,
         path=str(camera_path), input_hash=camera_plan.input_hash,
     ))
 

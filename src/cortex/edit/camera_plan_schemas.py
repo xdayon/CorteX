@@ -4,9 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-CAMERA_EDIT_PLAN_SCHEMA_VERSION = 4
+CAMERA_EDIT_PLAN_SCHEMA_VERSION = 5
 ShotIntent = Literal["speaker", "context", "fallback", "reaction"]
-VisualOrigin = Literal["primary_in_place", "reaction_reuse", "iso_synced"]
+VisualOrigin = Literal["primary_in_place", "reaction_reuse"]
 
 
 class CameraEditShot(BaseModel):
@@ -54,13 +54,8 @@ class CameraEditShot(BaseModel):
             if not all((self.reaction_candidate_id, self.reaction_candidate_artifact_id,
                         self.reaction_candidate_input_hash, self.interviewer_identity_id)):
                 raise ValueError("reaction reuse requires auditable candidate provenance")
-        else:
-            if self.source_start_us != self.audio_source_start_us + self.sync_offset_us:
-                raise ValueError("video start does not match synchronized global time")
-            if self.source_end_us != self.audio_source_end_us + self.sync_offset_us:
-                raise ValueError("video end does not match synchronized global time")
-            if self.video_source_asset_id == self.audio_source_asset_id:
-                raise ValueError("ISO visual must use a distinct source")
+        if self.video_source_asset_id != self.audio_source_asset_id:
+            raise ValueError("camera plan single-source exige video e audio do master")
         return self
 
 
@@ -72,8 +67,6 @@ class CameraEditDiagnostics(BaseModel):
     context_shot_count: int = Field(ge=0)
     fallback_shot_count: int = Field(ge=0)
     unusable_scene_count: int = Field(ge=0)
-    iso_context_shot_count: int = Field(default=0, ge=0)
-    indexed_iso_camera_count: int = Field(default=0, ge=0)
     reaction_shots_enabled: bool = False
     reaction_shot_count: int = Field(default=0, ge=0)
     reused_candidate_ids: list[str] = Field(default_factory=list)
@@ -97,7 +90,7 @@ class CameraEditEngineInfo(BaseModel):
 class CameraEditPlanDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = CAMERA_EDIT_PLAN_SCHEMA_VERSION
+    schema_version: Literal[CAMERA_EDIT_PLAN_SCHEMA_VERSION] = CAMERA_EDIT_PLAN_SCHEMA_VERSION
     project_id: str
     source_asset_id: str
     edit_plan_artifact_id: str
@@ -110,9 +103,17 @@ class CameraEditPlanDocument(BaseModel):
     visual_quality_input_hash: str
     reaction_candidate_artifact_id: str | None = None
     reaction_candidate_input_hash: str | None = None
-    multicam_visual_artifact_id: str | None = None
-    multicam_visual_input_hash: str | None = None
     input_hash: str
     shots: list[CameraEditShot]
     diagnostics: CameraEditDiagnostics
     engine: CameraEditEngineInfo
+
+    @model_validator(mode="after")
+    def validate_single_source(self) -> "CameraEditPlanDocument":
+        if any(
+            shot.video_source_asset_id != self.source_asset_id
+            or shot.audio_source_asset_id != self.source_asset_id
+            for shot in self.shots
+        ):
+            raise ValueError("camera plan v5 aceita somente o master single-source")
+        return self

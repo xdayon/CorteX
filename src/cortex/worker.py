@@ -29,11 +29,6 @@ from cortex.analyze.reaction_candidate_service import (
     ReactionCandidateJobCancelled,
     ReactionCandidateService,
 )
-from cortex.analyze.multicam_sync_service import MulticamSyncJobCancelled, MulticamSyncService
-from cortex.analyze.multicam_visual_service import (
-    MulticamVisualIndexService,
-    MulticamVisualJobCancelled,
-)
 from cortex.analyze.scene_service import SceneIndexJobCancelled, SceneIndexService
 from cortex.analyze.service import AnalysisJobCancelled, AnalysisService
 from cortex.analyze.speaker_service import SpeakerTimelineJobCancelled, SpeakerTimelineService
@@ -58,6 +53,7 @@ from cortex.suggest.provider import (
 )
 from cortex.suggest.service import SuggestionJobCancelled, SuggestionService
 from cortex.transcribe.engine import FasterWhisperEngine, TranscriptionEngine
+from cortex.transcribe.cuda_env import bootstrap_cuda_env
 from cortex.transcribe.service import TranscribeJobCancelled, TranscribeService
 
 _MAX_ERROR_LENGTH = 4000
@@ -639,7 +635,6 @@ def run_camera_planning_job(
             raise ValueError(f"arquivo do {label} do camera plan não está disponível")
         upstreams[expected_stage] = artifact
 
-    multicam_visual = None
     reaction_candidates = None
     reaction_candidate_id = job.payload.get("reaction_candidate_artifact_id")
     if reaction_candidate_id:
@@ -650,16 +645,6 @@ def run_camera_planning_job(
             or not Path(reaction_candidates.path).exists()
         ):
             raise ValueError("ReactionCandidateIndexArtifact do camera plan não pertence ao projeto")
-    multicam_visual_id = job.payload.get("multicam_visual_artifact_id")
-    if multicam_visual_id:
-        multicam_visual = domain.get_stage_artifact(multicam_visual_id)
-        if (
-            multicam_visual.project_id != job.project_id
-            or multicam_visual.stage != "multicam_visual_index"
-            or not Path(multicam_visual.path).exists()
-        ):
-            raise ValueError("MulticamVisualIndexArtifact do camera plan não pertence ao projeto")
-
     service = CameraEditPlanService(config, domain)
 
     def progress_cb(progress_percent: float, message: str) -> None:
@@ -675,7 +660,6 @@ def run_camera_planning_job(
             identity_index_artifact=upstreams["identity_index"],
             visual_quality_artifact=upstreams["visual_quality_index"],
             reaction_candidate_artifact=reaction_candidates,
-            multicam_visual_artifact=multicam_visual,
             progress_cb=progress_cb,
             should_cancel=should_cancel,
         )
@@ -746,91 +730,6 @@ def run_reaction_candidate_analysis_job(
             status=JobStatus.SUCCEEDED,
             stage=PipelineStage.COMPLETE,
             message="Banco de reaction candidates concluído",
-            result=result,
-        ),
-    )
-
-
-def run_multicam_sync_job(
-    job: Job,
-    config: CortexConfig,
-    jobs: JobStore,
-    domain: DomainStore,
-) -> None:
-    primary_id = job.payload.get("primary_source_asset_id")
-    alternate_ids = job.payload.get("alternate_source_asset_ids")
-    if not primary_id or not isinstance(alternate_ids, list) or not alternate_ids:
-        raise ValueError("payload do job multicamera incompleto")
-    primary = domain.get_source_asset(primary_id)
-    alternates = [domain.get_source_asset(str(asset_id)) for asset_id in alternate_ids]
-    if primary.project_id != job.project_id or any(
-        asset.project_id != job.project_id for asset in alternates
-    ):
-        raise ValueError("fontes do job multicamera não pertencem ao projeto")
-    service = MulticamSyncService(config, domain)
-
-    def progress_cb(progress_percent: float, message: str) -> None:
-        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.ANALYZE)
-
-    def should_cancel() -> bool:
-        return _job_is_cancelled(jobs, job.id)
-
-    try:
-        result = service.run(
-            primary_source=primary,
-            alternate_sources=alternates,
-            max_offset_seconds=job.payload.get("max_offset_seconds"),
-            analysis_seconds=job.payload.get("analysis_seconds"),
-            progress_cb=progress_cb,
-            should_cancel=should_cancel,
-        )
-    except MulticamSyncJobCancelled:
-        return
-    jobs.update(
-        job.id,
-        JobUpdate(
-            status=JobStatus.SUCCEEDED,
-            stage=PipelineStage.COMPLETE,
-            message="Sincronização multicamera concluída",
-            result=result,
-        ),
-    )
-
-
-def run_multicam_visual_index_job(
-    job: Job,
-    config: CortexConfig,
-    jobs: JobStore,
-    domain: DomainStore,
-) -> None:
-    sync_id = job.payload.get("multicam_sync_artifact_id")
-    if not sync_id:
-        raise ValueError("payload do job de índices ISO sem multicam_sync_artifact_id")
-    sync_artifact = domain.get_stage_artifact(sync_id)
-    if sync_artifact.project_id != job.project_id or sync_artifact.stage != "multicam_sync":
-        raise ValueError("MulticamSyncArtifact não pertence ao projeto")
-    service = MulticamVisualIndexService(config, domain)
-
-    def progress_cb(progress_percent: float, message: str) -> None:
-        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.ANALYZE)
-
-    def should_cancel() -> bool:
-        return _job_is_cancelled(jobs, job.id)
-
-    try:
-        result = service.run(
-            multicam_sync_artifact=sync_artifact,
-            progress_cb=progress_cb,
-            should_cancel=should_cancel,
-        )
-    except MulticamVisualJobCancelled:
-        return
-    jobs.update(
-        job.id,
-        JobUpdate(
-            status=JobStatus.SUCCEEDED,
-            stage=PipelineStage.COMPLETE,
-            message="Índices visuais multicamera concluídos",
             result=result,
         ),
     )
@@ -972,8 +871,6 @@ _HANDLERS: dict[JobType, Any] = {
     JobType.IDENTITY_ANALYSIS: run_identity_analysis_job,
     JobType.REACTION_CANDIDATE_ANALYSIS: run_reaction_candidate_analysis_job,
     JobType.CAMERA_PLANNING: run_camera_planning_job,
-    JobType.MULTICAM_SYNC: run_multicam_sync_job,
-    JobType.MULTICAM_VISUAL_INDEX: run_multicam_visual_index_job,
     JobType.INGEST_YOUTUBE: run_youtube_ingest_job,
     JobType.SUGGESTION: run_suggestion_job,
     JobType.EDIT_PLAN: run_edit_plan_job,
@@ -1067,10 +964,12 @@ def run_worker(
 
 
 def main(argv: list[str] | None = None) -> int:
+    effective_argv = sys.argv[1:] if argv is None else argv
+    bootstrap_cuda_env(effective_argv)
     parser = argparse.ArgumentParser(description="CorteX background worker")
     parser.add_argument("--poll-interval", type=float, default=1.0)
     parser.add_argument("--max-jobs", type=int, default=None, help="Process at most N jobs then exit")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(effective_argv)
     run_worker(poll_interval=args.poll_interval, max_jobs=args.max_jobs)
     return 0
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from "react";
 import { api, type AnalysisDocument, type ApiJob, type CameraEditPlanDocument, type EditPlanDocument, type FaceIndexDocument, type IdentityIndexDocument, type ProjectStatus, type RenderDocument, type RenderPreset, type RenderSettings, type RenderSettingsPatch, type SceneIndexDocument, type SuggestedClip, type SuggestionBrief, type SuggestionSelection, type Telemetry, type TranscriptDocument, type TranscribeOverrides } from "./api";
 
-type IconName = "spark" | "upload" | "link" | "wave" | "brain" | "cut" | "type" | "play" | "cpu" | "check" | "chevron" | "folder" | "settings" | "queue" | "save" | "film" | "clock" | "sliders" | "pause";
+type IconName = "spark" | "upload" | "link" | "wave" | "brain" | "cut" | "type" | "play" | "cpu" | "check" | "chevron" | "folder" | "settings" | "queue" | "save" | "film" | "clock" | "sliders" | "pause" | "user";
 
 const paths: Record<IconName, ReactNode> = {
   spark: <><path d="m12 3 1.2 4.2L17 9l-3.8 1.8L12 15l-1.2-4.2L7 9l3.8-1.8L12 3Z"/><path d="m19 15 .7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7L19 15ZM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8L5 14Z"/></>,
@@ -23,6 +23,7 @@ const paths: Record<IconName, ReactNode> = {
   clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
   sliders: <><path d="M4 6h10m4 0h2M4 12h3m4 0h9M4 18h8m4 0h4"/><circle cx="16" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="14" cy="18" r="2"/></>,
   pause: <path d="M8 5v14m8-14v14"/>,
+  user: <><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></>,
 };
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
@@ -48,7 +49,7 @@ const defaultRenderSettings: RenderSettings = {
   schema_version: 1,
   encoder: "h264_nvenc",
   canvas: { width: 1080, height: 1920, fps: 30 },
-  framing: { schema_version: 1, mode: "vertical_crop" },
+  framing: { schema_version: 1, mode: "vertical_crop", punch_in: { enabled: false, scale: 1.15, anchor: "center", alternate_on_jump_cuts: true } },
   captions: {
     enabled: true, font_family: "Montserrat", font_size: 28, words_per_cue: 5,
     outline: true, shadow: true, karaoke: true,
@@ -83,9 +84,9 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (val
   return <button type="button" className={`toggle-row ${checked ? "on" : ""}`} onClick={() => onChange(!checked)}><span>{label}</span><i><em /></i></button>;
 }
 
-function Range({ label, value, min, max, suffix = "", onChange }: { label: string; value: number; min: number; max: number; suffix?: string; onChange: (v: number) => void }) {
+function Range({ label, value, min, max, step = 1, suffix = "", onChange }: { label: string; value: number; min: number; max: number; step?: number; suffix?: string; onChange: (v: number) => void }) {
   const fill = `${((value - min) / (max - min)) * 100}%`;
-  return <Field label={label}><div className="range-wrap"><input type="range" min={min} max={max} value={value} style={{ "--fill": fill } as CSSProperties} onChange={(e) => onChange(Number(e.target.value))}/><output>{value}{suffix}</output></div></Field>;
+  return <Field label={label}><div className="range-wrap"><input type="range" min={min} max={max} step={step} value={value} style={{ "--fill": fill } as CSSProperties} onChange={(e) => onChange(Number(e.target.value))}/><output>{value}{suffix}</output></div></Field>;
 }
 
 function Waveform({ analysis, compact = false, start = 0, end }: { analysis?: AnalysisDocument | null; compact?: boolean; start?: number; end?: number }) {
@@ -346,7 +347,7 @@ function TikTokOverlay({ description }: { description: string }) {
   </div>;
 }
 
-function PhonePreview({ platform, headline, headlineEnabled, captions, wireframe }: { platform: string; headline: string; headlineEnabled: boolean; captions: RenderSettings["captions"]; wireframe: boolean }) {
+function PhonePreview({ platform, headline, headlineEnabled, captions, wireframe, frameUrl }: { platform: string; headline: string; headlineEnabled: boolean; captions: RenderSettings["captions"]; wireframe: boolean; frameUrl?: string }) {
   const description = "Um recorte que vale a conversa";
   const captionStyle: CSSProperties = {
     color: captions.text_color,
@@ -356,13 +357,23 @@ function PhonePreview({ platform, headline, headlineEnabled, captions, wireframe
     WebkitTextStroke: captions.outline ? `0.45px ${captions.outline_color}` : "0 transparent",
   };
   const highlightStyle: CSSProperties = { color: captions.karaoke ? captions.karaoke_color : captions.text_color };
-  return <div className="phone-stage"><div className={`phone ${platform !== "clean" ? "with-overlay" : ""}`}><div className="video-noise"/><div className="speaker speaker-a"><span/></div><div className="speaker speaker-b"><span/></div>{headlineEnabled && <div className="headline-preview"><i>“</i>{headline.split("\n").map((line, index) => <b key={`${index}-${line}`}>{line}</b>)}</div>}{captions.enabled && <div className="caption-preview" style={captionStyle}>UMA BOA HISTÓRIA <strong style={highlightStyle}>MUDA</strong> TUDO</div>}{platform === "reels" && <ReelsOverlay description={description}/>}{platform === "tiktok" && <TikTokOverlay description={description}/>}{wireframe && <div className="safe-guides"><span>SAFE TITLE</span><i>SAFE CAPTION</i></div>}</div></div>;
+  return <div className="phone-stage"><div className={`phone ${platform !== "clean" ? "with-overlay" : ""}`}>
+    {frameUrl
+      ? <img className="preview-frame" src={frameUrl} alt="Frame real do vídeo usado na prévia"/>
+      : <><div className="video-noise"/><div className="speaker speaker-a"><span/></div><div className="speaker speaker-b"><span/></div></>}
+    {headlineEnabled && <div className="headline-preview"><i>“</i>{headline.split("\n").map((line, index) => <b key={`${index}-${line}`}>{line}</b>)}</div>}
+    {captions.enabled && <div className="caption-preview" style={captionStyle}>UMA BOA HISTÓRIA <strong style={highlightStyle}>MUDA</strong> TUDO</div>}
+    {platform === "reels" && <ReelsOverlay description={description}/>} {platform === "tiktok" && <TikTokOverlay description={description}/>} {wireframe && <div className="safe-guides"><span>SAFE TITLE</span><i>SAFE CAPTION</i></div>}
+  </div></div>;
 }
 
-function FramingSelector({ settings, onChange, identityIndex, targetIdentityId, onTargetIdentity, preparing, progress, message, error, onPrepare }: { settings: RenderSettings; onChange: (settings: RenderSettings) => void; identityIndex: IdentityIndexDocument | null; targetIdentityId: string; onTargetIdentity: (id: string) => void; preparing: boolean; progress: number; message: string; error: string | null; onPrepare: () => void }) {
+function FramingSelector({ settings, onChange, identityIndex, identityIndexArtifactId, projectId, targetIdentityId, onTargetIdentity, preparing, progress, message, error, onPrepare }: { settings: RenderSettings; onChange: (settings: RenderSettings) => void; identityIndex: IdentityIndexDocument | null; identityIndexArtifactId: string | null; projectId?: string; targetIdentityId: string; onTargetIdentity: (id: string) => void; preparing: boolean; progress: number; message: string; error: string | null; onPrepare: () => void }) {
   const confirmed = identityIndex?.identities.filter((item) => item.status === "confirmed") ?? [];
   const faceReady = confirmed.some((item) => item.identity_id === targetIdentityId);
-  return <div className="framing-selector glass"><div><span className="eyebrow">ENQUADRAMENTO EFETIVO</span><b>Como o vídeo ocupa o canvas</b></div><select value={settings.framing.mode} onChange={(event) => onChange({ ...settings, framing: { ...settings.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } })}><option value="vertical_crop">9:16 preenchido · recorte central</option><option value="blurred_background">16:9 completo · fundo desfocado</option><option value="face_static_crop" disabled={!faceReady}>Rosto fixo · sem movimento</option></select>{!identityIndex && <button className="btn secondary" disabled={preparing} onClick={onPrepare}>{preparing ? `Preparando ${Math.round(progress)}%` : "Preparar identidades"}</button>}{identityIndex && <Field label="Este sou eu" hint="Selecione explicitamente uma identidade confirmada"><select value={targetIdentityId} onChange={(event) => onTargetIdentity(event.target.value)}><option value="">Selecione uma pessoa</option>{confirmed.map((item) => <option key={item.identity_id} value={item.identity_id}>{item.identity_id} · {item.sample_count} amostras · {item.layout_ids.length} layouts</option>)}</select></Field>}<small>{message || "O rosto usa uma posição fixa por segmento; nunca segue a pessoa durante o vídeo."}</small>{error && <small className="quality-failed">{error}</small>}</div>;
+  const punchIn = settings.framing.punch_in;
+  const updatePunchIn = (patch: Partial<RenderSettings["framing"]["punch_in"]>) =>
+    onChange({ ...settings, framing: { ...settings.framing, punch_in: { ...punchIn, ...patch } } });
+  return <div className="framing-selector glass"><div><span className="eyebrow">ENQUADRAMENTO EFETIVO</span><b>Como o vídeo ocupa o canvas</b></div><select value={settings.framing.mode} onChange={(event) => onChange({ ...settings, framing: { ...settings.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } })}><option value="vertical_crop">9:16 preenchido · recorte central</option><option value="blurred_background">16:9 completo · fundo desfocado</option><option value="face_static_crop" disabled={!faceReady}>Rosto fixo · sem movimento</option></select>{!identityIndex && <button className="btn secondary" disabled={preparing} onClick={onPrepare}>{preparing ? `Preparando ${Math.round(progress)}%` : "Preparar identidades"}</button>}{identityIndex && <div className="identity-picker"><span>Este sou eu</span><small>Escolha visualmente quem deve orientar o crop facial</small><div className="identity-grid">{confirmed.map((item, index) => { const selected = item.identity_id === targetIdentityId; const previewUrl = projectId && identityIndexArtifactId ? api.identityPreviewUrl(projectId, identityIndexArtifactId, item.identity_id) : undefined; return <label key={item.identity_id} className={`identity-card ${selected ? "selected" : ""}`}><input type="radio" name="target-identity" value={item.identity_id} checked={selected} onChange={() => onTargetIdentity(item.identity_id)}/>{previewUrl ? <img src={previewUrl} alt={`Pessoa ${index + 1}`}/> : <span className="identity-placeholder"><Icon name="user"/></span>}<b>Pessoa {index + 1}</b><small>{item.sample_count} amostras · {item.layout_ids.length} layouts</small></label>; })}</div></div>}<small>{message || "O rosto usa uma posição fixa por segmento; nunca segue a pessoa durante o vídeo."}</small>{error && <small className="quality-failed">{error}</small>}<div className="punch-in-control"><Toggle checked={punchIn.enabled} onChange={(value) => updatePunchIn({ enabled: value })} label="Punch-in estático (mascarar jump cuts)"/>{punchIn.enabled && <Range label="Escala do punch-in" value={punchIn.scale} min={1} max={1.5} step={0.05} suffix="x" onChange={(value) => updatePunchIn({ scale: value })}/>}<small>Zoom fixo por corte, sem pans ou tracking; alterna automaticamente entre cortes consecutivos de uma mesma cena.</small></div></div>;
 }
 
 const REACTION_BLOCKER_LABELS: Record<string, string> = {
@@ -415,7 +426,6 @@ function CameraPlanDiagnosticsPanel({ projectId }: { projectId?: string }) {
       <div className="edl-stats">
         <span><b>{diagnostics.shot_count}</b> shots</span>
         <span><b>{diagnostics.reaction_shot_count}</b> reactions inseridas</span>
-        <span><b>{diagnostics.iso_context_shot_count}</b> shots ISO</span>
         <span><b>{diagnostics.unusable_scene_count}</b> cenas inutilizáveis</span>
       </div>
       <div>
@@ -435,7 +445,7 @@ function CameraPlanDiagnosticsPanel({ projectId }: { projectId?: string }) {
   </div>;
 }
 
-function StudioStep({ settings, onChange, exportDirectory, onExportDirectoryChange, onNext, projectId, presets, onSavePreset }: { settings: RenderSettings; onChange: (settings: RenderSettings) => void; exportDirectory: string; onExportDirectoryChange: (value: string) => void; onNext: () => void; projectId?: string; presets: RenderPreset[]; onSavePreset: (name: string, presetId?: string) => Promise<void> }) {
+function StudioStep({ settings, onChange, exportDirectory, onExportDirectoryChange, onNext, projectId, previewFrameUrl, presets, onSavePreset }: { settings: RenderSettings; onChange: (settings: RenderSettings) => void; exportDirectory: string; onExportDirectoryChange: (value: string) => void; onNext: () => void; projectId?: string; previewFrameUrl?: string; presets: RenderPreset[]; onSavePreset: (name: string, presetId?: string) => Promise<void> }) {
   const [tab, setTab] = useState<"caption" | "headline" | "output">("caption"); const [platform, setPlatform] = useState("reels"); const [wireframe, setWireframe] = useState(true);
   const [presetId, setPresetId] = useState(""); const [presetName, setPresetName] = useState(""); const [presetError, setPresetError] = useState<string | null>(null);
   const canvasValue = `${settings.canvas.width}x${settings.canvas.height}`;
@@ -447,7 +457,7 @@ function StudioStep({ settings, onChange, exportDirectory, onExportDirectoryChan
       {tab === "caption" && <div className="inspector-body"><Toggle checked={settings.captions.enabled} onChange={(enabled) => setCaptions({ enabled })} label="Queimar legendas no vídeo"/><Toggle checked={settings.captions.karaoke} onChange={(karaoke) => setCaptions({ karaoke })} label="Karaoke palavra por palavra"/><Field label="Fonte instalada"><select value={settings.captions.font_family} onChange={(event) => setCaptions({ font_family: event.target.value })}><option>Montserrat</option><option>Liberation Sans</option><option>Noto Sans</option></select></Field><ColorField label="Cor do texto" value={settings.captions.text_color} onChange={(text_color) => setCaptions({ text_color })}/><ColorField label="Cor do karaoke" value={settings.captions.karaoke_color} onChange={(karaoke_color) => setCaptions({ karaoke_color })}/><ColorField label="Cor da borda" value={settings.captions.outline_color} onChange={(outline_color) => setCaptions({ outline_color })}/><ColorField label="Cor da sombra" value={settings.captions.shadow_color} onChange={(shadow_color) => setCaptions({ shadow_color })}/><Field label="Animação"><select value={settings.captions.animation.style} onChange={(event) => setCaptions({ animation: { ...settings.captions.animation, style: event.target.value as RenderSettings["captions"]["animation"]["style"] } })}><option value="none">none</option><option value="fade">fade</option><option value="pop">pop</option></select></Field><Range label="Duração da animação" value={settings.captions.animation.duration_seconds} min={0.05} max={1.5} suffix="s" onChange={(duration_seconds) => setCaptions({ animation: { ...settings.captions.animation, duration_seconds } })}/><Range label="Tamanho" value={settings.captions.font_size} min={12} max={52} suffix="px" onChange={(font_size) => setCaptions({ font_size })}/><Range label="Palavras por legenda" value={settings.captions.words_per_cue} min={2} max={9} onChange={(words_per_cue) => setCaptions({ words_per_cue })}/><Toggle checked={settings.captions.outline} onChange={(outline) => setCaptions({ outline })} label="Borda nos caracteres"/><Toggle checked={settings.captions.shadow} onChange={(shadow) => setCaptions({ shadow })} label="Sombra tipográfica"/></div>}
       {tab === "headline" && <div className="inspector-body"><Toggle checked={settings.headline.enabled} onChange={(enabled) => setHeadline({ enabled })} label="Renderizar headline"/><Field label="Texto da headline" hint="vazio usa o título de cada corte"><textarea value={settings.headline.text} maxLength={120} onChange={(event) => setHeadline({ text: event.target.value })} rows={4}/></Field><Field label="Fonte instalada"><select value={settings.headline.font_family} onChange={(event) => setHeadline({ font_family: event.target.value })}><option>Montserrat</option><option>Liberation Sans</option><option>Noto Sans</option></select></Field><ColorField label="Cor da faixa" value={settings.headline.strip_color} onChange={(strip_color) => setHeadline({ strip_color })}/><ColorField label="Cor do burst" value={settings.headline.burst_color} onChange={(burst_color) => setHeadline({ burst_color })}/><ColorField label="Cor do texto" value={settings.headline.text_color} onChange={(text_color) => setHeadline({ text_color })}/><Field label="Animação de entrada"><select value={settings.headline.animation.entrance} onChange={(event) => setHeadline({ animation: { ...settings.headline.animation, entrance: event.target.value as RenderSettings["headline"]["animation"]["entrance"] } })}><option value="none">none</option><option value="fade">fade</option><option value="slide">slide</option></select></Field><Field label="Animação de saída"><select value={settings.headline.animation.exit} onChange={(event) => setHeadline({ animation: { ...settings.headline.animation, exit: event.target.value as RenderSettings["headline"]["animation"]["exit"] } })}><option value="none">none</option><option value="fade">fade</option><option value="slide">slide</option></select></Field><Range label="Duração da animação" value={settings.headline.animation.duration_seconds} min={0.05} max={1.5} suffix="s" onChange={(duration_seconds) => setHeadline({ animation: { ...settings.headline.animation, duration_seconds } })}/><Range label="Tamanho" value={settings.headline.font_size} min={28} max={72} suffix="px" onChange={(font_size) => setHeadline({ font_size })}/><Range label="Duração" value={settings.headline.duration_seconds} min={2} max={8} suffix="s" onChange={(duration_seconds) => setHeadline({ duration_seconds })}/></div>}
       {tab === "output" && <div className="inspector-body"><Field label="Canvas"><select value={canvasValue} onChange={(event) => { const [width, height] = event.target.value.split("x").map(Number); onChange({ ...settings, canvas: { width: width as 1080 | 1920, height: height as 1080 | 1920, fps: 30 } }); }}><option value="1080x1920">1080 × 1920 · Vertical</option><option value="1080x1080">1080 × 1080 · Quadrado</option><option value="1920x1080">1920 × 1080 · Horizontal</option></select></Field><Field label="Encoder"><select value={settings.encoder} onChange={(event) => onChange({ ...settings, encoder: event.target.value as RenderSettings["encoder"] })}><option value="h264_nvenc">H.264 NVENC</option><option value="libx264">libx264 CPU</option></select></Field><Field label="Diretório de exportação" hint="absoluto ou relativo a data/output; vazio mantém somente no projeto"><input type="text" value={exportDirectory} placeholder="/home/dx/Videos/CorteX" onChange={(event) => onExportDirectoryChange(event.target.value)} /></Field><Toggle checked={settings.subtitles.sidecar_srt} onChange={(sidecar_srt) => onChange({ ...settings, subtitles: { sidecar_srt } })} label="Gerar SRT separado"/><p>Áudio é normalizado automaticamente para -14 LUFS.</p></div>}
-    </div><PhonePreview platform={platform} headline={settings.headline.text || "Título do corte"} headlineEnabled={settings.headline.enabled} captions={settings.captions} wireframe={wireframe}/><div className="quick-stack glass"><span className="eyebrow">PROPRIEDADES EFETIVAS</span><div><span>Canvas</span><b>{settings.canvas.width} × {settings.canvas.height}</b></div><div><span>Preview-only</span><b>{platform === "clean" ? "Limpo" : platform === "tiktok" ? `TikTok${wireframe ? " + safe zones" : ""}` : `Reels${wireframe ? " + safe zones" : ""}`}</b></div><div><span>Codec</span><b>{settings.encoder === "h264_nvenc" ? "H.264 NVENC" : "libx264 CPU"}</b></div><div><span>Legendas</span><b>{settings.captions.enabled ? "Queimadas" : "Desativadas"}</b></div></div></div>
+    </div><PhonePreview platform={platform} headline={settings.headline.text || "Título do corte"} headlineEnabled={settings.headline.enabled} captions={settings.captions} wireframe={wireframe} frameUrl={previewFrameUrl}/><div className="quick-stack glass"><span className="eyebrow">PROPRIEDADES EFETIVAS</span><div><span>Canvas</span><b>{settings.canvas.width} × {settings.canvas.height}</b></div><div><span>Preview-only</span><b>{platform === "clean" ? "Limpo" : platform === "tiktok" ? `TikTok${wireframe ? " + safe zones" : ""}` : `Reels${wireframe ? " + safe zones" : ""}`}</b></div><div><span>Codec</span><b>{settings.encoder === "h264_nvenc" ? "H.264 NVENC" : "libx264 CPU"}</b></div><div><span>Legendas</span><b>{settings.captions.enabled ? "Queimadas" : "Desativadas"}</b></div></div></div>
     <div className="step-actions"><span>Plataforma e safe zones afetam somente a prévia</span><button className="btn primary" onClick={onNext}>Revisar render <Icon name="chevron"/></button></div>
   </section>;
 }
@@ -477,6 +487,45 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
     safe_zone_missing: "safe zone inexistente para este canvas",
     audio_stream_missing: "stream de áudio ausente",
     video_stream_missing: "stream de vídeo ausente",
+    faststart_missing: "MP4 sem faststart (moov após mídia)",
+    full_decode_failed: "arquivo não decodifica integralmente",
+    pts_discontinuity_detected: "descontinuidade de PTS detectada",
+    dts_discontinuity_detected: "descontinuidade de DTS detectada",
+    av_sync_out_of_tolerance: "sync A/V fora de 40 ms",
+    audio_channels_invalid: "quantidade de canais de áudio inválida",
+    audio_clipping_detected: "clipping digital detectado",
+    audio_waveform_jump_detected: "salto abrupto de waveform detectado",
+    audio_channels_inverted: "canais com fase invertida detectada",
+    timestamp_analysis_failed: "análise de timestamps falhou",
+    audio_analysis_failed: "análise PCM falhou",
+    av_sync_near_limit: "sync A/V próximo do limite",
+    true_peak_near_limit: "true peak próximo do limite",
+  }[code] ?? code);
+  const qualityCheckLabel = (code: string) => ({
+    video_stream_missing: "Stream de vídeo",
+    audio_stream_missing: "Stream de áudio",
+    duration_mismatch: "Duração da timeline",
+    loudness_out_of_tolerance: "Loudness integrado",
+    true_peak_exceeded: "True peak",
+    true_peak_near_limit: "Margem de true peak",
+    subtitles_missing: "Sidecar de legendas",
+    black_frame_detected: "Frames pretos",
+    frozen_frame_detected: "Frames congelados",
+    caption_outside_safe_zone: "Safe zone da legenda",
+    headline_outside_safe_zone: "Safe zone da headline",
+    safe_zone_missing: "Definição de safe zone",
+    full_decode_failed: "Decode integral",
+    faststart_missing: "Faststart MP4",
+    pts_discontinuity_detected: "Continuidade de PTS",
+    dts_discontinuity_detected: "Continuidade de DTS",
+    timestamp_analysis_failed: "Análise de timestamps",
+    av_sync_out_of_tolerance: "Sincronismo A/V",
+    av_sync_near_limit: "Margem de sync A/V",
+    audio_channels_invalid: "Canais de áudio",
+    audio_clipping_detected: "Clipping digital",
+    audio_waveform_jump_detected: "Continuidade da waveform",
+    audio_channels_inverted: "Correlação de fase",
+    audio_analysis_failed: "Análise PCM",
   }[code] ?? code);
 
   return (
@@ -502,7 +551,8 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
               clipOverride.headline?.text ||
               clipOverride.captions?.text_color ||
               clipOverride.captions?.animation?.style ||
-              clipOverride.headline?.animation?.entrance,
+              clipOverride.headline?.animation?.entrance ||
+              clipOverride.framing?.punch_in,
             );
             return (
               <div className={`render-item ${status.state}`} key={clipId}>
@@ -525,6 +575,7 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
                       {publication.reasons.length === 0
                         ? <small>Sem bloqueios de publicação.</small>
                         : publication.reasons.map((reason) => <small key={reason}>{publicationLabel(reason)}</small>)}
+                      {publication.warnings?.map((warning) => <small className="quality-warning" key={warning}>Aviso: {publicationLabel(warning)}</small>)}
                     </div>
                   )}
                   {status.error && <small className="quality-failed">{status.error}</small>}
@@ -601,6 +652,40 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
                       <option value="slide">slide</option>
                     </select>
                   </Field>
+                  <Field label="Punch-in deste corte">
+                    <select
+                      value={clipOverride.framing?.punch_in ? (clipOverride.framing.punch_in.enabled ? "on" : "off") : ""}
+                      onChange={(event) => {
+                        const choice = event.target.value;
+                        if (choice === "") {
+                          // JSON.stringify drops undefined-valued keys, so this
+                          // clears the per-clip punch-in override back to global
+                          // without disturbing an unrelated framing.mode override.
+                          updateOverride({ ...clipOverride, framing: { ...(clipOverride.framing ?? {}), punch_in: undefined } });
+                          return;
+                        }
+                        updateOverride({
+                          ...clipOverride,
+                          framing: { ...(clipOverride.framing ?? {}), punch_in: { ...settings.framing.punch_in, ...(clipOverride.framing?.punch_in ?? {}), enabled: choice === "on" } },
+                        });
+                      }}
+                    >
+                      <option value="">global</option>
+                      <option value="on">ligado</option>
+                      <option value="off">desligado</option>
+                    </select>
+                  </Field>
+                  {clipOverride.framing?.punch_in?.enabled && (
+                    <Range
+                      label="Escala do punch-in (corte)"
+                      value={clipOverride.framing.punch_in.scale}
+                      min={1} max={1.5} step={0.05} suffix="x"
+                      onChange={(value) => updateOverride({
+                        ...clipOverride,
+                        framing: { ...(clipOverride.framing ?? {}), punch_in: { ...settings.framing.punch_in, ...(clipOverride.framing?.punch_in ?? {}), enabled: true, scale: value } },
+                      })}
+                    />
+                  )}
                   <OverrideStatus label="headline" current={clipOverride.headline?.text} global={clip.title}/>
                   <OverrideStatus label="caption color" current={clipOverride.captions?.text_color} global={settings.captions.text_color}/>
                   <OverrideStatus label="caption anim" current={clipOverride.captions?.animation?.style} global={settings.captions.animation.style}/>
@@ -613,8 +698,9 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
                 {result && projectId && (
                   <div className="render-media">
                     <video controls preload="metadata" src={api.renderMediaUrl(projectId, result.artifactId)} aria-label={`Prévia de ${clip.title}`}/>
-                    <a className="btn secondary render-download" href={api.renderMediaUrl(projectId, result.artifactId)} download>Baixar MP4</a>
+                    {(result.document.publication?.publish_ready ?? result.document.quality.passed) && <a className="btn secondary render-download" href={api.renderMediaUrl(projectId, result.artifactId)} download>Baixar MP4</a>}
                     {result.document.subtitles_path && <a className="btn secondary render-download" href={api.renderSubtitlesUrl(projectId, result.artifactId)} download>Baixar SRT</a>}
+                    {result.document.publication && <a className="btn secondary render-download" href={api.renderReportUrl(projectId, result.artifactId)} download>Baixar relatório</a>}
                   </div>
                 )}
               </div>
@@ -634,6 +720,8 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
               <small>{document.segment_count} segmento(s) · delta {document.quality.duration_delta_seconds.toFixed(3)}s · {document.engine.requested_encoder} → {document.engine.effective_encoder}</small>
               {document.quality.integrated_loudness_lufs != null && <small>{document.quality.integrated_loudness_lufs.toFixed(1)} LUFS · true peak {document.quality.true_peak_dbfs?.toFixed(1) ?? "—"} dBFS</small>}
               {document.quality.visual_analysis_performed && <small>Visual · {document.quality.black_interval_count ?? 0} trecho(s) preto(s) · {document.quality.freeze_interval_count ?? 0} congelamento(s)</small>}
+              {document.quality.technical && <small>Técnico · decode {document.quality.technical.full_decode_passed ? "integral" : "falhou"} · faststart {document.quality.technical.faststart ? "sim" : "não"} · sync {document.quality.technical.av_sync_delta_seconds != null ? `${(document.quality.technical.av_sync_delta_seconds * 1000).toFixed(1)} ms` : "—"} · PTS/DTS {document.quality.technical.pts_discontinuity_count}/{document.quality.technical.dts_discontinuity_count}</small>}
+              {document.publication?.checks && <div className="quality-check-matrix">{document.publication.checks.map((check) => <div className={`quality-check ${check.status}`} key={check.code}><span>{qualityCheckLabel(check.code)}</span><small>{check.severity}</small><b>{check.status.toUpperCase()}</b></div>)}</div>}
               {document.quality.issues.map((issue) => <small className="quality-failed" key={issue}>{issue}</small>)}
             </div>
           ))}
@@ -1030,6 +1118,17 @@ export default function App() {
     await prepareEditPlans([clip], { force: true });
   }
 
+  const studioPreviewClip = (selection?.clips ?? []).find((clip) =>
+    preparedClipKeys.includes(clipKey(clip))
+  );
+  const studioPreviewFrameUrl = projectRef.current && studioPreviewClip
+    ? api.sourcePreviewUrl(
+        projectRef.current.projectId,
+        projectRef.current.sourceAssetId,
+        Math.min(studioPreviewClip.end_second - 0.05, studioPreviewClip.start_second + 1),
+      )
+    : undefined;
+
   return <div className="app-shell">
     <header className="topbar"><button className="mobile-menu" onClick={() => setMobileNav(!mobileNav)} aria-label="Abrir navegação"><span/><span/><span/></button><div className="brand"><span className="brand-mark">CX<i/></span><div><b>Corte<span>X</span></b><small>AN HITECHX SYSTEM</small></div></div><div className="project-pill"><Icon name="folder"/><span><small>PROJETO ATUAL</small><b>{fileName ? fileName.replace(/\.[^.]+$/, "") : "Novo episódio"}</b></span><Icon name="chevron" size={14}/></div><button className={`planning-button ${showProjectStatus ? "active" : ""}`} onClick={() => setShowProjectStatus((value) => !value)}><Icon name="queue"/> Planejamento</button><div className="system-status"><span className={health ? "online" : "standby"}/><div><small>SYSTEM</small><b>{health ? "ONLINE" : "LOCAL MODE"}</b></div></div><button className="icon-button" aria-label="Configurações"><Icon name="settings"/></button></header>
     <aside className={`step-rail ${mobileNav ? "open" : ""}`}><div className="rail-label">PIPELINE // ワークフロー</div>{steps.map((item, index) => <button key={item.label} className={`${step === index ? "active" : ""} ${step > index ? "done" : ""}`} onClick={() => { setStep(index); setMobileNav(false); }}><span className="step-index">{step > index ? <Icon name="check" size={15}/> : String(index + 1).padStart(2, "0")}</span><span className="step-copy"><i>{item.jp}</i><b>{item.label}</b><small>{item.sub}</small></span><Icon name={item.icon}/></button>)}<div className="rail-foot"><span>CORE BUILD</span><b>v0.1.0-alpha</b><small>GPU-FIRST PIPELINE</small></div></aside>
@@ -1039,7 +1138,7 @@ export default function App() {
       {step === 1 && <TranscriptionStep onStart={startTranscription} running={transcribing} progress={transcriptionProgress} message={transcriptionMessage} error={transcriptionError} fillers={showFillers} onFillersChange={setShowFillers}/>}
       {step === 2 && <BriefStep onAnalyze={startSuggestion} running={suggesting} progress={suggestionProgress} message={suggestionMessage} error={suggestionError}/>} 
       {step === 3 && <CurateStep clips={selection?.clips ?? []} notes={selection?.selection_notes ?? "Execute a seleção editorial na etapa anterior."} provenance={selection?.provenance} transcript={transcript} analysis={analysis} showFillers={showFillers} plans={editPlans} planning={planning} planProgress={planProgress} planMessage={planMessage} planError={planError} onPlan={prepareEditPlans} onNext={prepareAndOpenStudio} sceneIndex={sceneIndex} sceneIndexArtifactId={sceneIndexArtifactId} detectingScenes={detectingScenes} sceneProgress={sceneProgress} sceneMessage={sceneMessage} sceneError={sceneError} onDetectScenes={() => void detectScenes()} faceIndex={faceIndex} detectingFaces={detectingFaces} faceProgress={faceProgress} faceMessage={faceMessage} faceError={faceError} onDetectFaces={() => void detectFaces()} jlCutEnabled={jlCutEnabled} onJlCutEnabledChange={setJlCutEnabled} onRegeneratePlan={(clip) => void regeneratePlan(clip)}/>}
-      {step === 4 && <><FramingSelector settings={renderSettings} onChange={setRenderSettings} identityIndex={identityIndex} targetIdentityId={targetIdentityId} onTargetIdentity={setTargetIdentityId} preparing={preparingIdentities} progress={identityProgress} message={identityMessage} error={identityError} onPrepare={() => void prepareIdentities()}/><CameraPlanDiagnosticsPanel projectId={projectRef.current?.projectId}/><StudioStep settings={renderSettings} onChange={setRenderSettings} exportDirectory={exportDirectory} onExportDirectoryChange={setExportDirectory} onNext={() => setStep(5)} projectId={projectRef.current?.projectId} presets={renderPresets} onSavePreset={saveRenderPreset}/></>}
+      {step === 4 && <><FramingSelector settings={renderSettings} onChange={setRenderSettings} identityIndex={identityIndex} identityIndexArtifactId={identityIndexArtifactId} projectId={projectRef.current?.projectId} targetIdentityId={targetIdentityId} onTargetIdentity={setTargetIdentityId} preparing={preparingIdentities} progress={identityProgress} message={identityMessage} error={identityError} onPrepare={() => void prepareIdentities()}/><CameraPlanDiagnosticsPanel projectId={projectRef.current?.projectId}/><StudioStep settings={renderSettings} onChange={setRenderSettings} exportDirectory={exportDirectory} onExportDirectoryChange={setExportDirectory} onNext={() => setStep(5)} projectId={projectRef.current?.projectId} previewFrameUrl={studioPreviewFrameUrl} presets={renderPresets} onSavePreset={saveRenderPreset}/></>}
       {step === 5 && <RenderStep onStart={startRender} running={rendering} progress={renderProgress} clips={(selection?.clips ?? []).filter((clip) => preparedClipKeys.includes(clipKey(clip)))} error={renderError} projectId={projectRef.current?.projectId} editPlanArtifactIds={editPlanArtifactIds} results={renderResults} statuses={renderStatuses} settings={renderSettings} overrides={renderOverrides} setOverrides={setRenderOverrides}/>}</>}
     </main>
     <ComputeDeck telemetry={telemetry} online={health} jobs={displayJobs}/>

@@ -50,6 +50,7 @@ render:
   visual_quality_enabled: true
   black_threshold_seconds: 0.5
   freeze_threshold_seconds: 1.5
+  freeze_block_threshold_seconds: 5.0
   safe_zone_sample_fps: 4.0
 
 clips:
@@ -66,15 +67,12 @@ clips:
 # speaker_vad_padding_seconds: contexto visual antes/depois da fala para baseline
 #   e busca conservadora de reactions em silencio adjacente.
 # visual_quality_sample_fps: grade para preto, blur e congelamento por cena.
-# multicam_*: janela de busca e limite de audio usado para sincronizar fontes ISO.
 analysis:
   scene_threshold: 10.0
   face_sample_fps: 1.0
   speaker_sample_fps: 4.0
   speaker_vad_padding_seconds: 1.0
   visual_quality_sample_fps: 2.0
-  multicam_max_offset_seconds: 120.0
-  multicam_analysis_seconds: 600.0
 
 # scene_snap_tolerance_seconds: raio (em segundos) em que uma fronteira de
 #   vídeo da EDL pode ser ajustada para o corte de cena mais próximo do

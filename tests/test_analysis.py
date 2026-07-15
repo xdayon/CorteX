@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from asgi_client import ASGITestClient as TestClient
 
 from cortex.analyze.audio import pause_intervals, read_normalized_wav, waveform_resolutions
 from cortex.analyze.schemas import AnalysisDocument, LoudnessMetrics, VadInterval

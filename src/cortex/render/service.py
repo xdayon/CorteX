@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from cortex.config import CortexConfig
@@ -16,18 +17,21 @@ from cortex.analyze.identity_schemas import IdentityIndexDocument
 from cortex.domain.models import StageArtifact
 from cortex.domain.store import (
     DomainStore,
-    SourceAssetNotFoundError,
     TranscriptArtifactNotFoundError,
 )
 from cortex.edit.camera_plan_schemas import CameraEditPlanDocument, CameraEditShot
 from cortex.edit.schemas import EditPlanDocument
-from cortex.ingest.ffprobe import duration_seconds, probe_media
+from cortex.ingest.ffprobe import duration_seconds, probe_media, usable_av_duration_seconds
 from cortex.paths import renders_dir
 from cortex.render.schemas import (
+    PUNCH_IN_MAX_SCALE,
     RENDER_SCHEMA_VERSION,
     RenderDocument,
     RenderEngineInfo,
     RenderOverlayInfo,
+    RenderPunchInInfo,
+    RenderPunchInSettings,
+    RenderQualityCheck,
     RenderQualityReport,
     RenderQualityPublicationReport,
     RenderCanvasSettings,
@@ -41,6 +45,11 @@ from cortex.render.schemas import (
     RenderTransitionInfo,
 )
 from cortex.render.safe_zones import SAFE_ZONES, SAFE_ZONES_VERSION
+from cortex.render.technical_quality import (
+    TECHNICAL_QUALITY_VERSION,
+    TechnicalQualityCancelled,
+    measure_technical_quality,
+)
 from cortex.render.face_crop import resolve_static_face_crop
 from cortex.render.captions import build_caption_cues, build_timeline_words, render_srt
 from cortex.render.remotion import (
@@ -59,6 +68,7 @@ from cortex.transcribe.schemas import TranscriptDocument
 # splice. 20ms is comfortably under a single video frame at any supported
 # fps and short enough that it can never be mistaken for a dissolve.
 _JL_AUDIO_MICROFADE_SECONDS = 0.02
+_AAC_TRUE_PEAK_HEADROOM_DB = 0.5
 
 
 class RenderJobCancelled(RuntimeError):
@@ -71,6 +81,177 @@ class RenderPreconditionError(ValueError):
 
 class RenderExecutionError(RuntimeError):
     pass
+
+
+# Documented ceiling on how far a face_static_crop punch-in may shrink the
+# already-resolved native-pixel face crop before the source detail feeding
+# the canvas is judged unacceptably thin (Gate 5). Enforced only for
+# face_static_crop, the one framing mode where the crop rectangle is known
+# in native source pixels and directly comparable to canvas resolution;
+# vertical_crop/blurred_background already normalize to canvas resolution
+# before punch-in runs, so PUNCH_IN_MAX_SCALE (schemas.py) is their sole,
+# sufficient safety bound. This value is intentionally generous relative to
+# the 1.5x scale ceiling: a face_static_crop base crop can already be a
+# non-trivial upscale of the source on its own (source resolution vs.
+# canvas aspect fit), so the total-upscale ceiling only needs to catch a
+# genuinely undersized source, not the ordinary combination of a normal
+# source with the maximum punch-in scale.
+PUNCH_IN_MAX_TOTAL_UPSCALE = 3.0
+
+
+@dataclass(frozen=True)
+class _PunchInResolution:
+    """Requested-vs-effective punch-in geometry for one EDL segment,
+    resolved once (no keyframes) before the filtergraph or the manifest are
+    built. Coordinates are in canvas pixels for vertical_crop and
+    blurred_background's foreground, and in native source pixels for
+    face_static_crop."""
+
+    segment_order: int
+    applied: bool
+    requested_scale: float
+    effective_scale: float
+    anchor_x: int
+    anchor_y: int
+    crop_width: int
+    crop_height: int
+    reason: str | None
+
+
+def _resolve_segment_punch_in(
+    segment_order: int,
+    punch_in: RenderPunchInSettings,
+    *,
+    framing_mode: str,
+    canvas_width: int,
+    canvas_height: int,
+    static_face_crop_map: dict[int, dict[str, int]] | None,
+) -> _PunchInResolution:
+    scale = punch_in.scale
+    # Defense-in-depth: RenderPunchInSettings already bounds scale via a
+    # pydantic Field, but the ceiling is safety-load-bearing enough to also
+    # assert here rather than trust every caller to go through validation
+    # (e.g. a future model_construct bypass).
+    assert scale <= PUNCH_IN_MAX_SCALE
+    if framing_mode == "face_static_crop":
+        crop = (static_face_crop_map or {}).get(segment_order)
+        if crop is None:
+            raise RenderPreconditionError(
+                f"crop facial estático ausente para punch-in no segmento {segment_order}"
+            )
+        base_x, base_y = crop["crop_x"], crop["crop_y"]
+        base_w, base_h = crop["crop_width"], crop["crop_height"]
+        new_w = max(1, round(base_w / scale))
+        new_h = max(1, round(base_h / scale))
+        anchor_x = base_x + (base_w - new_w) // 2
+        anchor_y = base_y + (base_h - new_h) // 2
+        if (
+            anchor_x < base_x or anchor_y < base_y
+            or anchor_x + new_w > base_x + base_w
+            or anchor_y + new_h > base_y + base_h
+        ):
+            raise RenderPreconditionError(
+                f"retângulo de punch-in fora dos limites do crop facial no segmento {segment_order}"
+            )
+        upscale_x = canvas_width / new_w
+        upscale_y = canvas_height / new_h
+        if upscale_x > PUNCH_IN_MAX_TOTAL_UPSCALE or upscale_y > PUNCH_IN_MAX_TOTAL_UPSCALE:
+            raise RenderPreconditionError(
+                f"punch-in no segmento {segment_order} reduz a resolução efetiva da fonte "
+                f"abaixo do limite seguro (upscale {max(upscale_x, upscale_y):.2f}x > "
+                f"{PUNCH_IN_MAX_TOTAL_UPSCALE:.2f}x)"
+            )
+        return _PunchInResolution(
+            segment_order, True, scale, scale, anchor_x, anchor_y, new_w, new_h, None
+        )
+
+    if framing_mode in ("vertical_crop", "blurred_background"):
+        new_w = max(1, round(canvas_width / scale))
+        new_h = max(1, round(canvas_height / scale))
+        anchor_x = (canvas_width - new_w) // 2
+        anchor_y = (canvas_height - new_h) // 2
+        if (
+            anchor_x < 0 or anchor_y < 0
+            or anchor_x + new_w > canvas_width or anchor_y + new_h > canvas_height
+        ):
+            raise RenderPreconditionError(
+                f"retângulo de punch-in fora dos limites do canvas no segmento {segment_order}"
+            )
+        return _PunchInResolution(
+            segment_order, True, scale, scale, anchor_x, anchor_y, new_w, new_h, None
+        )
+
+    raise RenderPreconditionError(
+        f"punch-in não suportado para o modo de enquadramento {framing_mode}"
+    )
+
+
+def _resolve_punch_ins(
+    plan: EditPlanDocument,
+    camera_plan: CameraEditPlanDocument | None,
+    punch_in: RenderPunchInSettings,
+    *,
+    framing_mode: str,
+    canvas_width: int,
+    canvas_height: int,
+    static_face_crop_map: dict[int, dict[str, int]] | None,
+) -> list[_PunchInResolution]:
+    """Resolve every segment's punch-in geometry up front (fail-closed on
+    invalid crops before any encode starts) and decide, deterministically,
+    which segments actually get the punch-in when alternate_on_jump_cuts is
+    set (Gate 5): alternation runs on the parity of the segment's position
+    within a scene — scene_index from the camera plan's shots when a camera
+    plan is present, else the parity of the segment's own global
+    timeline_order (no other scene concept exists on the plain EditPlanDocument).
+    """
+    if not punch_in.enabled:
+        return [
+            _PunchInResolution(
+                segment.timeline_order, False, punch_in.scale, 1.0, 0, 0,
+                canvas_width, canvas_height, "punch_in_disabled",
+            )
+            for segment in plan.segments
+        ]
+
+    scene_by_segment: dict[int, int] | None = None
+    if camera_plan is not None:
+        scene_by_segment = {}
+        for shot in camera_plan.shots:
+            scene_by_segment.setdefault(shot.edit_segment_order, shot.scene_index)
+
+    apply_flags: dict[int, bool] = {}
+    if not punch_in.alternate_on_jump_cuts:
+        apply_flags = {segment.timeline_order: True for segment in plan.segments}
+    elif scene_by_segment is not None:
+        previous_scene: object = object()
+        position = -1
+        for segment in plan.segments:
+            order = segment.timeline_order
+            scene = scene_by_segment.get(order, order)
+            position = 0 if scene != previous_scene else position + 1
+            previous_scene = scene
+            apply_flags[order] = position % 2 == 0
+    else:
+        apply_flags = {
+            segment.timeline_order: segment.timeline_order % 2 == 0
+            for segment in plan.segments
+        }
+
+    resolutions: list[_PunchInResolution] = []
+    for segment in plan.segments:
+        order = segment.timeline_order
+        if not apply_flags.get(order, False):
+            resolutions.append(_PunchInResolution(
+                order, False, punch_in.scale, 1.0, 0, 0,
+                canvas_width, canvas_height, "alternation_skipped",
+            ))
+            continue
+        resolutions.append(_resolve_segment_punch_in(
+            order, punch_in, framing_mode=framing_mode,
+            canvas_width=canvas_width, canvas_height=canvas_height,
+            static_face_crop_map=static_face_crop_map,
+        ))
+    return resolutions
 
 
 def _sha256(path: Path) -> str:
@@ -216,6 +397,35 @@ def _render_transitions(plan: EditPlanDocument) -> list[RenderTransitionInfo]:
     return transitions
 
 
+def _publication_checks(
+    *,
+    issues: list[str],
+    warnings: list[str],
+    evidence: dict[str, dict[str, bool | float | int | str | None]],
+    thresholds: dict[str, dict[str, float | int | str]],
+) -> list[RenderQualityCheck]:
+    issue_codes = set(issues)
+    warning_codes = set(warnings)
+    return [
+        RenderQualityCheck(
+            code=code,
+            status=(
+                "fail" if code in issue_codes
+                else "warning" if code in warning_codes
+                else "pass"
+            ),
+            severity=(
+                "blocking" if code in issue_codes
+                else "warning" if code in warning_codes
+                else "info"
+            ),
+            evidence=evidence.get(code, {}),
+            thresholds=thresholds.get(code, {}),
+        )
+        for code in sorted(set(evidence) | issue_codes | warning_codes)
+    ]
+
+
 def _filtergraph(
     plan: EditPlanDocument,
     width: int,
@@ -236,6 +446,7 @@ def _filtergraph(
     source_input_indices: dict[str, int] | None = None,
     framing_mode: str = "vertical_crop",
     static_face_crops: dict[int, dict[str, int]] | None = None,
+    punch_ins: dict[int, _PunchInResolution] | None = None,
 ) -> tuple[str, str, str]:
     video_parts: list[str] = []
     audio_parts: list[str] = []
@@ -245,12 +456,28 @@ def _filtergraph(
         for shot in camera_plan.shots:
             shots_by_segment.setdefault(shot.edit_segment_order, []).append(shot)
     source_input_indices = source_input_indices or {plan.source_asset_id: 0}
+    # Lossy AAC can overshoot the decoded PCM target. Keep a conservative
+    # encoding margin while the publication gate still enforces the configured limit.
+    normalization_true_peak = true_peak_limit_dbfs - _AAC_TRUE_PEAK_HEADROOM_DB
 
     def compose_video(input_filter: str, output_label: str, segment_order: int) -> str:
+        # Punch-in (Gate 5) is a single extra static scale/crop bolted onto
+        # the existing per-mode chain below — never a second temporal
+        # transform. When there is no resolution, or the segment wasn't
+        # selected for punch-in, every mode below produces byte-identical
+        # output to pre-Gate-5 behavior.
+        punch = (punch_ins or {}).get(segment_order)
+        if punch is not None and not punch.applied:
+            punch = None
         if framing_mode == "vertical_crop":
+            punch_chain = (
+                f",crop={punch.crop_width}:{punch.crop_height}:"
+                f"{punch.anchor_x}:{punch.anchor_y},scale={width}:{height}"
+            ) if punch is not None else ""
             return (
                 f"{input_filter},fps={fps},scale={width}:{height}:"
-                f"force_original_aspect_ratio=increase,crop={width}:{height},"
+                f"force_original_aspect_ratio=increase,crop={width}:{height}"
+                f"{punch_chain},"
                 f"setsar=1,format=yuv420p{output_label}"
             )
         if framing_mode == "blurred_background":
@@ -261,22 +488,38 @@ def _filtergraph(
             foreground_raw = f"[{label_name}_fgraw]"
             background = f"[{label_name}_bg]"
             foreground = f"[{label_name}_fg]"
+            if punch is not None:
+                # The fitted foreground does not fill both canvas dimensions
+                # for landscape sources. Zoom that fitted image itself and let
+                # the centered overlay clip only dimensions that exceed canvas.
+                foreground_chain = (
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                    f"scale=trunc(iw*{punch.effective_scale}/2)*2:"
+                    f"trunc(ih*{punch.effective_scale}/2)*2,setsar=1"
+                )
+            else:
+                foreground_chain = (
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,setsar=1"
+                )
             return (
                 f"{input_filter},fps={fps},split=2{background_raw}{foreground_raw};"
                 f"{background_raw}scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
                 f"crop={blur_width}:{blur_height},gblur=sigma=12:steps=2,"
                 f"scale={width}:{height},setsar=1{background};"
-                f"{foreground_raw}scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"setsar=1{foreground};{background}{foreground}"
+                f"{foreground_raw}{foreground_chain}{foreground};{background}{foreground}"
                 f"overlay=(W-w)/2:(H-h)/2:format=yuv420,format=yuv420p{output_label}"
             )
         if framing_mode == "face_static_crop":
             crop = (static_face_crops or {}).get(segment_order)
             if crop is None:
                 raise RenderPreconditionError("crop facial estático ausente para segmento")
+            eff_w = punch.crop_width if punch is not None else crop["crop_width"]
+            eff_h = punch.crop_height if punch is not None else crop["crop_height"]
+            eff_x = punch.anchor_x if punch is not None else crop["crop_x"]
+            eff_y = punch.anchor_y if punch is not None else crop["crop_y"]
             return (
-                f"{input_filter},fps={fps},crop={crop['crop_width']}:{crop['crop_height']}:"
-                f"{crop['crop_x']}:{crop['crop_y']},scale={width}:{height},"
+                f"{input_filter},fps={fps},crop={eff_w}:{eff_h}:"
+                f"{eff_x}:{eff_y},scale={width}:{height},"
                 f"setsar=1,format=yuv420p{output_label}"
             )
         raise RenderPreconditionError(f"modo de enquadramento não suportado: {framing_mode}")
@@ -324,8 +567,9 @@ def _filtergraph(
 
     if len(plan.segments) == 1:
         audio_parts.append(
-            f"[a0]loudnorm=I={loudness_target_lufs:.2f}:TP={true_peak_limit_dbfs:.2f}:"
-            "LRA=11:print_format=none[anorm]"
+            f"[a0]loudnorm=I={loudness_target_lufs:.2f}:TP={normalization_true_peak:.2f}:"
+            f"LRA=11:print_format=none,atrim=duration={durations[0]:.6f},"
+            "asetpts=PTS-STARTPTS[anorm]"
         )
         filters = video_parts + audio_parts
         video_label = "[v0]"
@@ -380,7 +624,8 @@ def _filtergraph(
             previous_video, previous_audio = video_out, audio_out
         transitions.append(
             f"{previous_audio}loudnorm=I={loudness_target_lufs:.2f}:"
-            f"TP={true_peak_limit_dbfs:.2f}:LRA=11:print_format=none[anorm]"
+            f"TP={normalization_true_peak:.2f}:LRA=11:print_format=none,"
+            f"atrim=duration={video_duration_acc:.6f},asetpts=PTS-STARTPTS[anorm]"
         )
         filters = video_parts + audio_parts + transitions
         video_label = "[vout]"
@@ -444,6 +689,75 @@ def _measure_loudness(ffmpeg: Path, media_path: Path) -> tuple[float, float]:
     if not integrated_matches or not peak_matches:
         raise RenderExecutionError("FFmpeg não retornou métricas EBU R128 completas")
     return float(integrated_matches[-1]), float(peak_matches[-1])
+
+
+def _loudnorm_measurements(
+    ffmpeg: Path, media_path: Path, target_lufs: float, true_peak_dbfs: float
+) -> dict[str, float]:
+    command = [
+        str(ffmpeg), "-hide_banner", "-nostats", "-v", "info", "-i", str(media_path),
+        "-map", "0:a:0", "-af",
+        f"loudnorm=I={target_lufs:.2f}:TP={true_peak_dbfs:.2f}:LRA=11:print_format=json",
+        "-f", "null", "-",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RenderExecutionError(f"primeira passada de loudness falhou: {exc}") from exc
+    if result.returncode:
+        raise RenderExecutionError(
+            f"primeira passada de loudness falhou ({result.returncode}): {result.stderr[-4000:]}"
+        )
+    matches = re.findall(r"\{\s*\"input_i\".*?\}", result.stderr, flags=re.S)
+    if not matches:
+        raise RenderExecutionError("FFmpeg não retornou medições loudnorm em JSON")
+    try:
+        payload = json.loads(matches[-1])
+        return {
+            "input_i": float(payload["input_i"]),
+            "input_lra": float(payload["input_lra"]),
+            "input_tp": float(payload["input_tp"]),
+            "input_thresh": float(payload["input_thresh"]),
+            "target_offset": float(payload["target_offset"]),
+        }
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RenderExecutionError("medições loudnorm inválidas") from exc
+
+
+def _normalize_render_loudness(
+    ffmpeg: Path,
+    media_path: Path,
+    *,
+    target_lufs: float,
+    true_peak_dbfs: float,
+    log_path: Path,
+    should_cancel: Callable[[], bool],
+) -> None:
+    """Correct an out-of-tolerance render with measured two-pass loudnorm.
+
+    Video is stream-copied, so the correction cannot change framing, overlays,
+    frame cadence or visual quality. Only the AAC track is regenerated.
+    """
+    measured = _loudnorm_measurements(ffmpeg, media_path, target_lufs, true_peak_dbfs)
+    normalized_path = media_path.with_suffix(".loudnorm.mp4")
+    audio_filter = (
+        f"loudnorm=I={target_lufs:.2f}:TP={true_peak_dbfs:.2f}:LRA=11:"
+        f"measured_I={measured['input_i']:.6f}:measured_LRA={measured['input_lra']:.6f}:"
+        f"measured_TP={measured['input_tp']:.6f}:"
+        f"measured_thresh={measured['input_thresh']:.6f}:"
+        f"offset={measured['target_offset']:.6f}:linear=true:print_format=none"
+    )
+    command = [
+        str(ffmpeg), "-y", "-v", "error", "-i", str(media_path),
+        "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy",
+        "-af", audio_filter, "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-movflags", "+faststart", str(normalized_path),
+    ]
+    try:
+        _run_ffmpeg(command, log_path, should_cancel)
+        normalized_path.replace(media_path)
+    finally:
+        normalized_path.unlink(missing_ok=True)
 
 
 def _summarize_durations(durations: list[float]) -> tuple[int, float, float]:
@@ -682,10 +996,37 @@ class RenderService:
         source_path = self._config.paths.data_dir / source.stored_path
         if not source_path.exists():
             raise RenderPreconditionError("arquivo fonte não está disponível")
+        source_probe = source.probe or probe_media(self._config.render.ffprobe, source_path)
+        source_duration = usable_av_duration_seconds(source_probe)
+        if source_duration <= 0:
+            raise RenderPreconditionError("duração física da fonte não está disponível")
+        effective_segments = []
+        for segment in plan.segments:
+            if segment.video_start >= source_duration or segment.audio_start >= source_duration:
+                raise RenderPreconditionError("segmento da EDL inicia após o fim físico da fonte")
+            effective_end = min(segment.end, source_duration)
+            effective_video_end = min(segment.video_end, source_duration)
+            effective_audio_end = min(segment.audio_end, source_duration)
+            if effective_video_end <= segment.video_start or effective_audio_end <= segment.audio_start:
+                raise RenderPreconditionError("segmento da EDL não possui mídia física suficiente")
+            effective_segments.append(segment.model_copy(update={
+                "end": effective_end,
+                "video_end": effective_video_end,
+                "audio_end": effective_audio_end,
+            }))
+        effective_duration = sum(
+            segment.video_end - segment.video_start for segment in effective_segments
+        ) - sum(
+            (segment.transition.duration if segment.transition is not None else 0.0)
+            for segment in effective_segments[:-1]
+        )
+        plan = plan.model_copy(update={
+            "segments": effective_segments,
+            "clip_end": min(plan.clip_end, source_duration),
+            "timeline_duration_seconds": round(max(0.0, effective_duration), 4),
+        })
 
         camera_plan: CameraEditPlanDocument | None = None
-        render_sources = {source.id: source}
-        source_paths = {source.id: source_path}
         if camera_edit_plan_artifact is not None:
             if camera_edit_plan_artifact.stage != "camera_edit_plan":
                 raise RenderPreconditionError(
@@ -700,8 +1041,8 @@ class RenderService:
                 camera_plan_path.read_text(encoding="utf-8")
             )
             if (
-                camera_plan.schema_version not in {2, 3, 4}
-                or camera_edit_plan_artifact.schema_version not in {2, 3, 4}
+                camera_plan.schema_version != 5
+                or camera_edit_plan_artifact.schema_version != 5
                 or camera_plan.project_id != plan.project_id
                 or camera_edit_plan_artifact.project_id != plan.project_id
                 or camera_plan.source_asset_id != source.id
@@ -716,16 +1057,6 @@ class RenderService:
             segment_orders = {segment.timeline_order for segment in plan.segments}
             if any(shot.edit_segment_order not in segment_orders for shot in camera_plan.shots):
                 raise RenderPreconditionError("camera plan referencia segmento inexistente")
-            if camera_plan.schema_version == 3:
-                for shot in camera_plan.shots:
-                    if shot.visual_origin == "reaction_reuse" and (
-                        shot.video_source_asset_id != source.id
-                        or shot.audio_source_asset_id != source.id
-                        or shot.reaction_candidate_artifact_id != camera_plan.reaction_candidate_artifact_id
-                    ):
-                        raise RenderPreconditionError(
-                            "reaction do camera plan não preserva o master e áudio primário"
-                        )
             normalized_shots: list[CameraEditShot] = []
             for segment in plan.segments:
                 shots = sorted(
@@ -739,9 +1070,12 @@ class RenderService:
                 expected_end = round(segment.end * 1_000_000)
                 cursor = expected_start
                 for shot in shots:
-                    if shot.audio_source_asset_id != source.id:
+                    if (
+                        shot.audio_source_asset_id != source.id
+                        or shot.video_source_asset_id != source.id
+                    ):
                         raise RenderPreconditionError(
-                            "camera plan não mantém áudio contínuo da fonte primária"
+                            "camera plan não mantém áudio e vídeo no master single-source"
                         )
                     if shot.audio_source_start_us != cursor:
                         raise RenderPreconditionError(
@@ -754,26 +1088,6 @@ class RenderService:
                     )
                 normalized_shots.extend(shots)
             camera_plan = camera_plan.model_copy(update={"shots": normalized_shots})
-            for source_id in sorted({shot.video_source_asset_id for shot in camera_plan.shots}):
-                if source_id in render_sources:
-                    continue
-                try:
-                    video_source = self._domain.get_source_asset(source_id)
-                except SourceAssetNotFoundError as exc:
-                    raise RenderPreconditionError(
-                        f"fonte de vídeo do camera plan não encontrada: {source_id}"
-                    ) from exc
-                if video_source.project_id != plan.project_id:
-                    raise RenderPreconditionError(
-                        "fonte de vídeo do camera plan não pertence ao projeto"
-                    )
-                video_path = self._config.paths.data_dir / video_source.stored_path
-                if not video_path.is_file():
-                    raise RenderPreconditionError(
-                        f"arquivo da fonte de vídeo não está disponível: {source_id}"
-                    )
-                render_sources[source_id] = video_source
-                source_paths[source_id] = video_path
 
         requested_settings = render_settings or _default_render_settings(
             self._config, encoder=encoder, headline=headline
@@ -858,6 +1172,31 @@ class RenderService:
                 static_face_crop_map[segment.timeline_order] = crop
                 static_face_crops.append({"segment_order": segment.timeline_order, **crop,
                                           "provenance": resolved.provenance})
+        # Punch-in (Gate 5): resolved once, up front, so an invalid crop or
+        # an unsafe upscale fails closed before any ffmpeg process starts.
+        punch_in_settings = effective_settings.framing.punch_in
+        punch_in_resolutions = _resolve_punch_ins(
+            plan, camera_plan, punch_in_settings,
+            framing_mode=effective_settings.framing.mode,
+            canvas_width=effective_settings.canvas.width,
+            canvas_height=effective_settings.canvas.height,
+            static_face_crop_map=static_face_crop_map,
+        )
+        punch_in_by_segment = {
+            resolution.segment_order: resolution for resolution in punch_in_resolutions
+        }
+        punch_ins_manifest = [
+            RenderPunchInInfo(
+                segment_order=resolution.segment_order,
+                requested_scale=resolution.requested_scale,
+                effective_scale=resolution.effective_scale,
+                anchor_x=resolution.anchor_x,
+                anchor_y=resolution.anchor_y,
+                applied=resolution.applied,
+                reason=resolution.reason,
+            )
+            for resolution in punch_in_resolutions
+        ]
         canvas_key = _safe_zone_key(effective_settings.canvas.width, effective_settings.canvas.height)
         safe_zone = SAFE_ZONES.get(canvas_key)
         if safe_zone is None:
@@ -908,9 +1247,7 @@ class RenderService:
             "identity_index_sha256": _sha256(Path(identity_index_artifact.path)) if identity_index_artifact else None,
             "target_identity_id": target_identity_id,
             "static_face_crops": static_face_crops,
-            "render_sources": {
-                source_id: asset.sha256 for source_id, asset in sorted(render_sources.items())
-            },
+            "render_sources": {source.id: source.sha256},
             "encoder": requested_encoder,
             "render_settings": effective_settings.model_dump(mode="json"),
             "render_settings_override": (
@@ -928,6 +1265,7 @@ class RenderService:
             "overlay_sha256": overlay_manifest.output_sha256 if overlay_manifest else None,
             "safe_zone_version": SAFE_ZONES_VERSION,
             "safe_zone_canvas": canvas_key,
+            "technical_quality_version": TECHNICAL_QUALITY_VERSION,
         }
         input_hash = hashlib.sha256(
             json.dumps(input_payload, sort_keys=True, separators=(",", ":")).encode()
@@ -951,39 +1289,37 @@ class RenderService:
                 )
             )
             if Path(cached_doc.output_path).exists() and subtitles_available and overlay_available:
-                exports = _export_render_files(
-                    self._config,
-                    output_path=Path(cached_doc.output_path),
-                    subtitles_path=(
-                        Path(cached_doc.subtitles_path) if cached_doc.subtitles_path else None
-                    ),
-                    export_directory=export_directory,
-                    input_hash=input_hash,
-                )
+                exports = {}
+                if cached_doc.publication is None or cached_doc.publication.publish_ready:
+                    exports = _export_render_files(
+                        self._config,
+                        output_path=Path(cached_doc.output_path),
+                        subtitles_path=(
+                            Path(cached_doc.subtitles_path) if cached_doc.subtitles_path else None
+                        ),
+                        export_directory=export_directory,
+                        input_hash=input_hash,
+                    )
                 progress_cb(100.0, "Render em cache reutilizado")
                 return {"cached": True, "render_artifact_id": cached.id,
                         "render_path": cached_doc.output_path,
-                        "schema_version": cached.schema_version, **exports}
+                        "schema_version": cached.schema_version,
+                        "publish_ready": (
+                            cached_doc.publication.publish_ready
+                            if cached_doc.publication is not None else cached_doc.quality.passed
+                        ), **exports}
 
         if should_cancel():
             raise RenderJobCancelled()
         progress_cb(10.0, "Validando fonte e plano")
-        source_probes = {
-            source_id: asset.probe or probe_media(self._config.render.ffprobe, source_paths[source_id])
-            for source_id, asset in render_sources.items()
-        }
         stream_types = {
-            stream.get("codec_type") for stream in source_probes[source.id].get("streams", [])
+            stream.get("codec_type") for stream in source_probe.get("streams", [])
         }
         if not {"video", "audio"}.issubset(stream_types):
             raise RenderPreconditionError("render requer fonte com streams de áudio e vídeo")
-        for source_id, source_probe in source_probes.items():
-            types = {stream.get("codec_type") for stream in source_probe.get("streams", [])}
-            if "video" not in types:
-                raise RenderPreconditionError(f"fonte de câmera sem stream de vídeo: {source_id}")
         if camera_plan is not None:
             for shot in camera_plan.shots:
-                available_us = round(duration_seconds(source_probes[shot.video_source_asset_id]) * 1_000_000)
+                available_us = round(duration_seconds(source_probe) * 1_000_000)
                 if shot.source_end_us > available_us:
                     raise RenderPreconditionError(
                         f"shot excede duração da fonte de vídeo: {shot.video_source_asset_id}"
@@ -995,10 +1331,8 @@ class RenderService:
         temporary_subtitles_path = output_dir / f".render-{input_hash[:16]}.tmp.srt"
         if cues:
             temporary_subtitles_path.write_text(render_srt(cues), encoding="utf-8")
-        ordered_source_ids = [source.id, *sorted(set(render_sources) - {source.id})]
-        source_input_indices = {
-            source_id: index for index, source_id in enumerate(ordered_source_ids)
-        }
+        ordered_source_ids = [source.id]
+        source_input_indices = {source.id: 0}
         filtergraph, video_label, audio_label = _filtergraph(
             plan,
             effective_settings.canvas.width,
@@ -1008,13 +1342,13 @@ class RenderService:
             self._config.render.true_peak_limit_dbfs,
             framing_mode=effective_settings.framing.mode,
             static_face_crops=static_face_crop_map,
+            punch_ins=punch_in_by_segment,
             overlay_input_index=(len(ordered_source_ids) if overlay_manifest is not None else None),
             camera_plan=camera_plan,
             source_input_indices=source_input_indices,
         )
         command = [str(self._config.render.ffmpeg), "-y", "-v", "error"]
-        for source_id in ordered_source_ids:
-            command.extend(["-i", str(source_paths[source_id])])
+        command.extend(["-i", str(source_path)])
         if overlay_manifest is not None:
             command.extend(["-c:v", "libvpx-vp9", "-i", overlay_manifest.output_path])
         command.extend([
@@ -1032,22 +1366,74 @@ class RenderService:
             types = {stream.get("codec_type") for stream in rendered_probe.get("streams", [])}
             delta = abs(actual_duration - plan.timeline_duration_seconds)
             issues: list[str] = []
+            warnings: list[str] = []
+            integrated_loudness: float | None = None
+            true_peak: float | None = None
+            loudness_delta: float | None = None
+            if "audio" in types:
+                integrated_loudness, true_peak = _measure_loudness(
+                    self._config.render.ffmpeg, temporary_path
+                )
+                loudness_delta = abs(
+                    integrated_loudness - self._config.render.loudness_target_lufs
+                )
+                if loudness_delta > self._config.render.loudness_tolerance_lu:
+                    progress_cb(87.0, "Corrigindo loudness com medição em duas passadas")
+                    _normalize_render_loudness(
+                        self._config.render.ffmpeg,
+                        temporary_path,
+                        target_lufs=self._config.render.loudness_target_lufs,
+                        true_peak_dbfs=self._config.render.true_peak_limit_dbfs,
+                        log_path=output_dir / f"render-{input_hash[:16]}.loudnorm.log",
+                        should_cancel=should_cancel,
+                    )
+                    rendered_probe = probe_media(self._config.render.ffprobe, temporary_path)
+                    actual_duration = duration_seconds(rendered_probe)
+                    types = {
+                        stream.get("codec_type") for stream in rendered_probe.get("streams", [])
+                    }
+                    delta = abs(actual_duration - plan.timeline_duration_seconds)
+                    integrated_loudness, true_peak = _measure_loudness(
+                        self._config.render.ffmpeg, temporary_path
+                    )
+                    loudness_delta = abs(
+                        integrated_loudness - self._config.render.loudness_target_lufs
+                    )
             if "video" not in types:
                 issues.append("video_stream_missing")
             if "audio" not in types:
                 issues.append("audio_stream_missing")
             if delta > 0.15:
                 issues.append("duration_mismatch")
-            integrated_loudness, true_peak = _measure_loudness(
-                self._config.render.ffmpeg, temporary_path
-            )
-            loudness_delta = abs(
-                integrated_loudness - self._config.render.loudness_target_lufs
-            )
-            if loudness_delta > self._config.render.loudness_tolerance_lu:
-                issues.append("loudness_out_of_tolerance")
-            if true_peak > self._config.render.true_peak_limit_dbfs:
-                issues.append("true_peak_exceeded")
+            try:
+                technical, technical_issues = measure_technical_quality(
+                    ffmpeg=self._config.render.ffmpeg,
+                    ffprobe=self._config.render.ffprobe,
+                    media_path=temporary_path,
+                    probe=rendered_probe,
+                    should_cancel=should_cancel,
+                )
+            except TechnicalQualityCancelled as exc:
+                raise RenderJobCancelled() from exc
+            issues.extend(technical_issues)
+            if (
+                technical.av_sync_delta_seconds is not None
+                and 0.03 < technical.av_sync_delta_seconds <= 0.04
+            ):
+                warnings.append("av_sync_near_limit")
+            if "audio" in types:
+                if (
+                    loudness_delta is not None
+                    and loudness_delta > self._config.render.loudness_tolerance_lu
+                ):
+                    issues.append("loudness_out_of_tolerance")
+                if true_peak is not None and true_peak > self._config.render.true_peak_limit_dbfs:
+                    issues.append("true_peak_exceeded")
+                elif (
+                    true_peak is not None
+                    and true_peak > self._config.render.true_peak_limit_dbfs - 0.25
+                ):
+                    warnings.append("true_peak_near_limit")
             if needs_cues and (
                 not cues or not temporary_subtitles_path.is_file()
             ):
@@ -1060,7 +1446,7 @@ class RenderService:
                 "freeze_total_duration_seconds": 0.0,
                 "freeze_max_duration_seconds": 0.0,
             }
-            if self._config.render.visual_quality_enabled:
+            if self._config.render.visual_quality_enabled and "video" in types:
                 visual_metrics = _measure_visual_quality(
                     self._config.render.ffmpeg,
                     temporary_path,
@@ -1070,8 +1456,13 @@ class RenderService:
                 )
                 if visual_metrics["black_interval_count"]:
                     issues.append("black_frame_detected")
-                if visual_metrics["freeze_interval_count"]:
+                if (
+                    visual_metrics["freeze_max_duration_seconds"]
+                    >= self._config.render.freeze_block_threshold_seconds
+                ):
                     issues.append("frozen_frame_detected")
+                elif visual_metrics["freeze_interval_count"]:
+                    warnings.append("frozen_frame_detected")
             if overlay_manifest is not None:
                 issues.extend(self._safe_zone_issues(
                     overlay_path=overlay_manifest.output_path,
@@ -1079,14 +1470,120 @@ class RenderService:
                     height=effective_settings.canvas.height,
                     safe_zone=safe_zone,
                 ))
+            check_evidence: dict[
+                str, dict[str, bool | float | int | str | None]
+            ] = {
+                "video_stream_missing": {"present": "video" in types},
+                "audio_stream_missing": {"present": "audio" in types},
+                "duration_mismatch": {
+                    "expected_seconds": round(plan.timeline_duration_seconds, 6),
+                    "actual_seconds": round(actual_duration, 6),
+                    "delta_seconds": round(delta, 6),
+                },
+                "loudness_out_of_tolerance": {
+                    "integrated_lufs": integrated_loudness,
+                    "target_lufs": self._config.render.loudness_target_lufs,
+                    "delta_lu": round(loudness_delta, 6) if loudness_delta is not None else None,
+                },
+                "true_peak_exceeded": {"true_peak_dbfs": true_peak},
+                "true_peak_near_limit": {"true_peak_dbfs": true_peak},
+                "subtitles_missing": {
+                    "required": needs_cues,
+                    "cue_count": len(cues),
+                    "sidecar_present": temporary_subtitles_path.is_file(),
+                },
+                "black_frame_detected": {
+                    "interval_count": int(visual_metrics["black_interval_count"]),
+                    "maximum_seconds": float(visual_metrics["black_max_duration_seconds"]),
+                },
+                "frozen_frame_detected": {
+                    "interval_count": int(visual_metrics["freeze_interval_count"]),
+                    "maximum_seconds": float(visual_metrics["freeze_max_duration_seconds"]),
+                },
+                "caption_outside_safe_zone": {"overlay_present": overlay_manifest is not None},
+                "headline_outside_safe_zone": {"overlay_present": overlay_manifest is not None},
+                "safe_zone_missing": {"canvas": canvas_key, "defined": safe_zone is not None},
+                "full_decode_failed": {"passed": technical.full_decode_passed},
+                "faststart_missing": {
+                    "faststart": technical.faststart,
+                    "moov_offset": technical.moov_offset,
+                    "mdat_offset": technical.mdat_offset,
+                },
+                "pts_discontinuity_detected": {
+                    "count": technical.pts_discontinuity_count,
+                },
+                "dts_discontinuity_detected": {
+                    "count": technical.dts_discontinuity_count,
+                },
+                "timestamp_analysis_failed": {
+                    "engine": technical.engine.get("ffprobe"),
+                },
+                "av_sync_out_of_tolerance": {
+                    "delta_seconds": technical.av_sync_delta_seconds,
+                },
+                "av_sync_near_limit": {
+                    "delta_seconds": technical.av_sync_delta_seconds,
+                },
+                "audio_channels_invalid": {"channels": technical.audio_channel_count},
+                "audio_clipping_detected": {
+                    "sample_count": technical.clipped_sample_count,
+                    "peak_amplitude": technical.audio_peak_amplitude,
+                },
+                "audio_waveform_jump_detected": {
+                    "jump_count": technical.waveform_jump_count,
+                },
+                "audio_channels_inverted": {
+                    "phase_correlation": technical.channel_phase_correlation,
+                },
+                "audio_analysis_failed": {"engine": technical.engine.get("ffmpeg")},
+            }
+            check_thresholds: dict[str, dict[str, float | int | str]] = {
+                "duration_mismatch": {"maximum_delta_seconds": 0.15},
+                "loudness_out_of_tolerance": {
+                    "maximum_delta_lu": self._config.render.loudness_tolerance_lu,
+                },
+                "true_peak_exceeded": {
+                    "maximum_dbfs": self._config.render.true_peak_limit_dbfs,
+                },
+                "true_peak_near_limit": {
+                    "warning_margin_db": 0.25,
+                    "maximum_dbfs": self._config.render.true_peak_limit_dbfs,
+                },
+                "black_frame_detected": {
+                    "minimum_interval_seconds": self._config.render.black_threshold_seconds,
+                },
+                "frozen_frame_detected": {
+                    "detection_interval_seconds": self._config.render.freeze_threshold_seconds,
+                    "blocking_interval_seconds": (
+                        self._config.render.freeze_block_threshold_seconds
+                    ),
+                },
+                "av_sync_near_limit": {
+                    "warning_above_seconds": 0.03,
+                    "maximum_seconds": 0.04,
+                },
+            }
+            for code in (
+                "pts_discontinuity_detected", "dts_discontinuity_detected",
+                "av_sync_out_of_tolerance", "audio_channels_invalid",
+                "audio_clipping_detected", "audio_waveform_jump_detected",
+                "audio_channels_inverted",
+            ):
+                check_thresholds[code] = dict(technical.thresholds)
+            checks = _publication_checks(
+                issues=issues,
+                warnings=warnings,
+                evidence=check_evidence,
+                thresholds=check_thresholds,
+            )
             quality = RenderQualityReport(
                 passed=not issues, expected_duration_seconds=plan.timeline_duration_seconds,
                 actual_duration_seconds=round(actual_duration, 4),
                 duration_delta_seconds=round(delta, 4), has_video="video" in types,
-                has_audio="audio" in types, issues=issues,
+                has_audio="audio" in types, issues=issues, warnings=warnings,
                 loudness_target_lufs=self._config.render.loudness_target_lufs,
                 integrated_loudness_lufs=integrated_loudness,
-                loudness_delta_lu=round(loudness_delta, 4),
+                loudness_delta_lu=(round(loudness_delta, 4) if loudness_delta is not None else None),
                 true_peak_dbfs=true_peak,
                 true_peak_limit_dbfs=self._config.render.true_peak_limit_dbfs,
                 caption_cue_count=len(cues),
@@ -1099,11 +1596,15 @@ class RenderService:
                 visual_analysis_performed=self._config.render.visual_quality_enabled,
                 black_threshold_seconds=self._config.render.black_threshold_seconds,
                 freeze_threshold_seconds=self._config.render.freeze_threshold_seconds,
+                technical=technical,
                 **visual_metrics,
             )
+            render_sha256 = _sha256(temporary_path)
             publication = RenderQualityPublicationReport(
                 publish_ready=not issues,
                 reasons=issues,
+                warnings=warnings,
+                checks=checks,
                 loudness={
                     "target_lufs": self._config.render.loudness_target_lufs,
                     "integrated_lufs": integrated_loudness,
@@ -1143,7 +1644,7 @@ class RenderService:
                 hashes={
                     "input_hash": input_hash,
                     "overlay_hash": overlay_artifact.input_hash if overlay_artifact else None,
-                    "render_sha256": None,
+                    "render_sha256": render_sha256,
                 },
                 provenance={
                     "ffmpeg": str(self._config.render.ffmpeg),
@@ -1152,9 +1653,15 @@ class RenderService:
                     "node_version": overlay_manifest.node_version if overlay_manifest else None,
                     "remotion_version": overlay_manifest.remotion_version if overlay_manifest else None,
                 },
+                punch_in={
+                    "enabled": punch_in_settings.enabled,
+                    "requested_scale": punch_in_settings.scale,
+                    "anchor": punch_in_settings.anchor,
+                    "alternate_on_jump_cuts": punch_in_settings.alternate_on_jump_cuts,
+                    "segments": [entry.model_dump() for entry in punch_ins_manifest],
+                },
+                technical=technical,
             )
-            if not quality.passed:
-                raise RenderExecutionError(f"quality gate pós-render falhou: {', '.join(issues)}")
             temporary_path.replace(output_path)
             if cues and effective_settings.subtitles.sidecar_srt:
                 temporary_subtitles_path.replace(subtitles_path)
@@ -1169,21 +1676,12 @@ class RenderService:
                 identity_index_artifact_id=identity_index_artifact.id if identity_index_artifact else None,
                 target_identity_id=target_identity_id,
                 static_face_crops=static_face_crops,
-                sources=[
-                    RenderSourceInfo(
-                        source_asset_id=source_id,
-                        sha256=render_sources[source_id].sha256,
-                        video_used=(
-                            camera_plan is None and source_id == source.id
-                            or camera_plan is not None and any(
-                                shot.video_source_asset_id == source_id
-                                for shot in camera_plan.shots
-                            )
-                        ),
-                        audio_used=source_id == source.id,
-                    )
-                    for source_id in ordered_source_ids
-                ],
+                sources=[RenderSourceInfo(
+                    source_asset_id=source.id,
+                    sha256=source.sha256,
+                    video_used=True,
+                    audio_used=True,
+                )],
                 output_path=str(output_path), output_sha256=_sha256(output_path),
                 output_size_bytes=output_path.stat().st_size,
                 subtitles_path=(
@@ -1196,6 +1694,7 @@ class RenderService:
                 timeline_duration_seconds=plan.timeline_duration_seconds,
                 segment_count=len(plan.segments),
                 transitions=_render_transitions(plan),
+                punch_ins=punch_ins_manifest,
                 engine=RenderEngineInfo(
                     ffmpeg=str(self._config.render.ffmpeg), ffprobe=str(self._config.render.ffprobe),
                     requested_encoder=requested_encoder, effective_encoder=requested_encoder,
@@ -1272,7 +1771,12 @@ class RenderService:
                           "source_asset_ids": ordered_source_ids,
                           "requested_encoder": requested_encoder,
                           "effective_encoder": requested_encoder,
-                          "quality_passed": True, "output_path": str(output_path),
+                          "quality_passed": quality.passed,
+                          "publish_ready": publication.publish_ready,
+                          "quality_reasons": publication.reasons,
+                          "quality_warnings": publication.warnings,
+                          "quality_check_count": len(publication.checks),
+                          "output_path": str(output_path),
                           "overlay_artifact_id": (
                               overlay_artifact.id if overlay_artifact else None
                           )},
@@ -1280,16 +1784,18 @@ class RenderService:
         finally:
             temporary_path.unlink(missing_ok=True)
             temporary_subtitles_path.unlink(missing_ok=True)
-        progress_cb(100.0, "Render concluído")
-        exports = _export_render_files(
-            self._config,
-            output_path=output_path,
-            subtitles_path=(
-                subtitles_path if cues and effective_settings.subtitles.sidecar_srt else None
-            ),
-            export_directory=export_directory,
-            input_hash=input_hash,
-        )
+        progress_cb(100.0, "Render concluído" if quality.passed else "Render bloqueado pelo quality gate")
+        exports = {}
+        if quality.passed:
+            exports = _export_render_files(
+                self._config,
+                output_path=output_path,
+                subtitles_path=(
+                    subtitles_path if cues and effective_settings.subtitles.sidecar_srt else None
+                ),
+                export_directory=export_directory,
+                input_hash=input_hash,
+            )
         return {"cached": False, "render_artifact_id": artifact.id,
                 "render_path": str(output_path), "schema_version": artifact.schema_version,
-                **exports}
+                "publish_ready": publication.publish_ready, **exports}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from asgi_client import ASGITestClient as TestClient
 
 from cortex.analyze.schemas import (
     AnalysisDocument,
@@ -129,11 +129,13 @@ def _fixture(
     *,
     rms: list[float] | None = None,
     vad_intervals: list[VadInterval] | None = None,
+    source_probe: dict | None = None,
 ):
     project = domain.create_project("Edit plan fixture")
     source = domain.create_source_asset(SourceAsset(
         project_id=project.id, kind=SourceKind.UPLOAD, original_filename="clip.wav",
         stored_path="source/clip.wav", sha256="fake-source-sha256", size_bytes=100,
+        probe=source_probe or {},
     ))
     transcript_doc = _transcript_document(words, duration)
     transcript_path = config.paths.projects_dir / project.id / "transcripts" / "transcript.json"
@@ -156,6 +158,41 @@ def _fixture(
         path=str(analysis_path), input_hash="fake-analysis-artifact-hash",
     ))
     return project, source, transcript, analysis
+
+
+def test_edit_plan_clamps_transcript_tail_to_shortest_physical_stream(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = [_word("fim", 4.4, 5.1)]
+    project, _source, transcript, analysis = _fixture(
+        config,
+        domain,
+        words,
+        5.2,
+        source_probe={
+            "streams": [
+                {"codec_type": "video", "duration": "5.000000"},
+                {"codec_type": "audio", "duration": "5.080000"},
+            ],
+            "format": {"duration": "5.200000"},
+        },
+    )
+    result = EditPlanService(config, domain).run(
+        transcript_artifact=transcript,
+        analysis_artifact=analysis,
+        start=4.0,
+        end=5.2,
+        profile="balanced",
+        progress_cb=lambda *_args: None,
+        should_cancel=lambda: False,
+    )
+    artifact = domain.get_stage_artifact(result["edit_plan_artifact_id"])
+    document = EditPlanDocument.model_validate_json(Path(artifact.path).read_text(encoding="utf-8"))
+    assert document.project_id == project.id
+    assert document.clip_end == 5.0
+    assert max(segment.video_end for segment in document.segments) <= 5.0
+    assert max(segment.audio_end for segment in document.segments) <= 5.0
 
 
 # -- 1. Long pause between sentences -----------------------------------------

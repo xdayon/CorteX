@@ -23,8 +23,6 @@ class JobType(StrEnum):
     IDENTITY_ANALYSIS = "identity_analysis"
     REACTION_CANDIDATE_ANALYSIS = "reaction_candidate_analysis"
     CAMERA_PLANNING = "camera_planning"
-    MULTICAM_SYNC = "multicam_sync"
-    MULTICAM_VISUAL_INDEX = "multicam_visual_index"
     SUGGESTION = "suggestion"
     EDIT_PLAN = "edit_plan"
     RENDER = "render"

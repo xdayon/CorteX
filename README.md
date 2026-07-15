@@ -123,10 +123,17 @@ cd apps/web && npm run build
 cd apps/remotion && npm run build
 ```
 
-Os testes atuais cobrem configuracao, jobs, ausencia explicita de GPU, protecao
-de pausas, snapping na waveform, VAD, fronteiras de palavras, render FFmpeg curto,
-overlay alpha Remotion, karaoke temporal, cache e composicao final. Ainda faltam
-gates E2E de CUDA/NVENC, diarizacao, J/L-cut e planejamento de cameras.
+O backend padrao pula apenas os testes que exigem browser real. No host, execute
+a mesma suite com Remotion habilitado explicitamente:
+
+```bash
+CORTEX_RUN_REMOTION_E2E=1 .venv/bin/pytest -q
+```
+
+Os testes cobrem configuracao, jobs, protecao de pausas, waveform/VAD, fronteiras,
+J/L-cut, reaction reuse single-source, punch-in, camera planning, render FFmpeg,
+overlay alpha Remotion, karaoke, cache e quality gate audiovisual. A matriz E2E
+CPU/GPU completa do Gate 9 continua separada da suite automatizada.
 
 ## GPU
 

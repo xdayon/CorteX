@@ -28,6 +28,7 @@ from cortex.edit.schemas import (
     EditTransition,
     JlSettings,
 )
+from cortex.ingest.ffprobe import usable_av_duration_seconds
 from cortex.paths import edit_plans_dir
 from cortex.transcribe.schemas import TranscriptDocument, TranscriptWord
 
@@ -117,6 +118,16 @@ class EditPlanService:
         if analysis.transcript_artifact_id != transcript_artifact.id:
             raise EditPlanPreconditionError("AnalysisArtifact não corresponde a este transcript")
         transcript = TranscriptDocument.model_validate_json(transcript_path.read_text(encoding="utf-8"))
+        source = self._domain.get_source_asset(transcript_artifact.source_asset_id)
+        if source.project_id != transcript_artifact.project_id:
+            raise EditPlanPreconditionError("fonte do transcript não pertence ao projeto")
+        requested_start, requested_end = start, end
+        source_duration = usable_av_duration_seconds(source.probe, transcript.duration_seconds)
+        if start >= source_duration:
+            raise EditPlanPreconditionError("início do corte excede a duração física da fonte")
+        end = min(end, source_duration)
+        if end <= start:
+            raise EditPlanPreconditionError("corte não possui mídia disponível após limitar à fonte")
         scene_index: SceneIndexDocument | None = None
         if scene_index_path is not None:
             scene_index = SceneIndexDocument.model_validate_json(scene_index_path.read_text(encoding="utf-8"))
@@ -154,8 +165,12 @@ class EditPlanService:
             "analysis_artifact_id": analysis_artifact.id,
             "transcript_sha256": transcript_hash,
             "analysis_sha256": analysis_hash,
-            "clip_start": round(start, 4),
-            "clip_end": round(end, 4),
+            "clip_start_requested": round(requested_start, 4),
+            "clip_end_requested": round(requested_end, 4),
+            "clip_start_effective": round(start, 4),
+            "clip_end_effective": round(end, 4),
+            "source_duration_seconds": round(source_duration, 6),
+            "physical_boundary_version": 1,
             "profile": requested_profile,
             "jl_settings": {
                 "enabled": effective_jl_enabled,
@@ -233,6 +248,31 @@ class EditPlanService:
                 segments, words, analysis.vad_intervals, energy, effective_max_jl_offset,
             )
             quality = {**quality, "issues": [*quality["issues"], *jl_issues]}
+
+        # Boundary protection may add post-roll after the requested end. The
+        # physical source ceiling remains absolute even when transcript words
+        # or container metadata extend beyond the last decodable video frame.
+        clamped_issues: list[dict] = []
+        for index, segment in enumerate(segments):
+            previous_end = float(segment["end"])
+            for key in ("end", "video_end", "audio_end"):
+                if key in segment:
+                    segment[key] = min(float(segment[key]), source_duration)
+            segment["end"] = min(float(segment["end"]), source_duration)
+            if float(segment["start"]) >= float(segment["end"]):
+                raise EditPlanPreconditionError("segmento ficou vazio no limite físico da fonte")
+            if previous_end > source_duration:
+                clamped_issues.append({
+                    "severity": "warning",
+                    "code": "source_end_clamped",
+                    "segment": index,
+                    "boundary": "end",
+                    "snapped_from": round(previous_end, 6),
+                    "snapped_to": round(source_duration, 6),
+                    "delta_ms": round((source_duration - previous_end) * 1000, 3),
+                })
+        if clamped_issues:
+            quality = {**quality, "issues": [*quality["issues"], *clamped_issues]}
 
         diagnostics = {
             **diagnostics,

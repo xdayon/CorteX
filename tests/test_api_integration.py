@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from fastapi.testclient import TestClient  # noqa: E402
+from asgi_client import ASGITestClient as TestClient  # noqa: E402
 
 from cortex.api import create_app  # noqa: E402
 from cortex.config import load_config  # noqa: E402

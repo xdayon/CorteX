@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
+from asgi_client import ASGITestClient as TestClient
 
 from cortex.analyze.face_schemas import FaceIndexDocument
 from cortex.analyze.scene_schemas import SceneIndexDocument

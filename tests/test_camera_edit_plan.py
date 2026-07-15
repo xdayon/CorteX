@@ -4,14 +4,12 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from cortex.analyze.camera_schemas import CameraScene, CameraTimelineDocument
 from cortex.analyze.identity_schemas import IdentityIndexDocument
 from cortex.analyze.identity_service import IdentityIndexService
 from cortex.analyze.reaction_candidate_schemas import ReactionCandidateIndexDocument
-from cortex.analyze.face_schemas import FaceIndexDocument
-from cortex.analyze.multicam_visual_schemas import MulticamVisualIndexDocument
-from cortex.analyze.scene_schemas import SceneIndexDocument
 from cortex.analyze.visual_quality_schemas import SceneVisualQuality, VisualQualityDocument
 from cortex.api import create_app
 from cortex.domain.models import StageArtifact
@@ -115,70 +113,6 @@ def _planner_fixture(tmp_path: Path):
     )
     return config, domain, project, edit_plan, camera, identity, visual_quality
 
-
-def _iso_manifest(tmp_path: Path, domain, project) -> StageArtifact:
-    scene_document = SceneIndexDocument.model_validate({
-        "project_id": project.id, "source_asset_id": "iso-source", "source_sha256": "iso-sha",
-        "input_hash": "iso-scenes", "duration_seconds": 5.0, "cuts": [],
-        "scenes": [{"index": 0, "start": 0.0, "end": 5.0}], "cut_count": 0,
-        "engine": {"ffmpeg_path": "ffmpeg", "ffmpeg_version": "test", "filter": "scdet",
-                   "threshold_requested": 10.0, "threshold_effective": 10.0},
-    })
-    scene = _write_artifact(
-        domain, project.id, "scene_index", tmp_path / "iso-scenes.json", scene_document,
-    )
-    face_document = FaceIndexDocument.model_validate({
-        "project_id": project.id, "source_asset_id": "iso-source", "source_sha256": "iso-sha",
-        "scene_index_artifact_id": scene.id, "input_hash": "iso-faces", "duration_seconds": 5.0,
-        "frames": [], "frame_count": 0,
-        "scenes": [{"scene_index": 0, "dominant_shot_type": "two_shot",
-                    "track_ids_present": ["left", "right"], "sample_count": 2}],
-        "engine": {"detector": "yunet", "model_path": "yunet.onnx",
-                   "providers": ["CPUExecutionProvider"], "score_threshold": 0.8,
-                   "nms_threshold": 0.3, "sample_fps": 1.0,
-                   "ffmpeg_path": "ffmpeg", "ffmpeg_version": "test"},
-    })
-    face = _write_artifact(
-        domain, project.id, "face_index", tmp_path / "iso-faces.json", face_document,
-    )
-    quality_document = VisualQualityDocument.model_validate({
-        "project_id": project.id, "source_asset_id": "iso-source", "source_sha256": "iso-sha",
-        "scene_index_artifact_id": scene.id, "scene_index_input_hash": scene.input_hash,
-        "face_index_artifact_id": face.id, "face_index_input_hash": face.input_hash,
-        "input_hash": "iso-quality", "duration_us": 5_000_000, "frames": [],
-        "scenes": [{"scene_index": 0, "start_us": 0, "end_us": 5_000_000,
-                    "sample_count": 5, "black_share": 0.0, "blurred_share": 0.0,
-                    "frozen_share": 0.0, "usable": True, "issues": []}],
-        "engine": {"algorithm": "test", "algorithm_version": "1",
-                   "sample_fps_requested": 2.0, "sample_fps_effective": 2.0,
-                   "frame_width": 640, "black_luma_threshold": 16.0,
-                   "black_pixel_ratio_threshold": 0.98, "blur_score_threshold": 20.0,
-                   "freeze_delta_threshold": 0.002, "issue_share_threshold": 0.5,
-                   "face_edge_margin": 0.01, "ffmpeg_path": "ffmpeg", "ffmpeg_version": "test",
-                   "decoder_requested": "software", "decoder_effective": "software",
-                   "device_requested": "cpu", "device_effective": "cpu"},
-    })
-    quality = _write_artifact(
-        domain, project.id, "visual_quality_index", tmp_path / "iso-quality.json",
-        quality_document,
-    )
-    manifest_document = MulticamVisualIndexDocument.model_validate({
-        "project_id": project.id, "primary_source_asset_id": "source-id",
-        "multicam_sync_artifact_id": "sync-id", "multicam_sync_input_hash": "sync-hash",
-        "input_hash": "manifest", "indexed_camera_count": 1, "rejected_camera_count": 0,
-        "cameras": [{"source_asset_id": "iso-source", "source_sha256": "iso-sha",
-                     "offset_us": 800_000, "status": "indexed",
-                     "scene_index_artifact_id": scene.id, "face_index_artifact_id": face.id,
-                     "visual_quality_artifact_id": quality.id}],
-        "engine": {"algorithm": "test", "algorithm_version": "1",
-                   "stages": ["scene_index", "face_index", "visual_quality_index"],
-                   "scene_threshold": 10.0, "face_sample_fps": 1.0,
-                   "visual_quality_sample_fps": 2.0},
-    })
-    return _write_artifact(
-        domain, project.id, "multicam_visual_index", tmp_path / "manifest.json",
-        manifest_document,
-    )
 
 
 def _reaction_candidates(tmp_path: Path, domain, project, camera, identity, quality) -> StageArtifact:
@@ -345,32 +279,6 @@ def test_camera_plan_persists_linked_shots_filters_quality_and_caches(tmp_path: 
     assert document.engine.temporal_reuse_allowed is False
     assert second["cached"] is True
     assert len(domain.list_stage_artifacts(project.id, "camera_edit_plan")) == 1
-
-
-def test_camera_plan_v2_replaces_only_fallback_with_synchronized_iso_context(tmp_path: Path) -> None:
-    config, domain, project, edit, camera, identity, quality = _planner_fixture(tmp_path)
-    manifest = _iso_manifest(tmp_path, domain, project)
-    result = CameraEditPlanService(config, domain).run(
-        edit_plan_artifact=edit, camera_timeline_artifact=camera,
-        identity_index_artifact=identity, visual_quality_artifact=quality,
-        multicam_visual_artifact=manifest,
-        progress_cb=lambda *_args: None, should_cancel=lambda: False,
-    )
-    document = CameraEditPlanDocument.model_validate_json(
-        Path(result["camera_edit_plan_path"]).read_text(encoding="utf-8")
-    )
-
-    assert [shot.intent for shot in document.shots] == ["speaker", "context", "context"]
-    assert document.shots[0].video_source_asset_id == "source-id"
-    iso_shot = document.shots[2]
-    assert iso_shot.video_source_asset_id == "iso-source"
-    assert iso_shot.audio_source_asset_id == "source-id"
-    assert (iso_shot.source_start_us, iso_shot.source_end_us) == (2_800_000, 3_800_000)
-    assert (iso_shot.audio_source_start_us, iso_shot.audio_source_end_us) == (2_000_000, 3_000_000)
-    assert iso_shot.sync_offset_us == 800_000
-    assert document.diagnostics.iso_context_shot_count == 1
-    assert "reaction_candidate_index_unavailable" in document.diagnostics.reaction_shots_blocked_by
-    assert document.engine.audio_continuity_mode == "primary_source_continuous"
 
 
 def _widen_edit_plan_timeline(edit: StageArtifact, end_seconds: float) -> None:
@@ -591,7 +499,6 @@ def test_camera_plan_rejects_mismatched_visual_chain(tmp_path: Path) -> None:
 
 def test_camera_plan_worker_persists_artifact(tmp_path: Path) -> None:
     config, domain, project, edit, camera, identity, quality = _planner_fixture(tmp_path)
-    manifest = _iso_manifest(tmp_path, domain, project)
     jobs = JobStore(config.paths.database)
     queued = jobs.create(JobCreate(
         type=JobType.CAMERA_PLANNING, project_id=project.id,
@@ -600,7 +507,6 @@ def test_camera_plan_worker_persists_artifact(tmp_path: Path) -> None:
             "camera_timeline_artifact_id": camera.id,
             "identity_index_artifact_id": identity.id,
             "visual_quality_artifact_id": quality.id,
-            "multicam_visual_artifact_id": manifest.id,
         },
     ))
 
@@ -611,7 +517,11 @@ def test_camera_plan_worker_persists_artifact(tmp_path: Path) -> None:
     artifact = domain.get_stage_artifact(final.result["camera_edit_plan_artifact_id"])
     assert artifact.stage == "camera_edit_plan" and Path(artifact.path).exists()
     document = CameraEditPlanDocument.model_validate_json(Path(artifact.path).read_text())
-    assert document.diagnostics.iso_context_shot_count == 1
+    assert all(
+        shot.video_source_asset_id == document.source_asset_id
+        and shot.audio_source_asset_id == document.source_asset_id
+        for shot in document.shots
+    )
 
 
 def test_camera_plan_routes_are_exposed_in_openapi(tmp_path: Path) -> None:
@@ -621,3 +531,24 @@ def test_camera_plan_routes_are_exposed_in_openapi(tmp_path: Path) -> None:
 
     assert "post" in paths[collection]
     assert "get" in paths[collection + "/{artifact_id}"]
+    assert all("multicam" not in path for path in paths)
+
+
+def test_camera_plan_v5_rejects_foreign_master_even_when_audio_and_video_match(
+    tmp_path: Path,
+) -> None:
+    config, domain, _project, edit, camera, identity, quality = _planner_fixture(tmp_path)
+    result = CameraEditPlanService(config, domain).run(
+        edit_plan_artifact=edit,
+        camera_timeline_artifact=camera,
+        identity_index_artifact=identity,
+        visual_quality_artifact=quality,
+        progress_cb=lambda *_args: None,
+        should_cancel=lambda: False,
+    )
+    payload = json.loads(Path(result["camera_edit_plan_path"]).read_text(encoding="utf-8"))
+    payload["shots"][0]["video_source_asset_id"] = "foreign-source"
+    payload["shots"][0]["audio_source_asset_id"] = "foreign-source"
+
+    with pytest.raises(ValidationError, match="master single-source"):
+        CameraEditPlanDocument.model_validate(payload)

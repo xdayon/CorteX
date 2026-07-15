@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from asgi_client import ASGITestClient as TestClient
 
 from cortex.analyze.scene_schemas import SceneCut, SceneIndexDocument, SceneIndexEngineInfo
 from cortex.api import create_app

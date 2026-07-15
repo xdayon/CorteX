@@ -1,6 +1,9 @@
 {
+  "baseline_schema_version": 2,
   "description": "Thresholds minimos do Gate 8 (conjunto de avaliacao editorial). Usados por scripts/eval_selection.py --check para detectar regressao de prompt/provider.",
   "iou_threshold": 0.5,
+  "min_human_confirmed_approved_decisions": 1,
+  "min_rejected_decisions": 1,
   "min_coverage_when_human_decisions": 0.5,
   "max_improper_rejected_overlap": 0.0,
   "min_completeness_rate": 1.0,

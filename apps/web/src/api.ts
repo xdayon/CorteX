@@ -377,7 +377,7 @@ export type CameraEditShot = {
   intent: "speaker" | "context" | "fallback" | "reaction";
   confirmed_identity_ids: string[];
   visual_quality_usable: boolean;
-  visual_origin: "primary_in_place" | "reaction_reuse" | "iso_synced";
+  visual_origin: "primary_in_place" | "reaction_reuse";
   reaction_candidate_id?: string | null;
   interviewer_identity_id?: string | null;
   selection_score?: number | null;
@@ -391,8 +391,6 @@ export type CameraEditDiagnostics = {
   context_shot_count: number;
   fallback_shot_count: number;
   unusable_scene_count: number;
-  iso_context_shot_count: number;
-  indexed_iso_camera_count: number;
   reaction_shots_enabled: boolean;
   reaction_shot_count: number;
   reused_candidate_ids: string[];
@@ -428,6 +426,12 @@ export type RenderSettings = {
   framing: {
     schema_version: 1;
     mode: "vertical_crop" | "blurred_background" | "face_static_crop";
+    punch_in: {
+      enabled: boolean;
+      scale: number;
+      anchor: "center" | "face";
+      alternate_on_jump_cuts: boolean;
+    };
   };
   captions: {
     enabled: boolean;
@@ -467,7 +471,7 @@ export type RenderSettings = {
 export type RenderSettingsPatch = {
   encoder?: RenderSettings["encoder"];
   canvas?: Partial<RenderSettings["canvas"]>;
-  framing?: Partial<Pick<RenderSettings["framing"], "mode">>;
+  framing?: Partial<Pick<RenderSettings["framing"], "mode">> & { punch_in?: RenderSettings["framing"]["punch_in"] };
   captions?: Partial<RenderSettings["captions"]>;
   headline?: Partial<RenderSettings["headline"]>;
   subtitles?: Partial<RenderSettings["subtitles"]>;
@@ -484,6 +488,7 @@ export type RenderDocument = {
   output_size_bytes: number;
   timeline_duration_seconds: number;
   segment_count: number;
+  punch_ins?: { segment_order: number; requested_scale: number; effective_scale: number; anchor_x: number; anchor_y: number; applied: boolean; reason?: string | null }[];
   subtitles_path?: string | null;
   subtitles_sha256?: string | null;
   overlays?: { renderer: string; captions_enabled: boolean; karaoke_enabled: boolean; caption_font?: string | null; headline_enabled: boolean; headline_text?: string | null; artifact_sha256?: string | null; remotion_version?: string | null } | null;
@@ -514,10 +519,19 @@ export type RenderDocument = {
     freeze_interval_count?: number;
     freeze_total_duration_seconds?: number;
     freeze_max_duration_seconds?: number;
+    technical?: RenderTechnicalQuality | null;
   };
   publication?: {
     publish_ready: boolean;
     reasons: string[];
+    warnings?: string[];
+    checks?: {
+      code: string;
+      status: "pass" | "warning" | "fail";
+      severity: "info" | "warning" | "blocking";
+      evidence: Record<string, boolean | number | string | null>;
+      thresholds: Record<string, number | string>;
+    }[];
     loudness: Record<string, number | null>;
     visual: Record<string, number | boolean | null>;
     captions: Record<string, number | boolean | null>;
@@ -526,7 +540,27 @@ export type RenderDocument = {
     dimensions: Record<string, number>;
     hashes: Record<string, string | null>;
     provenance: Record<string, string | null>;
+    punch_in?: Record<string, unknown>;
+    technical?: RenderTechnicalQuality | null;
   } | null;
+};
+
+export type RenderTechnicalQuality = {
+  version: 1;
+  full_decode_passed: boolean;
+  faststart: boolean;
+  moov_offset?: number | null;
+  mdat_offset?: number | null;
+  pts_discontinuity_count: number;
+  dts_discontinuity_count: number;
+  av_sync_delta_seconds?: number | null;
+  audio_channel_count?: number | null;
+  audio_peak_amplitude?: number | null;
+  clipped_sample_count: number;
+  waveform_jump_count: number;
+  channel_phase_correlation?: number | null;
+  thresholds: Record<string, number>;
+  engine: Record<string, string>;
 };
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
@@ -634,6 +668,12 @@ export const api = {
   identityIndex: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<IdentityIndexDocument>>(`/api/v1/projects/${projectId}/identities/${artifactId}`),
 
+  identityPreviewUrl: (projectId: string, artifactId: string, identityId: string) =>
+    `/api/v1/projects/${encodeURIComponent(projectId)}/identities/${encodeURIComponent(artifactId)}/${encodeURIComponent(identityId)}/preview`,
+
+  sourcePreviewUrl: (projectId: string, sourceAssetId: string, timeSeconds: number) =>
+    `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/preview?time_seconds=${encodeURIComponent(timeSeconds.toFixed(3))}`,
+
   cameraPlan: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<CameraEditPlanDocument>>(`/api/v1/projects/${projectId}/camera-plans/${artifactId}`),
 
@@ -662,6 +702,9 @@ export const api = {
 
   renderSubtitlesUrl: (projectId: string, artifactId: string) =>
     `/api/v1/projects/${projectId}/renders/${artifactId}/subtitles`,
+
+  renderReportUrl: (projectId: string, artifactId: string) =>
+    `/api/v1/projects/${projectId}/renders/${artifactId}/report`,
 
   // Upload via XHR para ter progresso real de envio (fetch não expõe upload progress).
   uploadSource: (projectId: string, file: File, onProgress?: (fraction: number) => void) =>

@@ -18,6 +18,7 @@ non-zero when a metric falls below baseline.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -26,7 +27,14 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from cortex.eval.runner import run_eval  # noqa: E402
+from cortex.eval.runner import (  # noqa: E402
+    check_against_baseline,
+    compare_eval_reports,
+    evaluate,
+    load_dataset,
+    load_suggestion_document,
+    run_eval,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -36,9 +44,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory containing dataset entries and schema.json",
     )
     parser.add_argument(
-        "--suggestions", required=True,
+        "--suggestions",
         help="Path to a suggestion artifact JSON file, or a StageArtifact id (requires --db)",
     )
+    parser.add_argument("--before", help="Before suggestion artifact for comparison mode")
+    parser.add_argument("--after", help="After suggestion artifact for comparison mode")
     parser.add_argument(
         "--output", required=True, type=Path,
         help="Path to write the JSON evaluation report",
@@ -57,7 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--db", type=Path, default=None,
-        help="Path to cortex.sqlite3, only needed if --suggestions is a StageArtifact id",
+        help="Path to cortex.sqlite3; required for artifact ids and words/VAD evidence resolution",
     )
     return parser.parse_args(argv)
 
@@ -65,24 +75,57 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
+    comparison_mode = args.before is not None or args.after is not None
+    if comparison_mode:
+        if not args.before or not args.after or args.suggestions:
+            raise SystemExit("comparison mode requires --before and --after, without --suggestions")
+    elif not args.suggestions:
+        raise SystemExit("single mode requires --suggestions")
+
     domain_store = None
     if args.db is not None:
         from cortex.domain.store import DomainStore
 
         domain_store = DomainStore(args.db)
 
-    report, passed, failures = run_eval(
-        dataset_dir=args.dataset,
-        suggestion_source=args.suggestions,
-        output_path=args.output,
-        iou_threshold=args.iou_threshold,
-        domain_store=domain_store,
-        baseline_path=args.baseline if args.check else None,
-        check=args.check,
-    )
+    if comparison_mode:
+        entries = load_dataset(args.dataset)
+        before = evaluate(
+            load_suggestion_document(args.before, domain_store), entries,
+            iou_threshold=args.iou_threshold,
+        )
+        after = evaluate(
+            load_suggestion_document(args.after, domain_store), entries,
+            iou_threshold=args.iou_threshold,
+        )
+        report = compare_eval_reports(before, after)
+        passed = True
+        failures: list[str] = []
+        if args.check:
+            baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
+            passed, failures = check_against_baseline(after, baseline)
+            report["baseline_used"] = str(args.baseline)
+            report["baseline"] = baseline
+            report["baseline_check_passed"] = passed
+            report["baseline_check_failures"] = failures
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    else:
+        report, passed, failures = run_eval(
+            dataset_dir=args.dataset,
+            suggestion_source=args.suggestions,
+            output_path=args.output,
+            iou_threshold=args.iou_threshold,
+            domain_store=domain_store,
+            baseline_path=args.baseline if args.check else None,
+            check=args.check,
+        )
 
     print(f"report written to {args.output}")
-    print(f"metrics: {report['metrics']}")
+    metrics = report["after"]["metrics"] if comparison_mode else report["metrics"]
+    print(f"metrics: {metrics}")
 
     if args.check:
         if passed:

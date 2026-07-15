@@ -8,6 +8,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 EVAL_RUNNER_SCHEMA_VERSION = 1
+EVAL_BASELINE_SCHEMA_VERSION = 2
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATASET_SCHEMA_PATH = REPO_ROOT / "eval" / "dataset" / "schema.json"
@@ -73,18 +74,48 @@ def load_suggestion_document(source: str, domain_store: Any | None = None) -> di
     lookup requires a DomainStore instance to resolve the id to a file path."""
     path = Path(source)
     if path.is_file():
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    if domain_store is None:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    elif domain_store is None:
         raise SuggestionArtifactError(
             f"suggestion source is not a file and no DomainStore was provided: {source}"
         )
-    artifact = domain_store.get_stage_artifact(source)
-    if artifact.stage != "suggestion":
-        raise SuggestionArtifactError(
-            f"stage artifact {source} is not a suggestion artifact (stage={artifact.stage})"
+    else:
+        artifact = domain_store.get_stage_artifact(source)
+        if artifact.stage != "suggestion":
+            raise SuggestionArtifactError(
+                f"stage artifact {source} is not a suggestion artifact (stage={artifact.stage})"
+            )
+        document = json.loads(Path(artifact.path).read_text(encoding="utf-8"))
+
+    if domain_store is not None and document.get("transcript_artifact_id"):
+        transcript_artifact = domain_store.get_transcript_artifact(
+            document["transcript_artifact_id"]
         )
-    return json.loads(Path(artifact.path).read_text(encoding="utf-8"))
+        source_asset = domain_store.get_source_asset(transcript_artifact.source_asset_id)
+        transcript = json.loads(Path(transcript_artifact.path).read_text(encoding="utf-8"))
+        words = [
+            {"start": word["start"], "end": word["end"]}
+            for segment in transcript.get("segments", [])
+            for word in segment.get("words", [])
+            if "start" in word and "end" in word
+        ]
+        vad_intervals: list[dict[str, float]] = []
+        analysis_id = document.get("analysis_artifact_id")
+        if analysis_id:
+            analysis_artifact = domain_store.get_stage_artifact(analysis_id)
+            if analysis_artifact.stage != "analysis":
+                raise SuggestionArtifactError(
+                    f"artifact {analysis_id} is not analysis (stage={analysis_artifact.stage})"
+                )
+            analysis = json.loads(Path(analysis_artifact.path).read_text(encoding="utf-8"))
+            vad_intervals = analysis.get("vad_intervals", [])
+        document["_evaluation_evidence"] = {
+            "source_sha256": source_asset.sha256,
+            "transcript_artifact_hash": transcript_artifact.audio_sha256,
+            "words": words,
+            "vad_intervals": vad_intervals,
+        }
+    return document
 
 
 # -- Interval math --------------------------------------------------------
@@ -106,35 +137,34 @@ def interval_iou(a_start: float, a_end: float, b_start: float, b_end: float) -> 
 
 
 def select_episode(
-    dataset_entries: list[dict[str, Any]], clips: list[dict[str, Any]]
+    dataset_entries: list[dict[str, Any]], clips: list[dict[str, Any]],
+    *, source_sha256: str | None = None, transcript_artifact_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Pick the dataset entry that best matches a suggestion's clips.
+    """Select exactly one episode, preferring artifact hashes over timing guesses."""
+    if source_sha256 or transcript_artifact_hash:
+        matched = [
+            entry for entry in dataset_entries
+            if (
+                source_sha256 is None
+                or entry["episode"]["source_sha256"] == source_sha256
+            )
+            and (
+                transcript_artifact_hash is None
+                or entry["episode"]["transcript_artifact_hash"] == transcript_artifact_hash
+            )
+        ]
+        if len(matched) != 1:
+            raise EvalDatasetError(
+                "evaluation evidence must match exactly one dataset episode "
+                f"(matched={len(matched)})"
+            )
+        return matched[0]
 
-    Preference: entries whose episode duration covers every suggested clip, ranked
-    by how many decisions temporally overlap the suggested clips. Falls back to the
-    entry with the highest overlap score if none fully cover the clips.
-    """
-    max_end = max((clip["end_second"] for clip in clips), default=0.0)
-
-    scored: list[tuple[bool, int, dict[str, Any]]] = []
-    for entry in dataset_entries:
-        fits = entry["episode"]["duration_seconds"] >= max_end
-        overlap_score = 0
-        for decision in entry["decisions"]:
-            ref = decision["clip_ref"]
-            for clip in clips:
-                if interval_iou(
-                    ref["start_second"], ref["end_second"],
-                    clip["start_second"], clip["end_second"],
-                ) > 0.0:
-                    overlap_score += 1
-                    break
-        scored.append((fits, overlap_score, entry))
-
-    fitting = [item for item in scored if item[0]]
-    pool = fitting if fitting else scored
-    pool.sort(key=lambda item: item[1], reverse=True)
-    return pool[0][2]
+    if len(dataset_entries) != 1:
+        raise EvalDatasetError(
+            "suggestion has no source hash and dataset contains multiple episodes"
+        )
+    return dataset_entries[0]
 
 
 # -- Metrics ----------------------------------------------------------------
@@ -168,16 +198,33 @@ def _clip_within_duration_bounds(clip: dict[str, Any]) -> bool:
     return 15.0 <= duration <= 180.0
 
 
-def _clip_boundary_safe(clip: dict[str, Any], episode_duration_seconds: float) -> bool:
+def _clip_boundary_safe(
+    clip: dict[str, Any], episode_duration_seconds: float, evidence: dict[str, Any]
+) -> tuple[bool | None, str]:
     start = clip.get("start_second")
     end = clip.get("end_second")
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
-        return False
+        return False, "invalid_interval"
     if start < 0 or end <= start:
-        return False
+        return False, "invalid_interval"
     if end > episode_duration_seconds:
-        return False
-    return True
+        return False, "invalid_interval"
+    boundaries = (float(start), float(end))
+    words = evidence.get("words") or []
+    if words:
+        safe = all(
+            not any(float(word["start"]) < boundary < float(word["end"]) for word in words)
+            for boundary in boundaries
+        )
+        return safe, "word_timestamps"
+    vad_intervals = evidence.get("vad_intervals") or []
+    if vad_intervals:
+        safe = all(
+            not any(float(item["start"]) < boundary < float(item["end"]) for item in vad_intervals)
+            for boundary in boundaries
+        )
+        return safe, "vad_intervals_conservative"
+    return None, "missing_words_and_vad"
 
 
 def evaluate(
@@ -189,7 +236,12 @@ def evaluate(
     selection = suggestion_document.get("selection", {})
     clips: list[dict[str, Any]] = selection.get("clips", [])
 
-    episode_entry = select_episode(dataset_entries, clips)
+    evidence = suggestion_document.get("_evaluation_evidence", {})
+    episode_entry = select_episode(
+        dataset_entries, clips,
+        source_sha256=evidence.get("source_sha256"),
+        transcript_artifact_hash=evidence.get("transcript_artifact_hash"),
+    )
     episode_duration = float(episode_entry["episode"]["duration_seconds"])
     decisions = episode_entry["decisions"]
 
@@ -232,10 +284,10 @@ def evaluate(
     for clip in clips:
         complete = _clip_is_complete(clip)
         within_duration = _clip_within_duration_bounds(clip)
-        boundary_safe = _clip_boundary_safe(clip, episode_duration)
+        boundary_safe, boundary_method = _clip_boundary_safe(clip, episode_duration, evidence)
         complete_count += int(complete)
         within_duration_count += int(within_duration)
-        boundary_safe_count += int(boundary_safe)
+        boundary_safe_count += int(boundary_safe is True)
 
         matched_decision_verdict = None
         matched_iou = 0.0
@@ -260,6 +312,7 @@ def evaluate(
             "complete_fields": complete,
             "within_duration_bounds": within_duration,
             "boundary_safe": boundary_safe,
+            "boundary_evidence": boundary_method,
         })
 
     clip_count = len(clips)
@@ -272,7 +325,11 @@ def evaluate(
         "rejected_decision_count": len(rejected_decisions),
         "completeness_rate": (complete_count / clip_count) if clip_count else None,
         "duration_within_bounds_rate": (within_duration_count / clip_count) if clip_count else None,
-        "boundary_safe_rate": (boundary_safe_count / clip_count) if clip_count else None,
+        "boundary_safe_rate": (
+            boundary_safe_count / clip_count
+            if clip_count and all(item["boundary_safe"] is not None for item in clip_reports)
+            else None
+        ),
     }
 
     return {
@@ -298,6 +355,57 @@ def evaluate(
 def check_against_baseline(report: dict[str, Any], baseline: dict[str, Any]) -> tuple[bool, list[str]]:
     metrics = report["metrics"]
     failures: list[str] = []
+
+    baseline_schema_version = baseline.get("baseline_schema_version")
+    if baseline_schema_version is not None and (
+        isinstance(baseline_schema_version, bool)
+        or not isinstance(baseline_schema_version, int)
+        or baseline_schema_version not in {1, EVAL_BASELINE_SCHEMA_VERSION}
+    ):
+        failures.append(
+            "[unsupported_baseline_schema_version] baseline_schema_version "
+            f"{baseline_schema_version!r} not in supported "
+            f"[1, {EVAL_BASELINE_SCHEMA_VERSION}]"
+        )
+
+    def require_decision_count(
+        *, baseline_field: str, metric_field: str, unavailable_code: str,
+        insufficient_code: str,
+    ) -> None:
+        if baseline_field not in baseline:
+            return
+
+        minimum = baseline[baseline_field]
+        if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum <= 0:
+            failures.append(
+                f"[invalid_{baseline_field}] {baseline_field} must be a positive integer, "
+                f"got {minimum!r}"
+            )
+            return
+
+        count = metrics.get(metric_field)
+        if isinstance(count, bool) or not isinstance(count, int):
+            failures.append(
+                f"[{unavailable_code}] {metric_field} unavailable; baseline requires "
+                f"at least {minimum}"
+            )
+        elif count < minimum:
+            failures.append(
+                f"[{insufficient_code}] {metric_field} {count} < baseline {minimum}"
+            )
+
+    require_decision_count(
+        baseline_field="min_human_confirmed_approved_decisions",
+        metric_field="human_confirmed_approved_count",
+        unavailable_code="human_confirmed_decision_count_unavailable",
+        insufficient_code="insufficient_human_confirmed_decisions",
+    )
+    require_decision_count(
+        baseline_field="min_rejected_decisions",
+        metric_field="rejected_decision_count",
+        unavailable_code="rejected_decision_count_unavailable",
+        insufficient_code="insufficient_rejected_decisions",
+    )
 
     min_coverage = baseline.get("min_coverage_when_human_decisions")
     if min_coverage is not None and metrics["human_confirmed_approved_count"] > 0:
@@ -331,8 +439,10 @@ def check_against_baseline(report: dict[str, Any], baseline: dict[str, Any]) -> 
             )
 
     min_boundary_safe = baseline.get("min_boundary_safe_rate")
-    if min_boundary_safe is not None and metrics["boundary_safe_rate"] is not None:
-        if metrics["boundary_safe_rate"] < min_boundary_safe:
+    if min_boundary_safe is not None:
+        if metrics["boundary_safe_rate"] is None:
+            failures.append("boundary_safe_rate unavailable: words/VAD evidence required")
+        elif metrics["boundary_safe_rate"] < min_boundary_safe:
             failures.append(
                 f"boundary_safe_rate {metrics['boundary_safe_rate']} < baseline {min_boundary_safe}"
             )
@@ -371,3 +481,24 @@ def run_eval(
     output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return report, passed, failures
+
+
+def compare_eval_reports(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Build a persisted, machine-readable before/after metric comparison."""
+    metric_names = sorted(set(before["metrics"]) | set(after["metrics"]))
+    deltas: dict[str, float | int | None] = {}
+    for name in metric_names:
+        old = before["metrics"].get(name)
+        new = after["metrics"].get(name)
+        deltas[name] = (
+            round(float(new) - float(old), 6)
+            if isinstance(old, (int, float)) and isinstance(new, (int, float))
+            else None
+        )
+    return {
+        "eval_comparison_schema_version": 1,
+        "generated_at": utc_now_iso(),
+        "before": before,
+        "after": after,
+        "metric_deltas_after_minus_before": deltas,
+    }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import {createHash, randomBytes} from 'node:crypto';
 import {access, mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises';
-import {constants as fsConstants, createReadStream} from 'node:fs';
+import {constants as fsConstants, createReadStream, writeSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {dirname, isAbsolute, resolve} from 'node:path';
@@ -146,6 +146,9 @@ const main = async () => {
 };
 
 main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exitCode = 1;
+  writeSync(2, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  // Remotion may have started a long-running compositor before failing. A
+  // passive exitCode leaves that handle alive until the Python 30-minute
+  // timeout; explicit exit keeps failures bounded and auditable.
+  process.exit(1);
 });

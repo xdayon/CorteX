@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from asgi_client import ASGITestClient as TestClient
 
 from cortex.analyze.scene_detect import build_scenes, parse_scene_cuts, scdet_command
 from cortex.analyze.scene_schemas import SceneIndexDocument

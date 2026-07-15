@@ -1,5 +1,4 @@
-# Keep routine repository work on the economical model. A human or orchestrator
-# can override `-m` for architecture, difficult debugging, or final review.
-model = "gpt-5.4-mini"
-model_reasoning_effort = "low"
+# Balanced defaults for daily repository work.
 personality = "pragmatic"
+model_verbosity = "low"
+model_reasoning_summary = "concise"
