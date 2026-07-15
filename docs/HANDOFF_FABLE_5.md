@@ -1527,3 +1527,22 @@ matriz Gate 9 restante e somente entao remover o legado do Gate 10.
 - Verificacao apos as correcoes: 275 testes passaram no sandbox com 3 skips de
   browser; no host, `CORTEX_RUN_REMOTION_E2E=1 .venv/bin/pytest -q` passou com
   278 testes em 90,18 s. `git diff --check` permaneceu limpo.
+
+### Render e previews do Studio validados em projeto real (2026-07-15)
+
+- A EDL e o renderer agora limitam os segmentos pela menor duracao fisica dos
+  streams de audio/video. O trim final posterior ao overlay remove frames de
+  arredondamento do Remotion; o corte no fim da fonte passou com 80,24 s reais
+  e esperados e delta A/V de 6,992 ms.
+- Loudness fora da tolerancia recebe correcao medida em duas passadas, mantendo
+  o video em stream copy. O caso real de -12,8 LUFS foi corrigido para -13,9
+  LUFS e ficou publicavel.
+- Planos quase estaticos entre 1,5 s e 5 s permanecem avisos auditaveis; somente
+  congelamentos de 5 s ou mais bloqueiam. Os tres renders NVENC reais do
+  projeto `d7066b6201f34e0292fd8bbc2ceaa4e3` ficaram `publish_ready=true`.
+- O Studio mostra um frame real da fonte no preview tipografico e cards com
+  crops 240x240 das identidades confirmadas. A amostra usa o par exato
+  frame/face da observacao, sem confundir pessoas que ocupam o mesmo slot.
+- Verificacao focada: 31 testes de render/edit e 23 de previews/QA passaram;
+  build Web passou. Suite completa: 289 passaram e 3 skips; as duas regressoes
+  encontradas foram corrigidas e os testes afetados passaram novamente.

@@ -139,8 +139,10 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
 - [ ] E2E com episodio real e benchmark CPU/GPU (harness offline persistente em
   `scripts/gate9_benchmark.py`, template em `eval/gate9-matrix.example.json`;
   cadeia YouTube longa, CUDA int8, 25 sugestoes e primeiro render NVENC
-  publicavel registrados em `docs/evidence/gate9-host-preflight.md`; matriz
-  restante do host ainda pendente);
+  publicavel registrados em `docs/evidence/gate9-host-preflight.md`; tres
+  renders NVENC adicionais de uma fonte local passaram o gate em 2026-07-15,
+  incluindo fim fisico da fonte e loudness em duas passadas; matriz restante
+  do host ainda pendente);
 - [x] retomada apos interrupcao e fila persistida de ate 25 cortes;
 - [ ] relatorio de QA e comparacao antes/depois (Gate 7 e runners prontos;
   relatorio consolidado Gate 9 depende da matriz real);

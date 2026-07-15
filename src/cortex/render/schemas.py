@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from cortex.render.technical_quality import RenderTechnicalQualityReport
 
-RENDER_SCHEMA_VERSION = 12
+RENDER_SCHEMA_VERSION = 13
 RENDER_SETTINGS_SCHEMA_VERSION = 1
 OVERLAY_SCHEMA_VERSION = 1
 

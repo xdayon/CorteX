@@ -565,6 +565,7 @@ def _filtergraph(
             f"channel_layouts=stereo[a{index}]"
         )
 
+    video_duration_acc = durations[0]
     if len(plan.segments) == 1:
         audio_parts.append(
             f"[a0]loudnorm=I={loudness_target_lufs:.2f}:TP={normalization_true_peak:.2f}:"
@@ -661,6 +662,14 @@ def _filtergraph(
             "[vremotion]"
         )
         video_label = "[vremotion]"
+    # Remotion rounds its transparent composition up to whole frames. Trim
+    # after the overlay so that this padding cannot extend the encoded video
+    # beyond the physical EDL (and be mistaken for A/V drift by the gate).
+    filters.append(
+        f"{video_label}trim=duration={video_duration_acc:.6f},"
+        "setpts=PTS-STARTPTS[vfinal]"
+    )
+    video_label = "[vfinal]"
     return ";".join(filters), video_label, "[anorm]"
 
 
@@ -996,6 +1005,17 @@ class RenderService:
         source_path = self._config.paths.data_dir / source.stored_path
         if not source_path.exists():
             raise RenderPreconditionError("arquivo fonte não está disponível")
+        requested_settings = render_settings or _default_render_settings(
+            self._config, encoder=encoder, headline=headline
+        )
+        requested_settings = _merge_render_settings(requested_settings, render_settings_override)
+        requested_encoder = requested_settings.encoder.strip()
+        _encoder_args(requested_encoder)
+        if (
+            requested_settings.framing.mode == "face_static_crop"
+            and camera_edit_plan_artifact is not None
+        ):
+            raise RenderPreconditionError("face_static_crop ainda não aceita camera_edit_plan")
         source_probe = source.probe or probe_media(self._config.render.ffprobe, source_path)
         source_duration = usable_av_duration_seconds(source_probe)
         if source_duration <= 0:
@@ -1089,12 +1109,6 @@ class RenderService:
                 normalized_shots.extend(shots)
             camera_plan = camera_plan.model_copy(update={"shots": normalized_shots})
 
-        requested_settings = render_settings or _default_render_settings(
-            self._config, encoder=encoder, headline=headline
-        )
-        requested_settings = _merge_render_settings(requested_settings, render_settings_override)
-        requested_encoder = requested_settings.encoder.strip()
-        _encoder_args(requested_encoder)
         try:
             transcript_artifact = self._domain.get_transcript_artifact(plan.transcript_artifact_id)
         except TranscriptArtifactNotFoundError as exc:

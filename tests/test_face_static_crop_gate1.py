@@ -487,7 +487,7 @@ def test_face_static_crop_renders_static_target_crop_with_auditable_manifest(tmp
     render_artifact = domain.get_stage_artifact(result["render_artifact_id"])
     document = RenderDocument.model_validate_json(Path(render_artifact.path).read_text())
 
-    assert document.schema_version == 11
+    assert document.schema_version == 13
     assert document.target_identity_id == "me"
     assert document.face_index_artifact_id == face_artifact.id
     assert document.identity_index_artifact_id == identity_artifact.id
