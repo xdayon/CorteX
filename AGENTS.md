@@ -48,8 +48,8 @@
   physical cut boundaries from words, VAD, waveform, scenes, and media timebase.
 - LLM providers are replaceable adapters. CLI/subscription and local providers
   are allowed; API billing must never be required for the local-first path.
-- Transcript analysis requests Codex CLI first (`gpt-5.5`, medium reasoning)
-  and Claude CLI only as an explicit, provenance-recorded fallback.
+- Transcript analysis requests only Codex CLI (`gpt-5.5`, medium reasoning).
+  Do not add an editorial fallback provider; surface Codex failures explicitly.
 - Validate every model response against a versioned JSON Schema. Record provider,
   model, command/version, prompt hash, input hash, timestamps, and effective mode.
 - Never silently fall back between LLM, heuristic, GPU/CPU, decoder, or encoder.

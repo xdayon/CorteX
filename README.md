@@ -69,8 +69,8 @@ O worker local processa ingestao YouTube, transcricao faster-whisper, analise
 Silero/waveform/loudness, selecao editorial via Codex CLI, planejamento de EDL e
 render FFmpeg multi-segmento. O caminho padrao usa
 a assinatura ChatGPT configurada
-no `codex`, sem exigir API key. Claude CLI e o fallback configurado; a troca fica
-explicita na provenance do artifact. Limites dos planos continuam valendo.
+no `codex`, sem exigir API key. Nao existe fallback editorial: falhas do Codex
+ficam explicitas para retentativa. Limites dos planos continuam valendo.
 O render persiste MP4 e manifesto com streams/duracao/loudness validados, gera um
 overlay VP9 alpha cacheavel via Remotion para headline e karaoke palavra por palavra,
 compoe o overlay no master FFmpeg e publica sidecar SRT. Node, Remotion, hash do

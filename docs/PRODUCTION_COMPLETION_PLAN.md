@@ -92,7 +92,7 @@ Aceite:
 
 - todos os dados exibidos provem de artifacts persistidos;
 - validacoes de limites possuem testes de boundary;
-- provenance diferencia `codex_cli`, `claude_cli` e `local_heuristic`;
+- provenance registra o `codex_cli`; nao existe troca silenciosa de motor editorial;
 - Curadoria nao contem waveform, score, filler ou loudness ilustrativos.
 
 ### Gate 3 - Regra de diversidade single-source

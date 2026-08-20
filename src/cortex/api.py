@@ -18,7 +18,7 @@ from cortex.analyze.reaction_candidate_schemas import ReactionCandidateIndexDocu
 from cortex.analyze.speaker_schemas import SpeakerTimelineDocument
 from cortex.analyze.visual_quality_schemas import VisualQualityDocument
 from cortex.config import CortexConfig, load_config
-from cortex.domain.models import RenderPreset, SourceAsset, SourceKind
+from cortex.domain.models import RenderPreset, SourceAsset, SourceKind, WorkflowRun, WorkflowStatus
 from cortex.domain.store import (
     DomainStore,
     ProjectNotFoundError,
@@ -27,6 +27,7 @@ from cortex.domain.store import (
     SourceAssetNotFoundError,
     StageArtifactNotFoundError,
     TranscriptArtifactNotFoundError,
+    WorkflowRunNotFoundError,
 )
 from cortex.edit.camera_plan_schemas import CameraEditPlanDocument
 from cortex.edit.schemas import EditPlanDocument
@@ -80,6 +81,23 @@ class TranscribeRequest(BaseModel):
     language: str | None = None
     batch_size: int | None = Field(default=None, ge=0, le=64)
     vad: bool | None = None
+
+
+class WorkflowRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str
+    count: int = Field(default=10, ge=1, le=25)
+    minimum_seconds: float = Field(default=40, ge=15, le=180)
+    maximum_seconds: float = Field(default=120, ge=15, le=180)
+    topic: str | None = Field(default=None, max_length=500)
+    instructions: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def duration_order(self) -> "WorkflowRunCreate":
+        if self.maximum_seconds < self.minimum_seconds:
+            raise ValueError("maximum_seconds deve ser maior ou igual a minimum_seconds")
+        return self
 
 
 class AnalysisRequest(BaseModel):
@@ -225,8 +243,6 @@ class SuggestionRequest(BaseModel):
     primary_subject: str | None = Field(default=None, max_length=200)
     topic: str | None = Field(default=None, max_length=500)
     instructions: str | None = Field(default=None, max_length=4000)
-    provider: Literal["codex_cli", "claude_cli", "local_heuristic"] | None = Field(default=None)
-
     @model_validator(mode="after")
     def duration_order(self) -> "SuggestionRequest":
         if self.minimum_seconds > self.maximum_seconds:
@@ -371,6 +387,14 @@ def create_app(config: CortexConfig | None = None):
             payload={"url": request.url},
         ))
 
+    @app.get(f"{router_prefix}/projects/{{project_id}}/sources")
+    def list_sources(project_id: str):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        return domain.list_source_assets(project_id)
+
     def _preview_source(project_id: str, source_asset_id: str):
         try:
             asset = domain.get_source_asset(source_asset_id)
@@ -429,6 +453,59 @@ def create_app(config: CortexConfig | None = None):
             media_type="image/jpeg",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/sources/{{source_asset_id}}/media")
+    def get_source_media(project_id: str, source_asset_id: str):
+        _asset, source_path = _preview_source(project_id, source_asset_id)
+        return FileResponse(source_path, filename=source_path.name)
+
+    @app.post(f"{router_prefix}/projects/{{project_id}}/runs", status_code=201)
+    def create_workflow_run(project_id: str, request: WorkflowRunCreate):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        try:
+            asset = domain.get_source_asset(request.source_asset_id)
+        except SourceAssetNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Fonte não encontrada") from exc
+        if asset.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Fonte não pertence a este projeto")
+
+        brief = request.model_dump(exclude={"source_asset_id"}, exclude_none=True)
+        run = domain.create_workflow_run(WorkflowRun(
+            project_id=project_id,
+            source_asset_id=asset.id,
+            status=WorkflowStatus.RUNNING,
+            stage="transcribe",
+            progress=2,
+            message="Transcrição na fila",
+            brief=brief,
+        ))
+        job = jobs.create(JobCreate(
+            type=JobType.TRANSCRIPTION,
+            project_id=project_id,
+            payload={"source_asset_id": asset.id, "workflow_run_id": run.id, "overrides": {}},
+        ))
+        return domain.update_workflow_run(run.id, active_job_id=job.id)
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/runs")
+    def list_workflow_runs(project_id: str):
+        try:
+            domain.get_project(project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
+        return domain.list_workflow_runs(project_id)
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/runs/{{run_id}}")
+    def get_workflow_run(project_id: str, run_id: str):
+        try:
+            run = domain.get_workflow_run(run_id)
+        except WorkflowRunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Processamento não encontrado") from exc
+        if run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Processamento não encontrado")
+        return run
 
     @app.post(f"{router_prefix}/projects/{{project_id}}/transcribe", status_code=201)
     def create_transcribe_job(project_id: str, request: TranscribeRequest):
@@ -1375,7 +1452,7 @@ def create_app(config: CortexConfig | None = None):
         if analysis.project_id != project_id or analysis.stage != "analysis":
             raise HTTPException(status_code=400, detail="Análise não pertence a este projeto")
         brief = request.model_dump(
-            exclude={"transcript_artifact_id", "analysis_artifact_id", "provider"},
+            exclude={"transcript_artifact_id", "analysis_artifact_id"},
             exclude_none=True,
         )
         return jobs.create(JobCreate(
@@ -1385,9 +1462,21 @@ def create_app(config: CortexConfig | None = None):
                 "transcript_artifact_id": request.transcript_artifact_id,
                 "analysis_artifact_id": request.analysis_artifact_id,
                 "brief": brief,
-                "provider": request.provider,
             },
         ))
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/suggestions/{{artifact_id}}")
+    def get_suggestion(project_id: str, artifact_id: str):
+        try:
+            artifact = domain.get_stage_artifact(artifact_id)
+        except StageArtifactNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Sugestão não encontrada") from exc
+        if artifact.project_id != project_id or artifact.stage != "suggestion":
+            raise HTTPException(status_code=404, detail="Sugestão não encontrada")
+        path = Path(artifact.path)
+        if not path.exists():
+            raise HTTPException(status_code=410, detail="Arquivo da sugestão não está disponível")
+        return {"artifact": artifact, "document": json.loads(path.read_text(encoding="utf-8"))}
 
     @app.post(f"{router_prefix}/jobs", status_code=201)
     def create_job(request: JobCreate):

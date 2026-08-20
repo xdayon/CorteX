@@ -482,8 +482,8 @@ render de prontos sem teste real na GTX 1060 Max-Q.
 
 Depois deste handoff, foi implementado o primeiro caminho real de selecao:
 
-- provider `codex_cli` primario, efemero/read-only e sem API key obrigatoria;
-- fallback `claude_cli` tool-free, sempre identificado na provenance;
+- motor editorial unico `codex_cli`, efemero/read-only e sem API key obrigatoria;
+- falhas do Codex sao explicitas; nao existe fallback editorial;
 - timeout, cancelamento, JSON Schema, provenance e cache por hash;
 - `POST /api/v1/projects/{id}/suggest` e handler `suggestion` no worker;
 - frontend dispara o job e usa os cortes retornados na Curadoria;
@@ -1325,8 +1325,8 @@ orquestrador (suite + builds reexecutados antes de cada commit).
   hash), Curadoria com hook/contexto/payoff/headline/subscores/warnings/
   density/loudness/fillers reais, provenance visivel (incl. fix da
   resposta cacheada sem provenance), limites 15-180/1-25 com boundary
-  tests, LocalHeuristicProvider opt-in (request.provider ou
-  ai.enable_local_heuristic_fallback) com provenance mode=heuristic.
+  tests. O antigo LocalHeuristicProvider opt-in foi removido; o contrato atual
+  usa exclusivamente Codex CLI e falha explicitamente quando indisponivel.
 - Proximo: fechar Gate 1 (E2E + docs) e iniciar Gate 3 com o gap report
   ja levantado (falta: tempo por identidade/role no camera plan, politica
   versionada de diversidade, piso de confianca para reaction, bloqueador

@@ -3,6 +3,13 @@
 Ordem operacional, gates de aceite e roteiro para novas sessoes:
 `docs/PRODUCTION_COMPLETION_PLAN.md`.
 
+## Simplificacao do produto (em andamento)
+
+- [x] fluxo principal em 3 telas: novo episodio, escolha de cortes e exportacao;
+- [x] `WorkflowRun` persistido encadeia transcricao, analise e selecao Codex;
+- [x] estado de retomada persistido no backend e reaberto pela interface;
+- [ ] identidade do usuario e reacoes seguras como enriquecimento nao bloqueante;
+
 ## Fase 0 - Fundacao (concluida)
 
 - manifests Python/Node e configuracao central;
@@ -39,11 +46,11 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
 ## Fase 3 - Selecao e curadoria
 
 - [x] prompts PT-BR versionados e saida JSON estruturada;
-- [x] Codex CLI primario e Claude CLI fallback, com timeout, cancelamento e provenance;
+- [x] Codex CLI como unico motor editorial, com timeout, cancelamento e provenance;
 - [x] job, cache por hash, endpoint e curadoria alimentada pela resposta real;
 - [x] duracao 15-180 s e 1-25 sugestoes (schema minItems=1/minimum=15, config, API, UI clamp, boundary tests);
 - [x] hook, contexto, payoff, headline e explicacao do score exibidos com dados reais na Curadoria;
-- [x] fallback local identificado como heuristico (LocalHeuristicProvider opt-in, mode=heuristic, badge "SEM LLM");
+- [x] remocao dos fallbacks editorial Claude e heuristico; falhas do Codex sao explicitas;
 - [ ] conjunto de avaliacao com cortes aprovados/reprovados (infraestrutura pronta:
   eval/dataset versionado
   sem midia privada, runner offline scripts/eval_selection.py com relatorio JSON,

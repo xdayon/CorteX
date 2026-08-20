@@ -83,3 +83,33 @@ class RenderPreset(BaseModel):
     settings: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class WorkflowStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    READY_FOR_REVIEW = "ready_for_review"
+    RENDERING = "rendering"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class WorkflowRun(BaseModel):
+    """Persisted episode workflow that survives UI and worker restarts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    project_id: str
+    source_asset_id: str
+    status: WorkflowStatus = WorkflowStatus.QUEUED
+    stage: str = "transcribe"
+    progress: float = Field(default=0.0, ge=0.0, le=100.0)
+    message: str = "Aguardando processamento"
+    brief: dict[str, Any] = Field(default_factory=dict)
+    active_job_id: str | None = None
+    artifacts: dict[str, str] = Field(default_factory=dict)
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)

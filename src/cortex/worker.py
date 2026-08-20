@@ -34,7 +34,7 @@ from cortex.analyze.service import AnalysisJobCancelled, AnalysisService
 from cortex.analyze.speaker_service import SpeakerTimelineJobCancelled, SpeakerTimelineService
 from cortex.analyze.visual_quality_service import VisualQualityJobCancelled, VisualQualityService
 from cortex.config import CortexConfig, load_config
-from cortex.domain.models import SourceAsset, SourceKind
+from cortex.domain.models import SourceAsset, SourceKind, WorkflowStatus
 from cortex.domain.store import DomainStore
 from cortex.edit.camera_plan_service import CameraEditPlanJobCancelled, CameraEditPlanService
 from cortex.edit.service import EditPlanJobCancelled, EditPlanService
@@ -44,11 +44,9 @@ from cortex.jobs import InvalidJobTransitionError, JobStore
 from cortex.paths import source_dir
 from cortex.render.schemas import RenderSettings, RenderSettingsPatch
 from cortex.render.service import RenderJobCancelled, RenderService
-from cortex.schemas import Job, JobStatus, JobType, JobUpdate, PipelineStage
+from cortex.schemas import Job, JobCreate, JobStatus, JobType, JobUpdate, PipelineStage
 from cortex.suggest.provider import (
-    FallbackSuggestionProvider,
     SuggestionProvider,
-    build_named_provider,
     build_suggestion_provider,
 )
 from cortex.suggest.service import SuggestionJobCancelled, SuggestionService
@@ -878,6 +876,85 @@ _HANDLERS: dict[JobType, Any] = {
 }
 
 
+def _advance_workflow(job: Job, jobs: JobStore, domain: DomainStore) -> None:
+    run_id = job.payload.get("workflow_run_id")
+    if not run_id:
+        return
+    run = domain.get_workflow_run(run_id)
+    if run.active_job_id != job.id:
+        return
+    final = jobs.get(job.id)
+    if final.status == JobStatus.FAILED:
+        domain.update_workflow_run(
+            run.id,
+            status=WorkflowStatus.FAILED,
+            message="Processamento interrompido",
+            error=final.error or "Falha sem detalhe",
+        )
+        return
+    if final.status == JobStatus.CANCELLED:
+        domain.update_workflow_run(
+            run.id,
+            status=WorkflowStatus.CANCELLED,
+            message="Processamento cancelado",
+        )
+        return
+    if final.status != JobStatus.SUCCEEDED or final.result is None:
+        return
+
+    artifacts = dict(run.artifacts)
+    if job.type == JobType.TRANSCRIPTION:
+        artifact_id = final.result["transcript_artifact_id"]
+        artifacts["transcript"] = artifact_id
+        next_job = jobs.create(JobCreate(
+            type=JobType.ANALYSIS,
+            project_id=run.project_id,
+            payload={"transcript_artifact_id": artifact_id, "workflow_run_id": run.id},
+        ))
+        domain.update_workflow_run(
+            run.id,
+            stage="analyze",
+            progress=35,
+            message="Análise local na fila",
+            active_job_id=next_job.id,
+            artifacts=artifacts,
+        )
+        return
+    if job.type == JobType.ANALYSIS:
+        artifact_id = final.result["analysis_artifact_id"]
+        artifacts["analysis"] = artifact_id
+        next_job = jobs.create(JobCreate(
+            type=JobType.SUGGESTION,
+            project_id=run.project_id,
+            payload={
+                "transcript_artifact_id": artifacts["transcript"],
+                "analysis_artifact_id": artifact_id,
+                "brief": run.brief,
+                "workflow_run_id": run.id,
+            },
+        ))
+        domain.update_workflow_run(
+            run.id,
+            stage="suggest",
+            progress=70,
+            message="Codex selecionando os melhores cortes",
+            active_job_id=next_job.id,
+            artifacts=artifacts,
+        )
+        return
+    if job.type == JobType.SUGGESTION:
+        artifacts["suggestion"] = final.result["suggestion_artifact_id"]
+        domain.update_workflow_run(
+            run.id,
+            status=WorkflowStatus.READY_FOR_REVIEW,
+            stage="review",
+            progress=100,
+            message="Cortes prontos para revisão",
+            active_job_id=None,
+            artifacts=artifacts,
+        )
+
+
 def process_next(
     config: CortexConfig,
     jobs: JobStore,
@@ -897,19 +974,9 @@ def process_next(
         if job.type == JobType.TRANSCRIPTION:
             handler(job, config, jobs, domain, engine)
         elif job.type == JobType.SUGGESTION:
-            requested_provider = job.payload.get("provider")
-            if requested_provider:
-                cwd = Path(__file__).resolve().parents[2]
-                provider = FallbackSuggestionProvider(
-                    build_named_provider(requested_provider, config.ai, cwd=cwd),
-                    None,
-                    primary_name=requested_provider,
-                    fallback_name=None,
-                )
-            else:
-                provider = suggestion_provider or build_suggestion_provider(
-                    config.ai, cwd=Path(__file__).resolve().parents[2]
-                )
+            provider = suggestion_provider or build_suggestion_provider(
+                config.ai, cwd=Path(__file__).resolve().parents[2]
+            )
             handler(job, config, jobs, domain, provider)
         else:
             handler(job, config, jobs, domain)
@@ -918,6 +985,7 @@ def process_next(
             jobs.update(job.id, JobUpdate(status=JobStatus.FAILED, error=_truncate(str(exc))))
         except InvalidJobTransitionError:
             pass
+    _advance_workflow(job, jobs, domain)
     return True
 
 

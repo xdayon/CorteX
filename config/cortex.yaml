@@ -81,13 +81,8 @@ edit:
   scene_snap_tolerance_seconds: 0.5
 
 ai:
-  provider: codex_cli
-  fallback_provider: claude_cli
   codex_binary: codex
   codex_model: gpt-5.5
   codex_reasoning_effort: medium
-  claude_binary: claude
-  claude_model: fable
-  claude_effort: low
   timeout_seconds: 300
   max_input_chars: 800000

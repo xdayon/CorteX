@@ -4,7 +4,14 @@ import json
 import sqlite3
 from pathlib import Path
 
-from cortex.domain.models import Project, RenderPreset, SourceAsset, StageArtifact, TranscriptArtifact
+from cortex.domain.models import (
+    Project,
+    RenderPreset,
+    SourceAsset,
+    StageArtifact,
+    TranscriptArtifact,
+    WorkflowRun,
+)
 from cortex.schemas import utc_now
 
 
@@ -29,6 +36,10 @@ class RenderPresetNotFoundError(LookupError):
 
 
 class RenderPresetNameConflictError(ValueError):
+    pass
+
+
+class WorkflowRunNotFoundError(LookupError):
     pass
 
 
@@ -99,6 +110,21 @@ class DomainStore:
                 )"""
             )
             connection.execute(
+                """CREATE TABLE IF NOT EXISTS workflow_runs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    source_asset_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )"""
+            )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS idx_workflow_runs_project_created
+                   ON workflow_runs (project_id, created_at DESC)"""
+            )
+            connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_render_presets_project_created
                    ON render_presets (project_id, created_at DESC)"""
             )
@@ -164,6 +190,60 @@ class DomainStore:
             if asset.sha256 == sha256:
                 return asset
         return None
+
+    # -- Workflow runs -------------------------------------------------
+
+    def create_workflow_run(self, run: WorkflowRun) -> WorkflowRun:
+        payload = json.dumps(run.model_dump(mode="json"), ensure_ascii=False)
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO workflow_runs
+                   (id, project_id, source_asset_id, status, data, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run.id,
+                    run.project_id,
+                    run.source_asset_id,
+                    run.status.value,
+                    payload,
+                    run.created_at.isoformat(),
+                    run.updated_at.isoformat(),
+                ),
+            )
+        return run
+
+    def get_workflow_run(self, run_id: str) -> WorkflowRun:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT data FROM workflow_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            raise WorkflowRunNotFoundError(run_id)
+        return WorkflowRun.model_validate_json(row["data"])
+
+    def list_workflow_runs(self, project_id: str) -> list[WorkflowRun]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT data FROM workflow_runs WHERE project_id = ?
+                   ORDER BY created_at DESC""",
+                (project_id,),
+            ).fetchall()
+        return [WorkflowRun.model_validate_json(row["data"]) for row in rows]
+
+    def update_workflow_run(self, run_id: str, **changes: object) -> WorkflowRun:
+        current = self.get_workflow_run(run_id)
+        changes["updated_at"] = utc_now()
+        updated = WorkflowRun.model_validate({**current.model_dump(), **changes})
+        payload = json.dumps(updated.model_dump(mode="json"), ensure_ascii=False)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE workflow_runs SET status = ?, data = ?, updated_at = ?
+                   WHERE id = ?""",
+                (updated.status.value, payload, updated.updated_at.isoformat(), run_id),
+            )
+        if cursor.rowcount != 1:
+            raise WorkflowRunNotFoundError(run_id)
+        return updated
 
     # -- Transcript artifacts -----------------------------------------
 

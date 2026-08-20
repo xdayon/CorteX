@@ -14,10 +14,7 @@ from cortex.domain.store import DomainStore
 from cortex.jobs import JobStore
 from cortex.schemas import JobCreate, JobStatus, JobType
 from cortex.suggest.provider import (
-    FallbackSuggestionProvider,
-    LocalHeuristicProvider,
-    SuggestionProviderCancelled,
-    SuggestionProviderError,
+    CodexCliProvider,
     SuggestionProviderResult,
     _codex_error_detail,
     build_suggestion_provider,
@@ -95,16 +92,6 @@ class FakeSuggestionProvider:
                 "binary_version": "test",
             },
         )
-
-
-class FailingSuggestionProvider:
-    def __init__(self, error: Exception) -> None:
-        self.error = error
-        self.calls = 0
-
-    def generate(self, prompt, schema, *, should_cancel):
-        self.calls += 1
-        raise self.error
 
 
 def _config(tmp_dir: Path) -> CortexConfig:
@@ -200,62 +187,10 @@ def test_suggestion_service_validates_persists_and_reuses_cache():
         assert len(persisted["selection"]["clips"]) == 1
 
 
-def test_provider_prefers_codex_without_calling_claude_fallback():
-    codex = FakeSuggestionProvider()
-    claude = FakeSuggestionProvider()
-    provider = FallbackSuggestionProvider(
-        codex, claude, primary_name="codex_cli", fallback_name="claude_cli"
-    )
-    schema = {
-        "type": "object",
-        "required": ["schema_version", "selection_notes", "clips"],
-    }
+def test_provider_factory_returns_codex_directly():
+    provider = build_suggestion_provider(load_config().ai, cwd=_PROJECT_ROOT)
 
-    result = provider.generate("prompt", schema, should_cancel=lambda: False)
-
-    assert len(codex.calls) == 1
-    assert claude.calls == []
-    assert result.provenance["requested_provider"] == "codex_cli"
-    assert result.provenance["effective_provider"] == "fake"
-    assert result.provenance["fallback_used"] is False
-
-
-def test_provider_falls_back_to_claude_and_records_codex_failure():
-    codex = FailingSuggestionProvider(SuggestionProviderError("limite do Codex"))
-    claude = FakeSuggestionProvider()
-    provider = FallbackSuggestionProvider(
-        codex, claude, primary_name="codex_cli", fallback_name="claude_cli"
-    )
-    schema = {
-        "type": "object",
-        "required": ["schema_version", "selection_notes", "clips"],
-    }
-
-    result = provider.generate("prompt", schema, should_cancel=lambda: False)
-
-    assert codex.calls == 1
-    assert len(claude.calls) == 1
-    assert result.provenance["requested_provider"] == "codex_cli"
-    assert result.provenance["effective_provider"] == "fake"
-    assert result.provenance["fallback_used"] is True
-    assert "limite do Codex" in result.provenance["fallback_reason"]
-
-
-def test_provider_cancellation_never_invokes_fallback():
-    codex = FailingSuggestionProvider(SuggestionProviderCancelled("cancelado"))
-    claude = FakeSuggestionProvider()
-    provider = FallbackSuggestionProvider(
-        codex, claude, primary_name="codex_cli", fallback_name="claude_cli"
-    )
-
-    try:
-        provider.generate("prompt", {"type": "object"}, should_cancel=lambda: True)
-    except SuggestionProviderCancelled:
-        pass
-    else:
-        raise AssertionError("cancelamento deveria ser propagado")
-
-    assert claude.calls == []
+    assert isinstance(provider, CodexCliProvider)
 
 
 def test_codex_error_detail_never_persists_echoed_transcript():
@@ -460,179 +395,7 @@ def test_clip_config_maximum_seconds_boundary():
             raise AssertionError("maximum_seconds 14 deveria ser rejeitado (ge=15)")
 
 
-def _heuristic_prompt(segments: list[dict], brief: dict, notable_pauses: list[dict] | None = None) -> str:
-    transcript_lines = "\n".join(
-        f"[{seg['start']:.3f}-{seg['end']:.3f}] {seg['text']}" for seg in segments
-    )
-    request_payload = {
-        "brief": brief,
-        "transcript": transcript_lines,
-        "transcript_metadata": {"duration_seconds": segments[-1]["end"], "language": "pt"},
-        "local_audio_analysis": {
-            "overall_speech_ratio": 0.7,
-            "loudness": {"integrated_lufs": -20.0},
-            "notable_pauses": notable_pauses or [],
-        },
-    }
-    return (
-        "## Modelo de prompt de teste\n\n"
-        "## Pedido atual e transcrição\n"
-        f"{json.dumps(request_payload, ensure_ascii=False, separators=(',', ':'))}"
-    )
-
-
-def _heuristic_segments() -> list[dict]:
-    return [
-        {"start": 0.0, "end": 10.0, "text": "Essa é a primeira ideia completa do episódio."},
-        {"start": 10.0, "end": 22.0, "text": "Aqui entra o desenvolvimento com mais contexto e detalhes."},
-        {"start": 22.8, "end": 34.0, "text": "E finalmente chegamos à conclusão marcante desse trecho."},
-        {"start": 34.0, "end": 48.0, "text": "Um segundo bloco de assunto totalmente diferente começa aqui."},
-        {"start": 48.0, "end": 60.0, "text": "E esse segundo bloco também termina com uma conclusão clara."},
-    ]
-
-
-def test_local_heuristic_provider_produces_schema_valid_document_within_bounds():
-    brief = {"count": 2, "minimum_seconds": 15, "maximum_seconds": 40}
-    notable_pauses = [{"start": 22.0, "end": 22.8, "duration": 0.8}]
-    prompt = _heuristic_prompt(_heuristic_segments(), brief, notable_pauses)
-    schema = CLIP_SELECTION_SCHEMA
-    provider = LocalHeuristicProvider()
-
-    result = provider.generate(prompt, schema, should_cancel=lambda: False)
-
-    errors = sorted(Draft202012Validator(schema).iter_errors(result.document), key=str)
-    assert errors == []
-    assert result.provenance["provider"] == "local_heuristic"
-    assert result.provenance["mode"] == "heuristic"
-    assert result.provenance["llm_used"] is False
-    clips = result.document["clips"]
-    assert 1 <= len(clips) <= brief["count"]
-    segment_starts = {seg["start"] for seg in _heuristic_segments()}
-    segment_ends = {seg["end"] for seg in _heuristic_segments()}
-    for clip in clips:
-        assert brief["minimum_seconds"] <= clip["estimated_duration"] <= brief["maximum_seconds"]
-        assert clip["start_second"] in segment_starts
-        assert clip["end_second"] in segment_ends
-        assert "sem LLM" in clip["reasoning"]
-
-
-def test_local_heuristic_provider_is_deterministic():
-    brief = {"count": 3, "minimum_seconds": 15, "maximum_seconds": 40}
-    prompt = _heuristic_prompt(_heuristic_segments(), brief)
-    schema = CLIP_SELECTION_SCHEMA
-
-    first = LocalHeuristicProvider().generate(prompt, schema, should_cancel=lambda: False)
-    second = LocalHeuristicProvider().generate(prompt, schema, should_cancel=lambda: False)
-
-    assert first.document == second.document
-
-
-def test_local_heuristic_provider_never_cuts_mid_segment():
-    segments = _heuristic_segments()
-    brief = {"count": 5, "minimum_seconds": 10, "maximum_seconds": 15}
-    prompt = _heuristic_prompt(segments, brief)
-
-    result = LocalHeuristicProvider().generate(prompt, CLIP_SELECTION_SCHEMA, should_cancel=lambda: False)
-
-    valid_starts = {seg["start"] for seg in segments}
-    valid_ends = {seg["end"] for seg in segments}
-    for clip in result.document["clips"]:
-        assert clip["start_second"] in valid_starts
-        assert clip["end_second"] in valid_ends
-
-
-def test_without_opt_in_heuristic_is_never_used_by_default_chain():
-    config = load_config().ai.model_copy(update={
-        "codex_binary": "cortex-nonexistent-cli-codex",
-        "claude_binary": "cortex-nonexistent-cli-claude",
-    })
-    assert config.enable_local_heuristic_fallback is False
-    provider = build_suggestion_provider(config, cwd=_PROJECT_ROOT)
-
-    try:
-        provider.generate("prompt", CLIP_SELECTION_SCHEMA, should_cancel=lambda: False)
-    except SuggestionProviderError as exc:
-        assert "local_heuristic" not in str(exc)
-    else:
-        raise AssertionError("cadeia padrão sem opt-in não deveria suceder com CLIs inexistentes")
-
-
-def test_request_opt_in_marks_provenance_as_local_heuristic():
-    codex = FailingSuggestionProvider(SuggestionProviderError("codex indisponível"))
-    provider = FallbackSuggestionProvider(
-        LocalHeuristicProvider(), None, primary_name="local_heuristic", fallback_name=None
-    )
-    brief = {"count": 1, "minimum_seconds": 15, "maximum_seconds": 40}
-    prompt = _heuristic_prompt(_heuristic_segments(), brief)
-
-    result = provider.generate(prompt, CLIP_SELECTION_SCHEMA, should_cancel=lambda: False)
-
-    assert codex.calls == 0
-    assert result.provenance["requested_provider"] == "local_heuristic"
-    assert result.provenance["effective_provider"] == "local_heuristic"
-    assert result.provenance["mode"] == "heuristic"
-    assert result.provenance["fallback_used"] is False
-
-
-def test_configured_fallback_chain_uses_local_heuristic_after_primary_and_secondary_fail():
-    codex = FailingSuggestionProvider(SuggestionProviderError("codex indisponível"))
-    claude = FailingSuggestionProvider(SuggestionProviderError("claude indisponível"))
-    heuristic = LocalHeuristicProvider()
-    provider = FallbackSuggestionProvider(
-        codex,
-        claude,
-        primary_name="codex_cli",
-        fallback_name="claude_cli",
-        heuristic=heuristic,
-        heuristic_name="local_heuristic",
-    )
-    brief = {"count": 1, "minimum_seconds": 15, "maximum_seconds": 40}
-    prompt = _heuristic_prompt(_heuristic_segments(), brief)
-
-    result = provider.generate(prompt, CLIP_SELECTION_SCHEMA, should_cancel=lambda: False)
-
-    assert codex.calls == 1
-    assert claude.calls == 1
-    assert result.provenance["requested_provider"] == "codex_cli"
-    assert result.provenance["effective_provider"] == "local_heuristic"
-    assert result.provenance["mode"] == "heuristic"
-    assert result.provenance["fallback_used"] is True
-    assert "claude indisponível" in result.provenance["fallback_reason"]
-
-
-def test_suggestion_job_with_request_provider_opt_in_uses_local_heuristic():
-    with tempfile.TemporaryDirectory() as directory:
-        tmp_dir = Path(directory)
-        config = _config(tmp_dir)
-        config.ensure_runtime_dirs()
-        domain = DomainStore(config.paths.database)
-        jobs = JobStore(config.paths.database)
-        transcript = _transcript(domain, tmp_dir)
-        analysis = _analysis(domain, tmp_dir, transcript)
-        job = jobs.create(JobCreate(
-            type=JobType.SUGGESTION,
-            project_id=transcript.project_id,
-            payload={
-                "transcript_artifact_id": transcript.id,
-                "analysis_artifact_id": analysis.id,
-                "brief": {"count": 1, "minimum_seconds": 15, "maximum_seconds": 60},
-                "provider": "local_heuristic",
-            },
-        ))
-
-        assert process_next(config, jobs, domain, FakeTranscriptionEngine(), None)
-        final = jobs.get(job.id)
-
-        assert final.status == JobStatus.SUCCEEDED
-        provenance = final.result["provenance"]
-        assert provenance["provider"] == "local_heuristic"
-        assert provenance["requested_provider"] == "local_heuristic"
-        assert provenance["effective_provider"] == "local_heuristic"
-        assert provenance["mode"] == "heuristic"
-        assert provenance["fallback_used"] is False
-
-
-def test_suggestion_request_accepts_local_heuristic_provider_field():
+def test_suggestion_request_rejects_provider_selection():
     with tempfile.TemporaryDirectory() as directory:
         tmp_dir = Path(directory)
         config = _config(tmp_dir)
@@ -654,17 +417,4 @@ def test_suggestion_request_accepts_local_heuristic_provider_field():
             },
         )
 
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["payload"]["provider"] == "local_heuristic"
-        assert "provider" not in body["payload"]["brief"]
-
-        bad_response = client.post(
-            f"/api/v1/projects/{transcript.project_id}/suggest",
-            json={
-                "transcript_artifact_id": transcript.id,
-                "analysis_artifact_id": analysis.id,
-                "provider": "not_a_real_provider",
-            },
-        )
-        assert bad_response.status_code == 422
+        assert response.status_code == 422

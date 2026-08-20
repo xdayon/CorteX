@@ -89,6 +89,25 @@ export type SourceAsset = {
   probe?: Record<string, unknown>;
 };
 
+export type WorkflowRun = {
+  id: string;
+  project_id: string;
+  source_asset_id: string;
+  status: "queued" | "running" | "ready_for_review" | "rendering" | "complete" | "failed" | "cancelled";
+  stage: string;
+  progress: number;
+  message: string;
+  brief: SuggestionBrief;
+  active_job_id?: string | null;
+  artifacts: Record<string, string>;
+  error?: string | null;
+};
+
+export type SuggestionArtifactDocument = {
+  provenance?: SuggestionProvenance;
+  selection: SuggestionSelection;
+};
+
 export type TranscribeOverrides = {
   model?: string;
   language?: string;
@@ -202,12 +221,7 @@ export type SuggestedClip = {
 
 export type SuggestionProvenance = {
   provider?: string;
-  requested_provider?: string;
-  effective_provider?: string;
-  fallback_used?: boolean;
-  fallback_reason?: string;
   model?: string;
-  mode?: string;
 };
 
 export type SuggestionSelection = {
@@ -591,6 +605,25 @@ export const api = {
 
   createProject: (name: string) =>
     request<Project>("/api/v1/projects", { method: "POST", body: JSON.stringify({ name }) }),
+
+  projects: () => request<Project[]>("/api/v1/projects"),
+
+  sources: (projectId: string) =>
+    request<SourceAsset[]>(`/api/v1/projects/${projectId}/sources`),
+
+  createWorkflowRun: (projectId: string, sourceAssetId: string, brief: SuggestionBrief) =>
+    request<WorkflowRun>(`/api/v1/projects/${projectId}/runs`, {
+      method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, ...brief }),
+    }),
+
+  workflowRun: (projectId: string, runId: string) =>
+    request<WorkflowRun>(`/api/v1/projects/${projectId}/runs/${runId}`),
+
+  workflowRuns: (projectId: string) =>
+    request<WorkflowRun[]>(`/api/v1/projects/${projectId}/runs`),
+
+  suggestion: (projectId: string, artifactId: string) =>
+    request<ArtifactEnvelope<SuggestionArtifactDocument>>(`/api/v1/projects/${projectId}/suggestions/${artifactId}`),
 
   renderPresets: (projectId: string) =>
     request<RenderPreset[]>(`/api/v1/projects/${projectId}/render-presets`),

@@ -19,8 +19,8 @@ no worktree e deve ser preservado.
   implementados.
 - Selecao editorial possui job real, cache por hash, JSON Schema, provenance e
   frontend conectado.
-- Provider oficial: Codex CLI `gpt-5.5`, reasoning `medium`.
-- Fallback: Claude CLI, sempre registrado como fallback efetivo e com motivo.
+- Motor editorial unico: Codex CLI `gpt-5.5`, reasoning `medium`.
+- Nao existe fallback editorial; falhas do Codex devem permanecer explicitas.
 - Codex roda efemero, read-only, em diretorio temporario vazio e sem API key.
 - O schema editorial completo passou no Codex `gpt-5.5/medium` em cerca de 6 s,
   com fallback desativado.
@@ -138,6 +138,6 @@ Curadoria. O motor de edicao (EDL) ja esta portado em `src/cortex/edit/` com
 job/endpoints/cache/testes; a proxima fatia e integrar essa EDL na
 Curadoria/preview (mostrar segments/transitions e quality.issues no
 PhonePreview) e ligar um render curto real que consuma os segmentos
-multi-segmento da EDL. Mantenha Codex CLI gpt-5.5/medium como provider
-editorial primario e Claude CLI como fallback explicito.
+multi-segmento da EDL. Mantenha Codex CLI gpt-5.5/medium como unico motor
+editorial e nao introduza fallback automatico.
 ```

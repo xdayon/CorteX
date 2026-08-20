@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from "react";
-import { api, type AnalysisDocument, type ApiJob, type CameraEditPlanDocument, type EditPlanDocument, type FaceIndexDocument, type IdentityIndexDocument, type ProjectStatus, type RenderDocument, type RenderPreset, type RenderSettings, type RenderSettingsPatch, type SceneIndexDocument, type SuggestedClip, type SuggestionBrief, type SuggestionSelection, type Telemetry, type TranscriptDocument, type TranscribeOverrides } from "./api";
+import { api, type AnalysisDocument, type ApiJob, type CameraEditPlanDocument, type EditPlanDocument, type FaceIndexDocument, type IdentityIndexDocument, type ProjectStatus, type RenderDocument, type RenderPreset, type RenderSettings, type RenderSettingsPatch, type SceneIndexDocument, type SuggestedClip, type SuggestionBrief, type SuggestionSelection, type Telemetry, type TranscriptDocument, type TranscribeOverrides, type WorkflowRun } from "./api";
 
 type IconName = "spark" | "upload" | "link" | "wave" | "brain" | "cut" | "type" | "play" | "cpu" | "check" | "chevron" | "folder" | "settings" | "queue" | "save" | "film" | "clock" | "sliders" | "pause" | "user";
 
@@ -170,7 +170,7 @@ function BriefStep({ onAnalyze, running, progress, message, error }: { onAnalyze
       <div className="panel glass limits"><div className="panel-title"><span><Icon name="sliders"/></span><div><h3>Limites da busca</h3><p>Faixas usadas pela seleção · 1–25 cortes · 15s–180s</p></div></div><Range label="Quantidade de cortes" value={count} min={1} max={25} onChange={(v) => setCount(Math.min(25, Math.max(1, v)))}/><Range label="Duração mínima" value={min} min={15} max={180} suffix="s" onChange={(v) => { const clamped = Math.min(180, Math.max(15, v)); setMin(clamped); if (clamped > max) setMax(clamped); }}/><Range label="Duração máxima" value={max} min={15} max={180} suffix="s" onChange={(v) => { const clamped = Math.min(180, Math.max(15, v)); setMax(clamped); if (clamped < min) setMin(clamped); }}/><div className="estimate"><span><Icon name="clock"/></span><div><b>Janela editorial</b><p>{count} sugestões · {min}s a {max}s cada</p></div></div></div></div>
     {running && <div className="process-strip"><div className="process-meta"><span><i/> {message || "Selecionando cortes"}</span><b>{Math.round(progress)}%</b></div><div className="process-track"><i style={{width:`${progress}%`}}/></div></div>}
     {error && <div className="error-strip" role="alert"><b>Falha na seleção editorial</b><p>{error}</p></div>}
-    <div className="step-actions"><span>Codex CLI · fallback Claude · sem API key</span><button className="btn primary" disabled={running} onClick={() => onAnalyze({ count, minimum_seconds: min, maximum_seconds: max, topic: tone, instructions: prompt })}><Icon name="spark"/> {running ? "Analisando..." : "Analisar e sugerir cortes"}</button></div>
+    <div className="step-actions"><span>Codex CLI · assinatura ChatGPT · sem API key</span><button className="btn primary" disabled={running} onClick={() => onAnalyze({ count, minimum_seconds: min, maximum_seconds: max, topic: tone, instructions: prompt })}><Icon name="spark"/> {running ? "Analisando..." : "Analisar e sugerir cortes"}</button></div>
   </section>;
 }
 
@@ -227,16 +227,10 @@ const SCORE_LABELS: Record<string, string> = {
 
 function ProvenanceBadge({ provenance }: { provenance?: SuggestionSelection["provenance"] }) {
   if (!provenance) return null;
-  const provider = provenance.effective_provider || provenance.provider || provenance.requested_provider;
+  const provider = provenance.provider;
   if (!provider) return null;
-  const isHeuristic = provenance.mode === "heuristic" || provider === "local_heuristic";
-  if (isHeuristic) {
-    return <span className="provenance-badge heuristic" title={provenance.fallback_used ? `Fallback de ${provenance.requested_provider} para heurística local (sem LLM): ${provenance.fallback_reason ?? "sem detalhe"}` : "Seleção heurística local, sem LLM."}>
-      {provenance.fallback_used ? "FALLBACK · HEURÍSTICA LOCAL — SEM LLM" : "HEURÍSTICA LOCAL — SEM LLM"}
-    </span>;
-  }
-  return <span className={`provenance-badge ${provenance.fallback_used ? "fallback" : ""}`} title={provenance.fallback_used ? `Fallback de ${provenance.requested_provider} para ${provider}: ${provenance.fallback_reason ?? "sem detalhe"}` : `Seleção gerada por ${provider}`}>
-    {provenance.fallback_used ? `FALLBACK · ${provider}` : provider}
+  return <span className="provenance-badge" title={`Seleção gerada por ${provider}`}>
+    {provider}
   </span>;
 }
 
@@ -734,7 +728,7 @@ function RenderStep({ onStart, running, progress, clips, error, projectId, editP
   );
 }
 
-export default function App() {
+function LegacyApp() {
   const [step, setStep] = useState(0); const [sourceMode, setSourceMode] = useState<"file" | "youtube">("file"); const [file, setFile] = useState<File | null>(null); const [youtube, setYoutube] = useState("");
   const [health, setHealth] = useState(false); const [telemetry, setTelemetry] = useState<Required<Telemetry>>(mockTelemetry); const [jobs, setJobs] = useState<ApiJob[]>([]); const [mobileNav, setMobileNav] = useState(false); const [showProjectStatus, setShowProjectStatus] = useState(false); const [projectStatus, setProjectStatus] = useState<ProjectStatus | null>(null); const [projectStatusError, setProjectStatusError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false); const [transcriptionProgress, setTranscriptionProgress] = useState(0); const [transcriptionMessage, setTranscriptionMessage] = useState(""); const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
@@ -1142,5 +1136,144 @@ export default function App() {
       {step === 5 && <RenderStep onStart={startRender} running={rendering} progress={renderProgress} clips={(selection?.clips ?? []).filter((clip) => preparedClipKeys.includes(clipKey(clip)))} error={renderError} projectId={projectRef.current?.projectId} editPlanArtifactIds={editPlanArtifactIds} results={renderResults} statuses={renderStatuses} settings={renderSettings} overrides={renderOverrides} setOverrides={setRenderOverrides}/>}</>}
     </main>
     <ComputeDeck telemetry={telemetry} online={health} jobs={displayJobs}/>
+  </div>;
+}
+
+type SimpleScreen = "new" | "review" | "export";
+
+export default function App() {
+  const [screen, setScreen] = useState<SimpleScreen>("new");
+  const [file, setFile] = useState<File | null>(null);
+  const [youtube, setYoutube] = useState("");
+  const [sourceMode, setSourceMode] = useState<"file" | "youtube">("file");
+  const [count, setCount] = useState(10);
+  const [minimum, setMinimum] = useState(40);
+  const [maximum, setMaximum] = useState(120);
+  const [instructions, setInstructions] = useState("Priorize trechos autocontidos, interessantes e com payoff forte.");
+  const [run, setRun] = useState<WorkflowRun | null>(null);
+  const [selection, setSelection] = useState<SuggestionSelection | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [settings, setSettings] = useState<RenderSettings>(defaultRenderSettings);
+  const [renderProgress, setRenderProgress] = useState(0);
+  const [rendered, setRendered] = useState<Array<{ title: string; url: string; subtitles: string }>>([]);
+
+  async function loadReadyRun(next: WorkflowRun) {
+    setRun(next);
+    if (next.status === "failed") throw new Error(next.error || "O processamento falhou");
+    if (next.status !== "ready_for_review") return false;
+    const artifactId = next.artifacts.suggestion;
+    if (!artifactId) throw new Error("Processamento terminou sem sugestões persistidas");
+    const envelope = await api.suggestion(next.project_id, artifactId);
+    const result = envelope.document.selection;
+    setSelection({ ...result, provenance: envelope.document.provenance });
+    setSelectedKeys(result.clips.map(clipKey));
+    setScreen("review");
+    return true;
+  }
+
+  async function followRun(initial: WorkflowRun) {
+    let current = initial;
+    while (current.status === "queued" || current.status === "running") {
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      current = await api.workflowRun(current.project_id, current.id);
+      setRun(current);
+    }
+    await loadReadyRun(current);
+  }
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem("cortex-active-run");
+    if (!saved) return;
+    const [projectId, runId] = saved.split(":");
+    if (!projectId || !runId) return;
+    void api.workflowRun(projectId, runId).then(async (savedRun) => {
+      setRun(savedRun);
+      if (savedRun.status === "ready_for_review") await loadReadyRun(savedRun);
+    }).catch(() => window.localStorage.removeItem("cortex-active-run"));
+  }, []);
+
+  async function processEpisode() {
+    if (busy) return;
+    setBusy(true); setError(null); setUploadProgress(0);
+    try {
+      const name = sourceMode === "file"
+        ? (file?.name.replace(/\.[^.]+$/, "") || "Novo episódio")
+        : (youtube || "Episódio do YouTube");
+      const project = await api.createProject(name);
+      let sourceAssetId = "";
+      if (sourceMode === "file") {
+        if (!file) throw new Error("Selecione o arquivo do episódio");
+        const source = await api.uploadSource(project.id, file, setUploadProgress);
+        sourceAssetId = source.id;
+      } else {
+        if (!/^https?:\/\//.test(youtube)) throw new Error("Cole um link válido do YouTube");
+        const ingest = await api.createYoutubeSource(project.id, youtube);
+        const finished = await api.watchJob(ingest.id);
+        if (finished.status !== "succeeded") throw new Error(finished.error || "Falha ao baixar o vídeo");
+        sourceAssetId = String(finished.result?.source_asset_id || "");
+      }
+      const created = await api.createWorkflowRun(project.id, sourceAssetId, {
+        count, minimum_seconds: minimum, maximum_seconds: maximum, instructions,
+      });
+      window.localStorage.setItem("cortex-active-run", `${project.id}:${created.id}`);
+      setRun(created);
+      await followRun(created);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(false); }
+  }
+
+  async function renderSelected() {
+    if (!run || !selection || busy) return;
+    const clips = selection.clips.filter((clip) => selectedKeys.includes(clipKey(clip)));
+    if (!clips.length) { setError("Selecione pelo menos um corte"); return; }
+    setBusy(true); setError(null); setRendered([]); setRenderProgress(0);
+    try {
+      const completed: Array<{ title: string; url: string; subtitles: string }> = [];
+      for (let index = 0; index < clips.length; index += 1) {
+        const clip = clips[index];
+        const planJob = await api.startEditPlan(
+          run.project_id, run.artifacts.transcript, run.artifacts.analysis,
+          clip.start_second, clip.end_second, clip.pacing,
+        );
+        const planDone = await api.watchJob(planJob.id, (job) => {
+          setRenderProgress(((index + (job.progress || 0) / 200) / clips.length) * 100);
+        });
+        if (planDone.status !== "succeeded") throw new Error(planDone.error || `Falha ao preparar “${clip.title}”`);
+        const planId = String(planDone.result?.edit_plan_artifact_id || "");
+        const effective = settings.headline.enabled && !settings.headline.text.trim()
+          ? { ...settings, headline: { ...settings.headline, text: clip.headline || clip.title } }
+          : settings;
+        const renderJob = await api.startRender(run.project_id, planId, effective);
+        const renderDone = await api.watchJob(renderJob.id, (job) => {
+          setRenderProgress(((index + 0.5 + (job.progress || 0) / 200) / clips.length) * 100);
+        });
+        if (renderDone.status !== "succeeded") throw new Error(renderDone.error || `Falha ao renderizar “${clip.title}”`);
+        const artifactId = String(renderDone.result?.render_artifact_id || "");
+        completed.push({
+          title: clip.title,
+          url: api.renderMediaUrl(run.project_id, artifactId),
+          subtitles: api.renderSubtitlesUrl(run.project_id, artifactId),
+        });
+        setRendered([...completed]);
+      }
+      setRenderProgress(100);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(false); }
+  }
+
+  const activeClips = selection?.clips.filter((clip) => selectedKeys.includes(clipKey(clip))) ?? [];
+  return <div className="simple-app">
+    <header className="simple-header"><div className="brand"><span className="brand-mark">CX<i/></span><div><b>Corte<span>X</span></b><small>PODCAST CLIPPER</small></div></div><nav>{(["new", "review", "export"] as SimpleScreen[]).map((item, index) => <button key={item} className={screen === item ? "active" : ""} disabled={item !== "new" && !selection} onClick={() => setScreen(item)}><span>{index + 1}</span>{item === "new" ? "Novo episódio" : item === "review" ? "Escolher cortes" : "Exportar"}</button>)}</nav><span className={`simple-status ${busy ? "working" : ""}`}>{busy ? "PROCESSANDO" : "LOCAL"}</span></header>
+    <main className="simple-main">
+      {screen === "new" && <section className="simple-page enter"><div className="simple-title"><span>01 · NOVO EPISÓDIO</span><h1>Do episódio aos cortes, em um clique.</h1><p>Envie o vídeo, escolha a duração e deixe o CorteX transcrever, analisar e encontrar os melhores momentos.</p></div><div className="simple-grid"><div className="simple-card source-card"><div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}><Icon name="upload"/> Arquivo</button><button className={sourceMode === "youtube" ? "active" : ""} onClick={() => setSourceMode("youtube")}><Icon name="link"/> YouTube</button></div>{sourceMode === "file" ? <label className={`dropzone ${file ? "has-file" : ""}`}><input type="file" accept="video/*,audio/*" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] || null)}/><Icon name={file ? "check" : "upload"} size={30}/><strong>{file?.name || "Solte o episódio aqui"}</strong><small>MP4, MOV, MKV, WebM, MP3 ou WAV</small></label> : <div className="simple-url"><Icon name="link"/><input value={youtube} onChange={(event) => setYoutube(event.target.value)} placeholder="https://youtube.com/watch?v=..."/></div>}</div><div className="simple-card settings-card"><h3>O que você quer receber</h3><Range label="Quantidade" value={count} min={1} max={25} onChange={setCount}/><Range label="Mínimo" value={minimum} min={15} max={180} suffix="s" onChange={(value) => { setMinimum(value); if (value > maximum) setMaximum(value); }}/><Range label="Máximo" value={maximum} min={15} max={180} suffix="s" onChange={(value) => { setMaximum(value); if (value < minimum) setMinimum(value); }}/><Field label="Direção editorial"><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)}/></Field></div></div>{run && busy && <div className="simple-progress"><div><b>{run.message}</b><span>{Math.round(run.progress)}%</span></div><i><em style={{ width: `${run.progress}%` }}/></i><small>{uploadProgress > 0 && uploadProgress < 1 ? `Enviando · ${Math.round(uploadProgress * 100)}%` : "O processamento continua mesmo se você fechar esta tela."}</small></div>}<button className="btn primary simple-primary" disabled={busy || (sourceMode === "file" ? !file : !youtube)} onClick={() => void processEpisode()}><Icon name="spark"/> {busy ? "Processando episódio..." : "Processar episódio"}</button></section>}
+      {screen === "review" && selection && run && <section className="simple-page enter"><div className="simple-title row"><div><span>02 · ESCOLHER CORTES</span><h1>{selection.clips.length} momentos encontrados.</h1><p>{selection.selection_notes}</p></div><button className="btn primary" disabled={!activeClips.length} onClick={() => setScreen("export")}>Editar {activeClips.length} selecionado{activeClips.length === 1 ? "" : "s"} <Icon name="chevron"/></button></div><div className="clip-grid">{selection.clips.map((clip) => { const key = clipKey(clip); const selected = selectedKeys.includes(key); return <article key={key} className={`simple-clip ${selected ? "selected" : ""}`} onClick={() => setSelectedKeys((items) => selected ? items.filter((item) => item !== key) : [...items, key])}><div className="clip-frame"><img src={api.sourcePreviewUrl(run.project_id, run.source_asset_id, clip.start_second + 1)} alt="Preview do corte"/><span>{timestamp(clip.estimated_duration)}</span><i>{selected ? <Icon name="check"/> : null}</i></div><div><span className="clip-rank">#{clip.rank} · {clip.primary_speaker}</span><h3>{clip.title}</h3><p>{clip.reasoning}</p><strong>{timestamp(clip.start_second)} — {timestamp(clip.end_second)}</strong></div></article>; })}</div></section>}
+      {screen === "export" && selection && run && <section className="simple-page enter"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Legenda bonita. Vertical. Pronto para postar.</h1><p>{activeClips.length} cortes selecionados · formato fixo 1080 × 1920 para Reels e TikTok.</p></div><div className="export-layout"><div className="simple-card"><h3>Estilo da legenda</h3><div className="preset-row"><button className="active">Impacto</button><button onClick={() => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color: "#FFFFFF", karaoke_color: "#FFCC00" } }))}>Creator</button><button onClick={() => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color: "#FFFFFF", karaoke_color: "#00E5FF" } }))}>Clean</button></div><Range label="Tamanho" value={settings.captions.font_size} min={36} max={96} onChange={(font_size) => setSettings((value) => ({ ...value, captions: { ...value.captions, font_size } }))}/><ColorField label="Texto" value={settings.captions.text_color} onChange={(text_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color } }))}/><ColorField label="Palavra ativa" value={settings.captions.karaoke_color} onChange={(karaoke_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, karaoke_color } }))}/><details><summary>Configurações avançadas</summary><div className="toggles"><Toggle checked={settings.headline.enabled} onChange={(enabled) => setSettings((value) => ({ ...value, headline: { ...value.headline, enabled } }))} label="Headline automática"/></div></details></div><div className="phone-simple"><div><span>{settings.headline.enabled ? activeClips[0]?.headline : ""}</span><b>AS LEGENDAS APARECEM<br/><em>NESTE ESTILO</em></b></div><small>9:16 · 1080 × 1920</small></div></div>{busy && <div className="simple-progress"><div><b>Renderizando cortes com NVENC</b><span>{Math.round(renderProgress)}%</span></div><i><em style={{ width: `${renderProgress}%` }}/></i></div>}{rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}<button className="btn primary simple-primary" disabled={busy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button></section>}
+      {error && <div className="simple-error" role="alert"><b>Não deu certo ainda</b><p>{error}</p><button onClick={() => setError(null)}>Fechar</button></div>}
+    </main>
   </div>;
 }
