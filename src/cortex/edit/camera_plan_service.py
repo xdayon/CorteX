@@ -22,9 +22,11 @@ from cortex.edit.camera_plan_schemas import (
 from cortex.edit.camera_planner import classify_shot_intent
 from cortex.edit.diversity_policy import (
     DIVERSITY_POLICY_VERSION,
+    MAXIMUM_REACTION_DURATION_US,
     MAXIMUM_REACTION_SHARE,
     MINIMUM_GAP_BETWEEN_REACTIONS_US,
     MINIMUM_REACTION_CONFIDENCE,
+    MINIMUM_REACTION_DURATION_US,
     MONOTONY_MINIMUM_DURATION_US,
     MONOTONY_THRESHOLD,
 )
@@ -41,6 +43,7 @@ REACTION_BLOCKER_LOW_CONFIDENCE = "low_confidence_candidates"
 REACTION_BLOCKER_SHARE_LIMIT = "reaction_share_limit_reached"
 REACTION_BLOCKER_SPACING_LIMIT = "spacing_limit"
 REACTION_BLOCKER_NO_TEMPORAL_FIT = "no_temporal_fit"
+REACTION_BLOCKER_DURATION_LIMIT = "reaction_duration_out_of_bounds"
 
 # Canonical set of reaction-blocker reasons. Diagnostics and per-shot
 # `reaction_blocked_by` values are always drawn from this list instead of
@@ -54,6 +57,7 @@ BASE_REACTION_BLOCKERS = [
     REACTION_BLOCKER_SHARE_LIMIT,
     REACTION_BLOCKER_SPACING_LIMIT,
     REACTION_BLOCKER_NO_TEMPORAL_FIT,
+    REACTION_BLOCKER_DURATION_LIMIT,
 ]
 
 
@@ -93,6 +97,8 @@ def _select_reaction_candidate(
     used_candidate_ids: set[str],
 ):
     duration_us = shot.audio_source_end_us - shot.audio_source_start_us
+    if not MINIMUM_REACTION_DURATION_US <= duration_us <= MAXIMUM_REACTION_DURATION_US:
+        return None, {REACTION_BLOCKER_DURATION_LIMIT}
     eligible = [
         candidate for candidate in reaction_index.candidates
         if candidate.candidate_id not in used_candidate_ids

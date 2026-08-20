@@ -13,10 +13,12 @@ from cortex.analyze.reaction_candidate_schemas import ReactionCandidateIndexDocu
 from cortex.analyze.visual_quality_schemas import SceneVisualQuality, VisualQualityDocument
 from cortex.api import create_app
 from cortex.domain.models import StageArtifact
-from cortex.edit.camera_plan_schemas import CameraEditPlanDocument
+from cortex.edit.camera_plan_schemas import CameraEditPlanDocument, CameraEditShot
 from cortex.edit.camera_plan_service import (
     CameraEditPlanPreconditionError,
     CameraEditPlanService,
+    REACTION_BLOCKER_DURATION_LIMIT,
+    _select_reaction_candidate,
 )
 from cortex.edit.camera_planner import classify_shot_intent
 from cortex.edit.schemas import EditPlanDocument
@@ -29,6 +31,32 @@ from cortex.domain.store import DomainStore
 from test_identity_index import _config as identity_config
 from test_identity_index import _fixture as identity_fixture
 from test_identity_index import _write_artifact
+
+
+def test_reaction_shot_duration_is_limited_to_safe_editorial_beat() -> None:
+    shot = CameraEditShot(
+        edit_segment_order=0,
+        video_source_asset_id="source",
+        audio_source_asset_id="source",
+        source_start_us=0,
+        source_end_us=2_000_000,
+        audio_source_start_us=0,
+        audio_source_end_us=2_000_000,
+        scene_index=0,
+        layout_id="layout",
+        camera_role="speaker_close",
+        intent="speaker",
+        confirmed_identity_ids=["identity-user"],
+        visual_quality_usable=True,
+        evidence=[],
+    )
+
+    candidate, blockers = _select_reaction_candidate(
+        shot, None, set(),  # type: ignore[arg-type]
+    )
+
+    assert candidate is None
+    assert blockers == {REACTION_BLOCKER_DURATION_LIMIT}
 
 
 def test_classify_shot_intent_requires_quality_and_confirmed_speaker() -> None:

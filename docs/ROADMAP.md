@@ -8,7 +8,7 @@ Ordem operacional, gates de aceite e roteiro para novas sessoes:
 - [x] fluxo principal em 3 telas: novo episodio, escolha de cortes e exportacao;
 - [x] `WorkflowRun` persistido encadeia transcricao, analise e selecao Codex;
 - [x] estado de retomada persistido no backend e reaberto pela interface;
-- [ ] identidade do usuario e reacoes seguras como enriquecimento nao bloqueante;
+- [x] identidade do usuario e reacoes seguras de 0,7–1,6s como enriquecimento nao bloqueante;
 
 ## Fase 0 - Fundacao (concluida)
 

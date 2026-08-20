@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Versioned single-source-of-truth for the camera plan's diversity rules. Bump
 # this whenever any constant below changes so camera plan caches invalidate.
-DIVERSITY_POLICY_VERSION = "1.0.0"
+DIVERSITY_POLICY_VERSION = "1.1.0"
 
 # Minimum ReactionCandidate.confidence required before a candidate may ever be
 # reused as a reaction shot. ReactionCandidateService computes:
@@ -19,6 +19,11 @@ DIVERSITY_POLICY_VERSION = "1.0.0"
 # common case of visual_quality_score sitting in the 0.55-0.70 band due to
 # minor blur/occlusion that does not affect legibility.
 MINIMUM_REACTION_CONFIDENCE = 0.55
+
+# Reaction inserts should read as a quick editorial beat, not as fabricated
+# coverage. The product contract allows 0.7–1.6 seconds only.
+MINIMUM_REACTION_DURATION_US = 700_000
+MAXIMUM_REACTION_DURATION_US = 1_600_000
 
 # Fraction of the total editorial timeline that may be covered by reused
 # reaction footage. Keeps reaction reuse a garnish, not the dish.

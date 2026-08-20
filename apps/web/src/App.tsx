@@ -1141,6 +1141,27 @@ function LegacyApp() {
 
 type SimpleScreen = "new" | "review" | "export";
 
+function CameraDynamicsPanel({
+  projectId, artifactId, identityIndex, ownIdentityId, busy, message, onPrepare, onSelect,
+}: {
+  projectId: string;
+  artifactId?: string;
+  identityIndex: IdentityIndexDocument | null;
+  ownIdentityId: string;
+  busy: boolean;
+  message: string;
+  onPrepare: () => void;
+  onSelect: (identityId: string) => void;
+}) {
+  const identities = identityIndex?.identities.filter((identity) => identity.status === "confirmed") ?? [];
+  return <section className="camera-dynamics simple-card">
+    <div><span className="eyebrow">OPCIONAL · DINÂMICA DE PODCAST</span><h3>Mostrar você e quem está conversando</h3><p>O CorteX procura os rostos e planos existentes no episódio. Se houver uma reação segura do entrevistador, ela pode entrar sem alterar o áudio da sua fala.</p></div>
+    {!identityIndex && <button className="btn secondary" disabled={busy} onClick={onPrepare}><Icon name="user"/> {busy ? message || "Analisando pessoas..." : "Analisar pessoas e câmeras"}</button>}
+    {identityIndex && identities.length === 0 && <small>Nenhuma identidade foi confirmada com segurança. O crop vertical normal continua disponível.</small>}
+    {identityIndex && identities.length > 0 && <div className="identity-choice"><strong>Qual destes rostos é você?</strong><div>{identities.map((identity) => <button key={identity.identity_id} className={ownIdentityId === identity.identity_id ? "selected" : ""} onClick={() => onSelect(identity.identity_id)}>{artifactId && <img src={api.identityPreviewUrl(projectId, artifactId, identity.identity_id)} alt="Rosto detectado"/>}<span>{ownIdentityId === identity.identity_id ? "VOCÊ" : "Sou eu"}</span></button>)}</div><small>{ownIdentityId ? "Identidade marcada. Reações do outro participante serão usadas apenas quando forem seguras." : "Marque somente o seu rosto; o outro participante é inferido automaticamente."}</small></div>}
+  </section>;
+}
+
 export default function App() {
   const [screen, setScreen] = useState<SimpleScreen>("new");
   const [file, setFile] = useState<File | null>(null);
@@ -1159,6 +1180,13 @@ export default function App() {
   const [settings, setSettings] = useState<RenderSettings>(defaultRenderSettings);
   const [renderProgress, setRenderProgress] = useState(0);
   const [rendered, setRendered] = useState<Array<{ title: string; url: string; subtitles: string }>>([]);
+  const [visualBusy, setVisualBusy] = useState(false);
+  const [visualMessage, setVisualMessage] = useState("");
+  const [identityIndex, setIdentityIndex] = useState<IdentityIndexDocument | null>(null);
+  const [ownIdentityId, setOwnIdentityId] = useState("");
+  const [visualArtifacts, setVisualArtifacts] = useState<{
+    scene: string; face: string; speaker: string; camera: string; quality: string; identity: string;
+  } | null>(null);
 
   async function loadReadyRun(next: WorkflowRun) {
     setRun(next);
@@ -1170,6 +1198,20 @@ export default function App() {
     const result = envelope.document.selection;
     setSelection({ ...result, provenance: envelope.document.provenance });
     setSelectedKeys(result.clips.map(clipKey));
+    const visual = {
+      scene: next.artifacts.scene_index,
+      face: next.artifacts.face_index,
+      speaker: next.artifacts.speaker_timeline,
+      camera: next.artifacts.camera_timeline,
+      quality: next.artifacts.visual_quality,
+      identity: next.artifacts.identity_index,
+    };
+    if (Object.values(visual).every(Boolean)) {
+      setVisualArtifacts(visual);
+      const identities = await api.identityIndex(next.project_id, visual.identity);
+      setIdentityIndex(identities.document);
+      setOwnIdentityId(next.subject_identity_id || "");
+    }
     setScreen("review");
     return true;
   }
@@ -1226,6 +1268,51 @@ export default function App() {
     } finally { setBusy(false); }
   }
 
+  async function prepareCameraDynamics() {
+    if (!run || visualBusy) return;
+    setVisualBusy(true); setError(null); setVisualMessage("Detectando mudanças de câmera");
+    try {
+      async function finish(job: ApiJob, label: string) {
+        setVisualMessage(label);
+        const done = await api.watchJob(job.id, (update) => setVisualMessage(update.message || label));
+        if (done.status !== "succeeded") throw new Error(done.error || `${label} falhou`);
+        return done;
+      }
+      const scene = await finish(await api.startSceneIndex(run.project_id, run.source_asset_id), "Detectando cenas");
+      const sceneId = String(scene.result?.scene_index_artifact_id || "");
+      const face = await finish(await api.startFaceIndex(run.project_id, run.source_asset_id, sceneId), "Encontrando rostos");
+      const faceId = String(face.result?.face_index_artifact_id || "");
+      const speaker = await finish(await api.startSpeakerTimeline(run.project_id, run.source_asset_id, sceneId, faceId, run.artifacts.analysis), "Relacionando fala e imagem");
+      const speakerId = String(speaker.result?.speaker_timeline_artifact_id || "");
+      const camera = await finish(await api.startCameraTimeline(run.project_id, sceneId, faceId, speakerId), "Entendendo os planos do podcast");
+      const cameraId = String(camera.result?.camera_timeline_artifact_id || "");
+      const quality = await finish(await api.startVisualQuality(run.project_id, run.source_asset_id, sceneId, faceId), "Validando qualidade visual");
+      const qualityId = String(quality.result?.visual_quality_artifact_id || "");
+      const identity = await finish(await api.startIdentityIndex(run.project_id, faceId, cameraId), "Agrupando as pessoas");
+      const identityId = String(identity.result?.identity_index_artifact_id || "");
+      const envelope = await api.identityIndex(run.project_id, identityId);
+      setIdentityIndex(envelope.document);
+      setVisualArtifacts({ scene: sceneId, face: faceId, speaker: speakerId, camera: cameraId, quality: qualityId, identity: identityId });
+      setVisualMessage("Agora marque qual rosto é o seu");
+    } catch (reason) {
+      setError(`A dinâmica de câmera não ficou pronta, mas os cortes normais continuam disponíveis. ${reason instanceof Error ? reason.message : String(reason)}`);
+    } finally { setVisualBusy(false); }
+  }
+
+  async function selectOwnIdentity(identityId: string) {
+    if (!run || !visualArtifacts) return;
+    setOwnIdentityId(identityId);
+    try {
+      const updated = await api.selectWorkflowIdentity(
+        run.project_id, run.id, identityId, visualArtifacts,
+      );
+      setRun(updated);
+    } catch (reason) {
+      setOwnIdentityId("");
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   async function renderSelected() {
     if (!run || !selection || busy) return;
     const clips = selection.clips.filter((clip) => selectedKeys.includes(clipKey(clip)));
@@ -1233,6 +1320,20 @@ export default function App() {
     setBusy(true); setError(null); setRendered([]); setRenderProgress(0);
     try {
       const completed: Array<{ title: string; url: string; subtitles: string }> = [];
+      let reactionArtifactId: string | undefined;
+      if (visualArtifacts && ownIdentityId && identityIndex) {
+        const interviewer = identityIndex.identities.find((identity) => identity.status === "confirmed" && identity.identity_id !== ownIdentityId);
+        if (interviewer) {
+          try {
+            const reactionJob = await api.startReactionCandidates(
+              run.project_id, visualArtifacts.speaker, visualArtifacts.camera,
+              visualArtifacts.identity, visualArtifacts.quality, interviewer.identity_id,
+            );
+            const reactionDone = await api.watchJob(reactionJob.id);
+            if (reactionDone.status === "succeeded") reactionArtifactId = String(reactionDone.result?.reaction_candidate_artifact_id || "") || undefined;
+          } catch { /* reação é enriquecimento; render principal continua */ }
+        }
+      }
       for (let index = 0; index < clips.length; index += 1) {
         const clip = clips[index];
         const planJob = await api.startEditPlan(
@@ -1244,10 +1345,21 @@ export default function App() {
         });
         if (planDone.status !== "succeeded") throw new Error(planDone.error || `Falha ao preparar “${clip.title}”`);
         const planId = String(planDone.result?.edit_plan_artifact_id || "");
+        let cameraPlanId: string | undefined;
+        if (visualArtifacts && ownIdentityId) {
+          try {
+            const cameraPlanJob = await api.startCameraPlan(
+              run.project_id, planId, visualArtifacts.camera, visualArtifacts.identity,
+              visualArtifacts.quality, reactionArtifactId,
+            );
+            const cameraPlanDone = await api.watchJob(cameraPlanJob.id);
+            if (cameraPlanDone.status === "succeeded") cameraPlanId = String(cameraPlanDone.result?.camera_edit_plan_artifact_id || "") || undefined;
+          } catch { /* mantém o crop vertical determinístico */ }
+        }
         const effective = settings.headline.enabled && !settings.headline.text.trim()
           ? { ...settings, headline: { ...settings.headline, text: clip.headline || clip.title } }
           : settings;
-        const renderJob = await api.startRender(run.project_id, planId, effective);
+        const renderJob = await api.startRender(run.project_id, planId, effective, undefined, undefined, undefined, cameraPlanId);
         const renderDone = await api.watchJob(renderJob.id, (job) => {
           setRenderProgress(((index + 0.5 + (job.progress || 0) / 200) / clips.length) * 100);
         });
@@ -1273,6 +1385,7 @@ export default function App() {
       {screen === "new" && <section className="simple-page enter"><div className="simple-title"><span>01 · NOVO EPISÓDIO</span><h1>Do episódio aos cortes, em um clique.</h1><p>Envie o vídeo, escolha a duração e deixe o CorteX transcrever, analisar e encontrar os melhores momentos.</p></div><div className="simple-grid"><div className="simple-card source-card"><div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}><Icon name="upload"/> Arquivo</button><button className={sourceMode === "youtube" ? "active" : ""} onClick={() => setSourceMode("youtube")}><Icon name="link"/> YouTube</button></div>{sourceMode === "file" ? <label className={`dropzone ${file ? "has-file" : ""}`}><input type="file" accept="video/*,audio/*" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] || null)}/><Icon name={file ? "check" : "upload"} size={30}/><strong>{file?.name || "Solte o episódio aqui"}</strong><small>MP4, MOV, MKV, WebM, MP3 ou WAV</small></label> : <div className="simple-url"><Icon name="link"/><input value={youtube} onChange={(event) => setYoutube(event.target.value)} placeholder="https://youtube.com/watch?v=..."/></div>}</div><div className="simple-card settings-card"><h3>O que você quer receber</h3><Range label="Quantidade" value={count} min={1} max={25} onChange={setCount}/><Range label="Mínimo" value={minimum} min={15} max={180} suffix="s" onChange={(value) => { setMinimum(value); if (value > maximum) setMaximum(value); }}/><Range label="Máximo" value={maximum} min={15} max={180} suffix="s" onChange={(value) => { setMaximum(value); if (value < minimum) setMinimum(value); }}/><Field label="Direção editorial"><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)}/></Field></div></div>{run && busy && <div className="simple-progress"><div><b>{run.message}</b><span>{Math.round(run.progress)}%</span></div><i><em style={{ width: `${run.progress}%` }}/></i><small>{uploadProgress > 0 && uploadProgress < 1 ? `Enviando · ${Math.round(uploadProgress * 100)}%` : "O processamento continua mesmo se você fechar esta tela."}</small></div>}<button className="btn primary simple-primary" disabled={busy || (sourceMode === "file" ? !file : !youtube)} onClick={() => void processEpisode()}><Icon name="spark"/> {busy ? "Processando episódio..." : "Processar episódio"}</button></section>}
       {screen === "review" && selection && run && <section className="simple-page enter"><div className="simple-title row"><div><span>02 · ESCOLHER CORTES</span><h1>{selection.clips.length} momentos encontrados.</h1><p>{selection.selection_notes}</p></div><button className="btn primary" disabled={!activeClips.length} onClick={() => setScreen("export")}>Editar {activeClips.length} selecionado{activeClips.length === 1 ? "" : "s"} <Icon name="chevron"/></button></div><div className="clip-grid">{selection.clips.map((clip) => { const key = clipKey(clip); const selected = selectedKeys.includes(key); return <article key={key} className={`simple-clip ${selected ? "selected" : ""}`} onClick={() => setSelectedKeys((items) => selected ? items.filter((item) => item !== key) : [...items, key])}><div className="clip-frame"><img src={api.sourcePreviewUrl(run.project_id, run.source_asset_id, clip.start_second + 1)} alt="Preview do corte"/><span>{timestamp(clip.estimated_duration)}</span><i>{selected ? <Icon name="check"/> : null}</i></div><div><span className="clip-rank">#{clip.rank} · {clip.primary_speaker}</span><h3>{clip.title}</h3><p>{clip.reasoning}</p><strong>{timestamp(clip.start_second)} — {timestamp(clip.end_second)}</strong></div></article>; })}</div></section>}
       {screen === "export" && selection && run && <section className="simple-page enter"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Legenda bonita. Vertical. Pronto para postar.</h1><p>{activeClips.length} cortes selecionados · formato fixo 1080 × 1920 para Reels e TikTok.</p></div><div className="export-layout"><div className="simple-card"><h3>Estilo da legenda</h3><div className="preset-row"><button className="active">Impacto</button><button onClick={() => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color: "#FFFFFF", karaoke_color: "#FFCC00" } }))}>Creator</button><button onClick={() => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color: "#FFFFFF", karaoke_color: "#00E5FF" } }))}>Clean</button></div><Range label="Tamanho" value={settings.captions.font_size} min={36} max={96} onChange={(font_size) => setSettings((value) => ({ ...value, captions: { ...value.captions, font_size } }))}/><ColorField label="Texto" value={settings.captions.text_color} onChange={(text_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color } }))}/><ColorField label="Palavra ativa" value={settings.captions.karaoke_color} onChange={(karaoke_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, karaoke_color } }))}/><details><summary>Configurações avançadas</summary><div className="toggles"><Toggle checked={settings.headline.enabled} onChange={(enabled) => setSettings((value) => ({ ...value, headline: { ...value.headline, enabled } }))} label="Headline automática"/></div></details></div><div className="phone-simple"><div><span>{settings.headline.enabled ? activeClips[0]?.headline : ""}</span><b>AS LEGENDAS APARECEM<br/><em>NESTE ESTILO</em></b></div><small>9:16 · 1080 × 1920</small></div></div>{busy && <div className="simple-progress"><div><b>Renderizando cortes com NVENC</b><span>{Math.round(renderProgress)}%</span></div><i><em style={{ width: `${renderProgress}%` }}/></i></div>}{rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}<button className="btn primary simple-primary" disabled={busy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button></section>}
+      {screen === "export" && run && <CameraDynamicsPanel projectId={run.project_id} artifactId={visualArtifacts?.identity} identityIndex={identityIndex} ownIdentityId={ownIdentityId} busy={visualBusy} message={visualMessage} onPrepare={() => void prepareCameraDynamics()} onSelect={(identityId) => void selectOwnIdentity(identityId)}/>}
       {error && <div className="simple-error" role="alert"><b>Não deu certo ainda</b><p>{error}</p><button onClick={() => setError(null)}>Fechar</button></div>}
     </main>
   </div>;

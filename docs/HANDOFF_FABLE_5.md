@@ -1,5 +1,9 @@
 # Handoff para Fable-5 - CorteX
 
+> Atualizacao 2026-08-20: o fluxo principal usa `WorkflowRun` persistido em
+> tres telas. A selecao editorial usa somente Codex CLI. Identidade, camera
+> plan e reacoes de 0,7–1,6s sao opcionais e nunca bloqueiam o render vertical.
+
 Plano operacional ate o release candidate: `docs/PRODUCTION_COMPLETION_PLAN.md`.
 Novas sessoes devem escolher um unico gate desse documento e manter
 `docs/ROADMAP.md` como contrato de produto.

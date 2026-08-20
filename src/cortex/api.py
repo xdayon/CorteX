@@ -100,6 +100,18 @@ class WorkflowRunCreate(BaseModel):
         return self
 
 
+class WorkflowIdentitySelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    identity_id: str = Field(min_length=1)
+    scene_index_artifact_id: str
+    face_index_artifact_id: str
+    speaker_timeline_artifact_id: str
+    camera_timeline_artifact_id: str
+    visual_quality_artifact_id: str
+    identity_index_artifact_id: str
+
+
 class AnalysisRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -506,6 +518,53 @@ def create_app(config: CortexConfig | None = None):
         if run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Processamento não encontrado")
         return run
+
+    @app.put(f"{router_prefix}/projects/{{project_id}}/runs/{{run_id}}/identity")
+    def select_workflow_identity(
+        project_id: str, run_id: str, request: WorkflowIdentitySelection,
+    ):
+        try:
+            run = domain.get_workflow_run(run_id)
+        except WorkflowRunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Processamento não encontrado") from exc
+        if run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Processamento não encontrado")
+        artifact_specs = {
+            "scene_index": (request.scene_index_artifact_id, "scene_index"),
+            "face_index": (request.face_index_artifact_id, "face_index"),
+            "speaker_timeline": (request.speaker_timeline_artifact_id, "speaker_timeline"),
+            "camera_timeline": (request.camera_timeline_artifact_id, "camera_timeline"),
+            "visual_quality": (request.visual_quality_artifact_id, "visual_quality_index"),
+            "identity_index": (request.identity_index_artifact_id, "identity_index"),
+        }
+        artifacts = dict(run.artifacts)
+        resolved = {}
+        for key, (artifact_id, expected_stage) in artifact_specs.items():
+            try:
+                artifact = domain.get_stage_artifact(artifact_id)
+            except StageArtifactNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=f"Artifact {key} não encontrado") from exc
+            if artifact.project_id != project_id or artifact.stage != expected_stage:
+                raise HTTPException(status_code=400, detail=f"Artifact {key} não pertence ao processamento")
+            resolved[key] = artifact
+            artifacts[key] = artifact.id
+        identity_path = Path(resolved["identity_index"].path)
+        if not identity_path.is_file():
+            raise HTTPException(status_code=410, detail="Índice de identidade não está disponível")
+        identity_document = IdentityIndexDocument.model_validate_json(
+            identity_path.read_text(encoding="utf-8")
+        )
+        if not any(
+            item.identity_id == request.identity_id and item.status == "confirmed"
+            for item in identity_document.identities
+        ):
+            raise HTTPException(status_code=400, detail="Escolha uma identidade confirmada")
+        return domain.update_workflow_run(
+            run.id,
+            subject_identity_id=request.identity_id,
+            artifacts=artifacts,
+            message="Identidade principal confirmada",
+        )
 
     @app.post(f"{router_prefix}/projects/{{project_id}}/transcribe", status_code=201)
     def create_transcribe_job(project_id: str, request: TranscribeRequest):

@@ -55,7 +55,7 @@ class JobStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get(job.id).status, JobStatus.SUCCEEDED)
 
     def test_progress_cannot_regress(self):
-        job = self.store.create(JobCreate())
+        job = self.store.create(JobCreate(type=JobType.TRANSCRIPTION))
         self.store.update(job.id, JobUpdate(status=JobStatus.RUNNING, progress=50))
         with self.assertRaises(InvalidJobTransitionError):
             self.store.update(job.id, JobUpdate(progress=25))

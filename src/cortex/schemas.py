@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -26,7 +26,7 @@ class JobType(StrEnum):
     SUGGESTION = "suggestion"
     EDIT_PLAN = "edit_plan"
     RENDER = "render"
-    PIPELINE = "pipeline"
+    LEGACY_PIPELINE = "pipeline"
     INGEST_YOUTUBE = "ingest_youtube"
 
 
@@ -53,9 +53,15 @@ class PipelineStage(StrEnum):
 class JobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: JobType = JobType.PIPELINE
+    type: JobType
     project_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def reject_legacy_pipeline(self) -> "JobCreate":
+        if self.type == JobType.LEGACY_PIPELINE:
+            raise ValueError("pipeline genérico foi removido; use WorkflowRun")
+        return self
 
 
 class Job(BaseModel):

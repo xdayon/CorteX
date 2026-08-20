@@ -306,11 +306,9 @@ class WorkerCooperativeCancellationTests(unittest.TestCase):
 
 
 class YoutubeJobTypeTests(unittest.TestCase):
-    def test_ingest_youtube_job_type_is_available_and_backward_compatible(self):
+    def test_ingest_youtube_job_type_is_available(self):
         self.assertEqual(JobType.INGEST_YOUTUBE.value, "ingest_youtube")
-        # existing types remain unchanged
         self.assertEqual(JobType.TRANSCRIPTION.value, "transcription")
-        self.assertEqual(JobType.PIPELINE.value, "pipeline")
 
 
 if __name__ == "__main__":
