@@ -3,7 +3,7 @@ import {Overlay} from './Overlay';
 import type {OverlayPayload} from './types';
 
 const defaults: OverlayPayload = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   width: 1080,
   height: 1920,
   fps: 30,
@@ -17,6 +17,7 @@ const defaults: OverlayPayload = {
     shadow: true,
     karaoke: true,
     wordsPerCue: 5,
+    positionY: 0.78,
     textColor: '#FFFFFF',
     karaokeColor: '#2CE4D7',
     outlineColor: '#071012',
@@ -34,7 +35,7 @@ const defaults: OverlayPayload = {
     textColor: '#071012',
     animation: {entrance: 'fade', exit: 'fade', durationSeconds: 0.24},
   },
-  words: [],
+  cues: [],
 };
 
 const Root = () => (

@@ -14,21 +14,10 @@ const safeInterpolate = (
   return interpolate(value, inputRange, outputRange, options);
 };
 
-const cueAt = (words: OverlayPayload['words'], time: number, wordsPerCue: number) => {
-  if (words.length === 0) return {words: [], startIndex: 0};
-  if (time < words[0].start || time >= words[words.length - 1].end) {
-    return {words: [], startIndex: 0};
-  }
-  const active = words.findIndex((word) => time >= word.start && time < word.end);
-  let nearest = active;
-  if (nearest < 0) {
-    nearest = words.findIndex((word) => word.start > time) - 1;
-  }
-  const startIndex = Math.floor(nearest / wordsPerCue) * wordsPerCue;
-  return {words: words.slice(startIndex, startIndex + wordsPerCue), startIndex};
-};
+const cueAt = (cues: OverlayPayload['cues'], time: number) =>
+  cues.find((cue) => time >= cue.start && time < cue.end) ?? {words: [], start: 0, end: 0};
 
-export const Overlay = ({caption, headline, words}: OverlayPayload) => {
+export const Overlay = ({caption, headline, cues}: OverlayPayload) => {
   const frame = useCurrentFrame();
   const {fps, width, height} = useVideoConfig();
   const time = frame / fps;
@@ -46,7 +35,7 @@ export const Overlay = ({caption, headline, words}: OverlayPayload) => {
       [1, 0],
       {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'},
     );
-  const cue = cueAt(words, time, caption.wordsPerCue);
+  const cue = cueAt(cues, time);
   const captionFade = caption.animation.style === 'fade'
     ? safeInterpolate(
       time,
@@ -127,7 +116,8 @@ export const Overlay = ({caption, headline, words}: OverlayPayload) => {
             left: width * 0.075,
             right: width * 0.075,
             // Reserve space for the visible stroke and shadow inside the safe zone.
-            bottom: height * 0.16 + 20 * scale,
+            top: height * caption.positionY,
+            transform: 'translateY(-50%)',
             display: 'flex',
             flexWrap: 'wrap',
             justifyContent: 'center',
@@ -142,7 +132,7 @@ export const Overlay = ({caption, headline, words}: OverlayPayload) => {
             const active = time >= word.start && time < word.end;
             return (
               <span
-                key={`${cue.startIndex + index}-${word.start}`}
+                key={`${index}-${word.start}-${word.end}`}
                 style={{
               color: caption.karaoke && active ? caption.karaokeColor : caption.textColor,
               transform: caption.karaoke && active && caption.animation.style === 'pop' ? 'scale(1.08)' : 'scale(1)',

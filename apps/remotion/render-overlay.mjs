@@ -123,7 +123,7 @@ const main = async () => {
   if (!outputStats.isFile() || outputStats.size <= 0) throw new Error('Remotion produced an empty output');
   const remotionVersion = require('remotion/package.json').version;
   await writeJsonAtomic(manifestPath, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     renderer: 'remotion',
     outputPath,
     outputSha256: await sha256(outputPath),
@@ -134,12 +134,13 @@ const main = async () => {
     height: payload.height,
     fps: payload.fps,
     durationSeconds: payload.durationSeconds,
-    wordCount: payload.words.length,
+    wordCount: payload.cues.reduce((total, cue) => total + cue.words.length, 0),
     nodeExecutable: process.execPath,
     nodeVersion: process.version,
     remotionVersion,
     captionTextColor: payload.caption.textColor,
     captionKaraokeColor: payload.caption.karaokeColor,
+    captionPositionY: payload.caption.positionY,
     headlineBurstColor: payload.headline.burstColor,
     headlineStripColor: payload.headline.stripColor,
   });

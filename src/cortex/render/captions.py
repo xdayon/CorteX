@@ -8,18 +8,19 @@ from cortex.transcribe.schemas import TranscriptDocument
 
 
 @dataclass(frozen=True)
-class CaptionCue:
-    start: float
-    end: float
-    text: str
-
-
-@dataclass(frozen=True)
 class TimelineWord:
     start: float
     end: float
     text: str
     segment: int
+
+
+@dataclass(frozen=True)
+class CaptionCue:
+    start: float
+    end: float
+    text: str
+    words: tuple[TimelineWord, ...] = ()
 
 
 def build_timeline_words(
@@ -44,7 +45,19 @@ def build_timeline_words(
                     segment=index,
                 ))
         timeline_start += segment.end - segment.start
-    return sorted(mapped, key=lambda item: (item.start, item.end))
+    ordered = sorted(mapped, key=lambda item: (item.start, item.end, item.segment))
+    # Whisper artifacts can contain the same word twice at an identical boundary
+    # when adjacent transcript segments overlap.  Removing only an exact mapped
+    # duplicate prevents a caption line from repeating while preserving genuine
+    # spoken repetitions at consecutive timestamps.
+    unique: list[TimelineWord] = []
+    seen: set[tuple[float, float, str]] = set()
+    for word in ordered:
+        key = (word.start, word.end, word.text.casefold())
+        if key not in seen:
+            seen.add(key)
+            unique.append(word)
+    return unique
 
 
 def build_caption_cues(
@@ -79,10 +92,17 @@ def build_caption_cues(
         if cues and start < cues[-1].end:
             previous = cues[-1]
             boundary = max(previous.start + 0.05, start)
-            cues[-1] = CaptionCue(previous.start, boundary, previous.text)
+            cues[-1] = CaptionCue(
+                previous.start, boundary, previous.text, previous.words
+            )
             start = boundary
         if end > start:
-            cues.append(CaptionCue(start, end, " ".join(word.text for word in chunk)))
+            cues.append(CaptionCue(
+                start,
+                end,
+                " ".join(word.text for word in chunk),
+                tuple(chunk),
+            ))
     return cues
 
 

@@ -1220,7 +1220,6 @@ class RenderService:
         needs_cues = (
             effective_settings.captions.enabled or effective_settings.subtitles.sidecar_srt
         )
-        words = build_timeline_words(plan, transcript) if needs_cues else []
         cues = build_caption_cues(
             plan, transcript, max_words=effective_settings.captions.words_per_cue
         ) if needs_cues else []
@@ -1242,7 +1241,7 @@ class RenderService:
                     output_dir=output_dir,
             settings=effective_settings,
             duration_seconds_value=plan.timeline_duration_seconds,
-            words=words,
+            cues=cues,
             should_cancel=should_cancel,
         )
             except RemotionOverlayCancelled as exc:
@@ -1729,6 +1728,9 @@ class RenderService:
                     caption_font_size=(effective_settings.captions.font_size if cues else None),
                     caption_words_per_cue=(
                         effective_settings.captions.words_per_cue if cues else None
+                    ),
+                    caption_position_y=(
+                        effective_settings.captions.position_y if cues else None
                     ),
                     caption_outline=(effective_settings.captions.outline if cues else None),
                     caption_shadow=(effective_settings.captions.shadow if cues else None),

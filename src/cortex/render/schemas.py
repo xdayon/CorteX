@@ -9,7 +9,7 @@ from cortex.render.technical_quality import RenderTechnicalQualityReport
 
 RENDER_SCHEMA_VERSION = 13
 RENDER_SETTINGS_SCHEMA_VERSION = 1
-OVERLAY_SCHEMA_VERSION = 1
+OVERLAY_SCHEMA_VERSION = 2
 
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 
@@ -130,6 +130,7 @@ class RenderCaptionSettings(BaseModel):
     font_family: str = Field(min_length=1, max_length=80, pattern=r"^[\w .-]+$")
     font_size: int = Field(ge=12, le=120)
     words_per_cue: int = Field(ge=1, le=12)
+    position_y: float = Field(default=0.78, ge=0.1, le=0.9)
     outline: bool
     shadow: bool = True
     karaoke: bool = True
@@ -196,6 +197,7 @@ class RenderCaptionSettingsPatch(BaseModel):
     font_family: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"^[\w .-]+$")
     font_size: int | None = Field(default=None, ge=12, le=120)
     words_per_cue: int | None = Field(default=None, ge=1, le=12)
+    position_y: float | None = Field(default=None, ge=0.1, le=0.9)
     outline: bool | None = None
     shadow: bool | None = None
     karaoke: bool | None = None
@@ -370,6 +372,7 @@ class RenderOverlayInfo(BaseModel):
     caption_shadow_color: str | None = None
     caption_font_size: int | None = None
     caption_words_per_cue: int | None = None
+    caption_position_y: float | None = None
     caption_outline: bool | None = None
     caption_shadow: bool | None = None
     caption_text_color: str | None = None

@@ -4,8 +4,14 @@ export type TimedWord = {
   end: number;
 };
 
+export type CaptionCue = {
+  start: number;
+  end: number;
+  words: TimedWord[];
+};
+
 export type OverlayPayload = Record<string, unknown> & {
-  schemaVersion: 1;
+  schemaVersion: 2;
   width: number;
   height: number;
   fps: number;
@@ -19,6 +25,7 @@ export type OverlayPayload = Record<string, unknown> & {
     shadow: boolean;
     karaoke: boolean;
     wordsPerCue: number;
+    positionY: number;
     textColor: string;
     karaokeColor: string;
     outlineColor: string;
@@ -36,5 +43,5 @@ export type OverlayPayload = Record<string, unknown> & {
     textColor: string;
     animation: { entrance: "none" | "fade" | "slide"; exit: "none" | "fade" | "slide"; durationSeconds: number };
   };
-  words: TimedWord[];
+  cues: CaptionCue[];
 };

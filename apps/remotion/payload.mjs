@@ -39,27 +39,39 @@ const oneOf = (value, path, allowed) => {
 /** @param {any} raw @param {string | undefined} browserFallback @returns {import('./src/types.js').OverlayPayload} */
 export const parsePayload = (raw, browserFallback) => {
   if (!object(raw)) fail('$', 'an object');
-  if (raw.schemaVersion !== 1) fail('schemaVersion', '1');
+  if (raw.schemaVersion !== 2) fail('schemaVersion', '2');
   if (!object(raw.caption)) fail('caption', 'an object');
   if (!object(raw.headline)) fail('headline', 'an object');
-  if (!Array.isArray(raw.words) || raw.words.length > 10000) fail('words', 'an array with at most 10000 entries');
+  if (!Array.isArray(raw.cues) || raw.cues.length > 5000) fail('cues', 'an array with at most 5000 entries');
 
   const width = number(raw.width, 'width', 16, 7680, true);
   const height = number(raw.height, 'height', 16, 7680, true);
   if (width % 2 !== 0 || height % 2 !== 0) fail('width/height', 'even dimensions for yuva420p');
   const durationSeconds = number(raw.durationSeconds, 'durationSeconds', 0.034, 21600);
-  const words = raw.words.map((/** @type {any} */ word, /** @type {number} */ index) => {
-    if (!object(word)) fail(`words[${index}]`, 'an object');
-    const start = number(word.start, `words[${index}].start`, 0, durationSeconds);
-    const end = number(word.end, `words[${index}].end`, 0, durationSeconds);
-    if (end <= start) fail(`words[${index}].end`, 'a value greater than start');
-    if (index > 0 && start < raw.words[index - 1].start) fail(`words[${index}].start`, 'non-decreasing word order');
-    return {text: string(word.text, `words[${index}].text`, 200), start, end};
+  let wordCount = 0;
+  const cues = raw.cues.map((/** @type {any} */ cue, /** @type {number} */ cueIndex) => {
+    if (!object(cue)) fail(`cues[${cueIndex}]`, 'an object');
+    const start = number(cue.start, `cues[${cueIndex}].start`, 0, durationSeconds);
+    const end = number(cue.end, `cues[${cueIndex}].end`, 0, durationSeconds);
+    if (end <= start) fail(`cues[${cueIndex}].end`, 'a value greater than start');
+    if (cueIndex > 0 && start < raw.cues[cueIndex - 1].end) fail(`cues[${cueIndex}].start`, 'a non-overlapping cue boundary');
+    if (!Array.isArray(cue.words) || cue.words.length > 20) fail(`cues[${cueIndex}].words`, 'an array with at most 20 entries');
+    const words = cue.words.map((/** @type {any} */ word, /** @type {number} */ wordIndex) => {
+      const path = `cues[${cueIndex}].words[${wordIndex}]`;
+      if (!object(word)) fail(path, 'an object');
+      const wordStart = number(word.start, `${path}.start`, start, end);
+      const wordEnd = number(word.end, `${path}.end`, start, end);
+      if (wordEnd <= wordStart) fail(`${path}.end`, 'a value greater than start');
+      return {text: string(word.text, `${path}.text`, 200), start: wordStart, end: wordEnd};
+    });
+    wordCount += words.length;
+    if (wordCount > 10000) fail('cues', 'at most 10000 words in total');
+    return {start, end, words};
   });
   const executable = raw.browserExecutable ?? browserFallback;
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     width,
     height,
     fps: number(raw.fps, 'fps', 1, 120, true),
@@ -73,6 +85,7 @@ export const parsePayload = (raw, browserFallback) => {
       shadow: boolean(raw.caption.shadow, 'caption.shadow'),
       karaoke: boolean(raw.caption.karaoke, 'caption.karaoke'),
       wordsPerCue: number(raw.caption.wordsPerCue, 'caption.wordsPerCue', 1, 20, true),
+      positionY: number(raw.caption.positionY, 'caption.positionY', 0.1, 0.9),
       textColor: hexColor(raw.caption.textColor, 'caption.textColor'),
       karaokeColor: hexColor(raw.caption.karaokeColor, 'caption.karaokeColor'),
       outlineColor: hexColor(raw.caption.outlineColor, 'caption.outlineColor'),
@@ -97,6 +110,6 @@ export const parsePayload = (raw, browserFallback) => {
         durationSeconds: number(raw.headline.animation?.durationSeconds, 'headline.animation.durationSeconds', 0.01, 2),
       },
     },
-    words,
+    cues,
   };
 };

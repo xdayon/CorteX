@@ -15,7 +15,7 @@ from cortex.config import CortexConfig
 from cortex.domain.models import StageArtifact
 from cortex.domain.store import DomainStore
 from cortex.ingest.ffprobe import duration_seconds, probe_media
-from cortex.render.captions import TimelineWord
+from cortex.render.captions import CaptionCue
 from cortex.render.schemas import OVERLAY_SCHEMA_VERSION, RenderSettings
 
 
@@ -47,6 +47,7 @@ class RemotionOverlayManifest(BaseModel):
     remotion_version: str = Field(alias="remotionVersion")
     caption_text_color: str = Field(alias="captionTextColor")
     caption_karaoke_color: str = Field(alias="captionKaraokeColor")
+    caption_position_y: float = Field(alias="captionPositionY", ge=0.1, le=0.9)
     headline_burst_color: str = Field(alias="headlineBurstColor")
     headline_strip_color: str = Field(alias="headlineStripColor")
 
@@ -136,7 +137,7 @@ class RemotionOverlayService:
         output_dir: Path,
         settings: RenderSettings,
         duration_seconds_value: float,
-        words: list[TimelineWord],
+        cues: list[CaptionCue],
         should_cancel: Callable[[], bool],
     ) -> tuple[StageArtifact, RemotionOverlayManifest, bool]:
         node = _resolve_executable(self._config.render.remotion_node, "Node")
@@ -169,6 +170,7 @@ class RemotionOverlayService:
                 "shadow": settings.captions.shadow,
                 "karaoke": settings.captions.karaoke,
                 "wordsPerCue": settings.captions.words_per_cue,
+                "positionY": settings.captions.position_y,
                 "textColor": settings.captions.text_color,
                 "karaokeColor": settings.captions.karaoke_color,
                 "outlineColor": settings.captions.outline_color,
@@ -193,11 +195,24 @@ class RemotionOverlayService:
                     "durationSeconds": settings.headline.animation.duration_seconds,
                 },
             },
-            "words": [
-                {"text": word.text, "start": word.start, "end": word.end}
-                for word in words
+            "cues": [
+                {
+                    "start": cue.start,
+                    "end": cue.end,
+                    "words": [
+                        {
+                            "text": word.text,
+                            "start": max(cue.start, word.start),
+                            "end": min(cue.end, word.end),
+                        }
+                        for word in cue.words
+                        if min(cue.end, word.end) > max(cue.start, word.start)
+                    ],
+                }
+                for cue in cues
             ],
         }
+        word_count = sum(len(cue["words"]) for cue in payload["cues"])
         input_hash = hashlib.sha256(
             json.dumps(
                 {"payload": payload, "remotion_app_sha256": _app_sha256(app_dir)},
@@ -244,7 +259,7 @@ class RemotionOverlayService:
                 overlay_path=overlay_path,
                 settings=settings,
                 duration_seconds_value=duration_seconds_value,
-                word_count=len(words),
+                word_count=word_count,
             )
             artifact = self._domain.create_stage_artifact(StageArtifact(
                 project_id=project_id,
@@ -258,6 +273,7 @@ class RemotionOverlayService:
                     "renderer": manifest.renderer,
                     "remotion_version": manifest.remotion_version,
                     "caption_text_color": settings.captions.text_color,
+                    "caption_position_y": settings.captions.position_y,
                     "headline_burst_color": settings.headline.burst_color,
                 },
             ))
