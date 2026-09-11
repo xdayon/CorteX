@@ -20,7 +20,7 @@ from cortex.domain.models import SourceAsset
 from cortex.domain.store import DomainStore
 from cortex.edit.camera_plan_schemas import CameraEditPlanDocument
 
-AUTO_FRAMING_VERSION = "1.1.0"
+AUTO_FRAMING_VERSION = "1.2.0"
 MIN_SPEAKER_SECONDS = 1.2
 MIN_CONFIDENCE = 0.6
 
@@ -98,9 +98,18 @@ def resolve_auto_framing(
     for shot in plan.shots:
         start, end = shot.source_start_us, shot.source_end_us
         manual = choices.get(shot.scene_index) if shot.visual_origin == "primary_in_place" else None
+        shot_samples = frames[bisect_left(times, start):bisect_left(times, end)]
+        # The master already contains editorial camera choices. A table/two-shot
+        # provides real conversation context; mouth motion must not erase it by
+        # turning every speaker into a close-up. Observed companions also protect
+        # context when the coarse camera classification misses a wide layout.
+        keep_context = manual is None and (
+            shot.intent == "context" or shot.camera_role in {"wide", "two_shot"}
+            or any(len(frame.faces) > 1 for frame in shot_samples)
+        )
         # Only sustained visual speaker evidence creates a new framing boundary.
         turns = []
-        if shot.visual_origin == "primary_in_place" and manual is None:
+        if shot.visual_origin == "primary_in_place" and manual is None and not keep_context:
             for turn in speakers.segments:
                 left, right = max(start, turn.start_us), min(end, turn.end_us)
                 if (turn.state == "speaker" and turn.confidence >= MIN_CONFIDENCE
@@ -155,6 +164,11 @@ def resolve_auto_framing(
                 mode="blurred_background", reason="insufficient_face_evidence",
                 sample_count=len(samples), requested_zoom=zoom,
             )
+            if keep_context:
+                span.reason = "source_context_preserved"
+                span.zoom_reason = "context_preserved" if zoom > 1 else "disabled"
+                result.append(span)
+                continue
             # Every sampled frame must support the crop. Empty frames are evidence
             # of absence, not discarded observations that inflate confidence.
             tracks = {face.track_id for frame in samples for face in frame.faces

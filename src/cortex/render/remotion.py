@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
+import selectors
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -17,6 +21,10 @@ from cortex.domain.store import DomainStore
 from cortex.ingest.ffprobe import duration_seconds, probe_media
 from cortex.render.captions import CaptionCue
 from cortex.render.schemas import OVERLAY_SCHEMA_VERSION, RenderSettings
+
+REMOTION_TIMEOUT_SECONDS = 1800
+MAX_REMOTION_LOG_BYTES = 1024 * 1024
+MAX_PROGRESS_LINE_BYTES = 8192
 
 
 class RemotionOverlayError(RuntimeError):
@@ -96,30 +104,118 @@ def _resolve_executable(path: Path, label: str) -> Path:
     return resolved.resolve()
 
 
-def _run_command(
-    command: list[str], log_path: Path, should_cancel: Callable[[], bool]
-) -> None:
-    with log_path.open("w+b") as log:
+def _progress_message(line: bytes) -> tuple[float, str] | None:
+    """Accept only the bounded, versioned renderer event, never arbitrary logs."""
+    if len(line) > MAX_PROGRESS_LINE_BYTES:
+        return None
+    try:
+        event = json.loads(line)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if (not isinstance(event, dict) or event.get("type") != "cortex.remotion.progress"
+            or type(event.get("schemaVersion")) is not int or event.get("schemaVersion") != 1):
+        return None
+    percent = event.get("percent")
+    if (type(percent) not in (int, float) or not 0 <= percent <= 100
+            or not math.isfinite(percent)):
+        return None
+    rendered, encoded, total = (event.get(key) for key in
+                                ("renderedFrames", "encodedFrames", "totalFrames"))
+    if (any(type(count) is not int for count in (rendered, encoded, total))
+            or total < 1 or not 0 <= rendered <= total or not 0 <= encoded <= total):
+        return None
+    return float(percent), (
+        f"Remotion: {rendered}/{total} quadros renderizados; {encoded}/{total} codificados"
+    )
+
+
+def _stop_process(process: subprocess.Popen) -> None:
+    """Stop Node and the browser/compositor children it launched."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
-            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _run_command(
+    command: list[str], log_path: Path, should_cancel: Callable[[], bool],
+    progress_cb: Callable[[float, str], None] | None = None,
+) -> None:
+    if should_cancel():
+        raise RemotionOverlayCancelled()
+    with log_path.open("w+b") as log, selectors.DefaultSelector() as selector:
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
         except OSError as exc:
             raise RemotionOverlayError(f"Remotion não pôde ser executado: {exc}") from exc
+        assert process.stdout is not None
+        selector.register(process.stdout, selectors.EVENT_READ)
         started = time.monotonic()
-        while process.poll() is None:
-            if should_cancel():
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                raise RemotionOverlayCancelled()
-            if time.monotonic() - started > 1800:
-                process.kill()
-                raise RemotionOverlayError("Remotion excedeu o timeout de 1800s")
-            time.sleep(0.1)
+        pending = b""
+        discard_line = False
+        last_percent = -1.0
+        try:
+            while selector.get_map():
+                if should_cancel():
+                    raise RemotionOverlayCancelled()
+                if time.monotonic() - started > REMOTION_TIMEOUT_SECONDS:
+                    raise RemotionOverlayError(
+                        f"Remotion excedeu o timeout de {REMOTION_TIMEOUT_SECONDS}s"
+                    )
+                ready = selector.select(timeout=0.1)
+                if not ready and process.poll() is not None:
+                    break
+                for key, _events in ready:
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    log_chunk = chunk[-MAX_REMOTION_LOG_BYTES:]
+                    if log.tell() + len(log_chunk) > MAX_REMOTION_LOG_BYTES:
+                        retained = min(log.tell(), MAX_REMOTION_LOG_BYTES // 2,
+                                       MAX_REMOTION_LOG_BYTES - len(log_chunk))
+                        log.seek(-retained, os.SEEK_END)
+                        tail = log.read(retained)
+                        log.seek(0)
+                        log.write(tail)
+                        log.truncate()
+                    log.write(log_chunk)
+                    log.flush()
+                    for part in chunk.splitlines(keepends=True):
+                        finished = part.endswith(b"\n")
+                        if not discard_line:
+                            pending += part
+                            if len(pending) > MAX_PROGRESS_LINE_BYTES:
+                                pending, discard_line = b"", True
+                        if finished:
+                            update = None if discard_line else _progress_message(pending)
+                            if update and update[0] > last_percent:
+                                last_percent = update[0]
+                                if progress_cb is not None:
+                                    progress_cb(*update)
+                            pending, discard_line = b"", False
+            while process.poll() is None:
+                if should_cancel():
+                    raise RemotionOverlayCancelled()
+                if time.monotonic() - started > REMOTION_TIMEOUT_SECONDS:
+                    raise RemotionOverlayError(
+                        f"Remotion excedeu o timeout de {REMOTION_TIMEOUT_SECONDS}s"
+                    )
+                time.sleep(0.1)
+        finally:
+            if process.poll() is None:
+                _stop_process(process)
+            process.stdout.close()
         if process.returncode:
-            log.seek(0)
-            detail = log.read().decode(errors="replace")[-4000:]
+            log.seek(max(0, log.tell() - 4000))
+            detail = log.read(4000).decode(errors="replace")
             raise RemotionOverlayError(
                 f"Remotion falhou ({process.returncode}): {detail}"
             )
@@ -139,6 +235,7 @@ class RemotionOverlayService:
         duration_seconds_value: float,
         cues: list[CaptionCue],
         should_cancel: Callable[[], bool],
+        progress_cb: Callable[[float, str], None] | None = None,
     ) -> tuple[StageArtifact, RemotionOverlayManifest, bool]:
         node = _resolve_executable(self._config.render.remotion_node, "Node")
         browser_setting = self._config.render.remotion_browser
@@ -232,6 +329,8 @@ class RemotionOverlayService:
             manifest = RemotionOverlayManifest.model_validate_json(Path(cached.path).read_text())
             overlay_path = Path(manifest.output_path)
             if overlay_path.is_file() and _sha256(overlay_path) == manifest.output_sha256:
+                if progress_cb is not None:
+                    progress_cb(100.0, "Legendas e headline em cache reutilizadas")
                 return cached, manifest, True
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -252,6 +351,7 @@ class RemotionOverlayService:
                 ],
                 log_path,
                 should_cancel,
+                progress_cb,
             )
             manifest = RemotionOverlayManifest.model_validate_json(
                 manifest_path.read_text(encoding="utf-8")

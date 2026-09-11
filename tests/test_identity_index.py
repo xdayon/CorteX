@@ -150,6 +150,28 @@ def test_identity_service_rejects_face_index_without_sface_provenance(tmp_path: 
         )
 
 
+def test_repeated_faces_in_one_camera_layout_do_not_confirm_cross_layout_identity(tmp_path: Path) -> None:
+    config, domain, _project, face, camera = _fixture(tmp_path)
+    payload = json.loads(Path(camera.path).read_text(encoding="utf-8"))
+    for scene in payload["scenes"]:
+        scene["layout_id"] = "single-broadcast-angle"
+    Path(camera.path).write_text(json.dumps(payload), encoding="utf-8")
+
+    result = IdentityIndexService(config, domain).run(
+        face_index_artifact=face, camera_timeline_artifact=camera,
+        progress_cb=lambda *_args: None, should_cancel=lambda: False,
+    )
+    document = IdentityIndexDocument.model_validate_json(
+        Path(result["identity_index_path"]).read_text(encoding="utf-8")
+    )
+    assert len(document.observations) == 3
+    assert [item.sample_count for item in document.identities] == [2, 1]
+    assert all(item.status == "single_layout" for item in document.identities)
+    artifact = domain.get_stage_artifact(result["identity_index_artifact_id"])
+    assert artifact.metadata["confirmed_identity_count"] == 0
+    assert artifact.metadata["identity_count"] == 2
+
+
 def test_identity_worker_persists_artifact(tmp_path: Path) -> None:
     config, domain, project, face, camera = _fixture(tmp_path)
     jobs = JobStore(config.paths.database)

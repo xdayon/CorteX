@@ -34,10 +34,10 @@ def _capture_render(monkeypatch):
     commands = []
     original = render_service._run_ffmpeg
 
-    def run(command, log_path, should_cancel):
+    def run(command, log_path, should_cancel, **kwargs):
         if "-filter_complex" in command:
             commands.append(command)
-        return original(command, log_path, should_cancel)
+        return original(command, log_path, should_cancel, **kwargs)
 
     monkeypatch.setattr(render_service, "_run_ffmpeg", run)
     return commands

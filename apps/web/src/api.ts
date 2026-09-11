@@ -8,6 +8,8 @@ export type ApiJob = {
   result?: Record<string, unknown> | null;
   error?: string | null;
   created_at?: string;
+  updated_at?: string;
+  worker_pid?: number | null;
 };
 
 export type Project = {
@@ -30,6 +32,8 @@ export type SourceAsset = {
 
 export type EpisodeEntry = {
   id: string; url: string | null; title: string; project_ids: string[];
+  channel_name?: string | null; channel_url?: string | null; thumbnail_url?: string | null;
+  metadata_error?: string | null; metadata_updated_at?: string | null; archived?: boolean;
   participant_count: number | null; primary_subject: string;
   subject_reference: {speaker?:string}; diarizations: Array<{id:string;project_id:string}>;
   source: SourceAsset | null; source_bytes: number; runs: WorkflowRun[];
@@ -151,6 +155,7 @@ export type RenderSettings = {
   framing: {
     schema_version: 1;
     mode: "vertical_crop" | "blurred_background" | "face_static_crop" | "speaker_auto";
+    position_y?: number;
     scene_overrides?: SceneFramingOverride[];
     punch_in: {
       enabled: boolean;
@@ -220,7 +225,9 @@ export const api = {
   diarizeEpisode: (id:string) => request<ApiJob>(`/api/v1/episodes/${id}/diarization`, {method:"POST"}),
   episodeVoices: (id:string, artifact:string) => request<{turns:Array<{start:number;end:number;speaker:string}>}>(`/api/v1/episodes/${id}/diarization/${artifact}`),
   selectEpisodeVoice: (id:string, artifact_id:string, speaker:string) => request<EpisodeEntry>(`/api/v1/episodes/${id}/voice`,{method:"PUT",body:JSON.stringify({artifact_id,speaker})}),
-  episodes: () => request<EpisodeEntry[]>("/api/v1/episodes"),
+  episodes: (includeArchived = false) => request<EpisodeEntry[]>(`/api/v1/episodes${includeArchived ? '?include_archived=true' : ''}`),
+  refreshEpisodeMetadata: (id: string) => request<EpisodeEntry>(`/api/v1/episodes/${id}/metadata`, {method:'POST'}),
+  archiveEpisode: (id: string, archived: boolean) => request<EpisodeEntry>(`/api/v1/episodes/${id}`, {method:'PATCH', body:JSON.stringify({archived})}),
   registerEpisode: (url: string, participant_count?: number) => request<EpisodeEntry>("/api/v1/episodes", {method:"POST", body:JSON.stringify({url, participant_count})}),
   downloadEpisode: (id: string) => request<{source: SourceAsset | null; job: ApiJob | null; cached: boolean}>(`/api/v1/episodes/${id}/download`, {method:"POST"}),
   createProject: (name: string) =>

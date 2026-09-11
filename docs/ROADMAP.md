@@ -16,6 +16,18 @@ Gates anteriores estão em [history](history/ROADMAP-before-2026-09-10.md).
 - [x] mapa de arquitetura, handoff curto, diagnóstico e proposta Cloudflare;
 - [x] preservar Gaussian blur real, captions karaoke/pop, correção textual e QA existentes.
 
+## Ajustes da experiência — 2026-09-11
+
+- [x] Biblioteca separada da jornada Novo episódio → Escolher cortes → Exportar.
+- [x] Episódio canônico pelo ID YouTube, título/canal/capa persistidos por oEmbed.
+- [x] Arquivar/restaurar entradas sem excluir mídia; busca por título/canal.
+- [x] Catálogo sem polling ocioso; consulta periódica somente com jobs ativos.
+- [x] Ajustes à esquerda e prévia fixa à direita; headline antes da exportação.
+- [x] Headline compartilhada entre preview/export com espaço para acentos e descendentes.
+- [x] Posição vertical do vídeo sobre Gaussian blur, separada da posição da legenda.
+- [x] Progresso real de frames Remotion e tempo codificado FFmpeg; detalhes das tarefas.
+- [x] Automático preserva planos abertos/duplos; diagnóstico explícito de identidade incerta.
+
 ## P0 — confiabilidade antes de mais efeitos
 
 ### 1. Edição e export batch no servidor
@@ -52,8 +64,8 @@ Nenhuma associação automática entre vozes de episódios diferentes.
 - [ ] Limitar amostras de identidade, eliminar materialização O(n²) e permitir cancelamento.
 - [ ] Timeout/cancelamento para todas as leituras de decoder e subprocessos de QA.
 - [ ] Medir retenção de VRAM do Whisper; descarregar antes de render se o benefício for real.
-- [ ] Preview rápido usando fonte real e headline; manter prévia final fiel opcional.
-- [ ] Galeria paginada com thumbnails, estado, filtros por tema e indicador de QA.
+- [x] Preview rápido usando fonte real e headline; manter prévia final fiel opcional.
+- [ ] Paginar galeria e acrescentar filtros por tema e indicador de QA (capa/canal/busca já disponíveis).
 - [ ] Catálogo resumido sem reconciliar todos os projetos/manifests a cada polling.
 - [ ] Exportar presets Dayon News; ajustes por corte e globais com alcance evidente.
 

@@ -485,6 +485,7 @@ def _filtergraph(
     punch_ins: dict[int, _PunchInResolution] | None = None,
     auto_framing: list[AutoFramingSpan] | None = None,
     source_time_offset: float = 0.0,
+    framing_position_y: float = 0.5,
 ) -> tuple[str, str, str]:
     video_parts: list[str] = []
     audio_parts: list[str] = []
@@ -534,6 +535,13 @@ def _filtergraph(
                 f"setsar=1,format=yuv420p{output_label}"
             )
         if effective_mode == "blurred_background":
+            # Only explicit full-frame composition has a manual position. Keep
+            # automatic context shots centered, including crops taller than the
+            # canvas after a punch-in (there is no free vertical space then).
+            position_y = framing_position_y if framing_mode == "blurred_background" else 0.5
+            foreground_y = "(H-h)/2" if position_y == 0.5 else (
+                f"if(gte(H,h),(H-h)*{position_y:.6f},(H-h)/2)"
+            )
             label_name = output_label[1:-1]
             blur_width = max(160, (width // 4) // 2 * 2)
             blur_height = max(160, (height // 4) // 2 * 2)
@@ -560,7 +568,7 @@ def _filtergraph(
                 f"crop={blur_width}:{blur_height},gblur=sigma=12:steps=2,"
                 f"scale={width}:{height},setsar=1{background};"
                 f"{foreground_raw}{foreground_chain}{foreground};{background}{foreground}"
-                f"overlay=(W-w)/2:(H-h)/2:format=yuv420,format=yuv420p{output_label}"
+                f"overlay=x=(W-w)/2:y='{foreground_y}':format=yuv420,format=yuv420p{output_label}"
             )
         if framing_mode == "face_static_crop":
             crop = (static_face_crops or {}).get(segment_order)
@@ -975,28 +983,120 @@ def _parse_bbox_metadata(text: str) -> tuple[int, int, int, int] | None:
     return (x1, y1, x2, y2)
 
 
-def _run_ffmpeg(command: list[str], log_path: Path, should_cancel: Callable[[], bool]) -> None:
-    with log_path.open("w+b") as log:
+def _run_ffmpeg(
+    command: list[str], log_path: Path, should_cancel: Callable[[], bool], *,
+    progress_cb: Callable[[float, str], None] | None = None,
+    duration_seconds_value: float | None = None, timeout_seconds: float = 3600,
+) -> None:
+    import math
+    import os
+    import selectors
+    import signal
+
+    if should_cancel():
+        raise RenderJobCancelled()
+    report_progress = progress_cb is not None
+    if report_progress:
+        if (duration_seconds_value is None or not math.isfinite(duration_seconds_value)
+                or duration_seconds_value <= 0):
+            raise RenderPreconditionError("progresso FFmpeg exige duração final positiva e finita")
+        command = [command[0], "-nostdin", "-nostats", "-stats_period", "0.5",
+                   "-progress", "pipe:1", *command[1:]]
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise RenderPreconditionError("timeout FFmpeg deve ser positivo e finito")
+    with log_path.open("w+b") as log, selectors.DefaultSelector() as selector:
         try:
-            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=log)
+            process = subprocess.Popen(
+                command, stdout=subprocess.PIPE if report_progress else subprocess.DEVNULL,
+                stderr=subprocess.PIPE, start_new_session=True,
+            )
         except OSError as exc:
             raise RenderExecutionError(f"FFmpeg não pôde ser executado: {exc}") from exc
+        assert process.stderr is not None
+        selector.register(process.stderr, selectors.EVENT_READ, "log")
+        if process.stdout is not None:
+            selector.register(process.stdout, selectors.EVENT_READ, "progress")
         started = time.monotonic()
-        while process.poll() is None:
+        pending = b""
+        discard_line = False
+        output_us = None
+        last_percent = -1.0
+        max_log_bytes = 1024 * 1024
+
+        def check_running():
             if should_cancel():
-                process.terminate()
+                raise RenderJobCancelled()
+            if time.monotonic() - started > timeout_seconds:
+                raise RenderExecutionError(f"FFmpeg excedeu o timeout de {timeout_seconds:g}s")
+
+        try:
+            while selector.get_map():
+                check_running()
+                ready = selector.select(timeout=0.1)
+                if not ready and process.poll() is not None:
+                    break
+                for key, _events in ready:
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if log.tell() + len(chunk) > max_log_bytes:
+                        log.seek(-max_log_bytes // 2, os.SEEK_END)
+                        tail = log.read()
+                        log.seek(0)
+                        log.write(tail)
+                        log.truncate()
+                    log.write(chunk)
+                    log.flush()
+                    if key.data != "progress":
+                        continue
+                    for part in chunk.splitlines(keepends=True):
+                        finished = part.endswith(b"\n")
+                        if not discard_line:
+                            pending += part
+                            if len(pending) > 8192:
+                                pending, discard_line = b"", True
+                        if not finished:
+                            continue
+                        if not discard_line:
+                            line = pending.strip()
+                            if line.startswith(b"out_time_us="):
+                                value = line.partition(b"=")[2]
+                                output_us = int(value) if re.fullmatch(rb"\d{1,20}", value) else None
+                            elif line in (b"progress=continue", b"progress=end") and output_us is not None:
+                                assert duration_seconds_value is not None and progress_cb is not None
+                                seconds = min(output_us / 1_000_000, duration_seconds_value)
+                                percent = seconds / duration_seconds_value * 100
+                                if percent > last_percent:
+                                    last_percent = percent
+                                    progress_cb(percent, f"FFmpeg: {seconds:.1f}/{duration_seconds_value:.1f} s de vídeo codificados")
+                                output_us = None
+                        pending, discard_line = b"", False
+            while process.poll() is None:
+                check_running()
+                time.sleep(0.1)
+        finally:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    process.kill()
-                raise RenderJobCancelled()
-            if time.monotonic() - started > 3600:
-                process.kill()
-                raise RenderExecutionError("FFmpeg excedeu o timeout de 3600s")
-            time.sleep(0.1)
+                    pass
+                finally:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=5)
+            process.stderr.close()
+            if process.stdout is not None:
+                process.stdout.close()
         if process.returncode:
-            log.seek(0)
-            detail = log.read().decode(errors="replace")[-4000:]
+            log.seek(max(0, log.tell() - 4000))
+            detail = log.read(4000).decode(errors="replace")
             raise RenderExecutionError(f"FFmpeg falhou ({process.returncode}): {detail}")
 
 
@@ -1220,6 +1320,10 @@ class RenderService:
         headline_text = headline_text or None
         effective_settings = requested_settings.model_copy(update={
             "encoder": requested_encoder,
+            "framing": requested_settings.framing.model_copy(update={
+                "position_y": (requested_settings.framing.position_y
+                               if requested_settings.framing.mode == "blurred_background" else 0.5),
+            }),
             "captions": requested_settings.captions.model_copy(update={
                 "font_family": caption_font,
             }),
@@ -1349,11 +1453,12 @@ class RenderService:
                 ).run(
                     project_id=plan.project_id,
                     output_dir=output_dir,
-            settings=effective_settings,
-            duration_seconds_value=plan.timeline_duration_seconds,
-            cues=cues,
-            should_cancel=should_cancel,
-        )
+                    settings=effective_settings,
+                    duration_seconds_value=plan.timeline_duration_seconds,
+                    cues=cues,
+                    should_cancel=should_cancel,
+                    progress_cb=lambda percent, message: progress_cb(10 + percent * .14, message),
+                )
             except RemotionOverlayCancelled as exc:
                 raise RenderJobCancelled() from exc
             except RemotionOverlayError as exc:
@@ -1438,7 +1543,7 @@ class RenderService:
 
         if should_cancel():
             raise RenderJobCancelled()
-        progress_cb(10.0, "Validando fonte e plano")
+        progress_cb(24.0, "Validando fonte e plano")
         stream_types = {
             stream.get("codec_type") for stream in source_probe.get("streams", [])
         }
@@ -1475,6 +1580,7 @@ class RenderService:
             camera_plan=camera_plan,
             source_input_indices=source_input_indices,
             source_time_offset=input_start,
+            framing_position_y=effective_settings.framing.position_y,
         )
         command = [str(self._config.render.ffmpeg), "-y", "-v", "error"]
         command.extend([
@@ -1491,7 +1597,11 @@ class RenderService:
         progress_cb(25.0, f"Renderizando com {requested_encoder}")
         log_path = output_dir / f"render-{input_hash[:16]}.ffmpeg.log"
         try:
-            _run_ffmpeg(command, log_path, should_cancel)
+            _run_ffmpeg(
+                command, log_path, should_cancel,
+                duration_seconds_value=plan.timeline_duration_seconds,
+                progress_cb=lambda percent, message: progress_cb(25.0 + percent * 0.59, message),
+            )
             progress_cb(85.0, "Validando streams, duração e loudness")
             rendered_probe = probe_media(self._config.render.ffprobe, temporary_path)
             actual_duration = duration_seconds(rendered_probe)

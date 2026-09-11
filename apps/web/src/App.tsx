@@ -1,7 +1,8 @@
+import { JobProgress, type JobActivity } from "./JobProgress";
 import { EpisodeLibrary } from "./EpisodeLibrary";
 import { TranscriptEditor } from "./TranscriptEditor";
 import type { CaptionCorrection } from "./api";
-import { CaptionEditor } from "./CaptionEditor";
+import { CaptionControls, LivePreview } from "./CaptionEditor";
 import { FramingReview } from "./FramingReview";
 import type { CameraScene } from "./api";
 import { restoreEditorDraft, type EditorDraft, type VisualArtifacts } from "./editorDraft";
@@ -119,7 +120,7 @@ function CameraDynamicsPanel({
   return <section className="camera-dynamics simple-card">
     <div><span className="eyebrow">OPCIONAL · DINÂMICA DE PODCAST</span><h3>Reações do entrevistador</h3><p>O CorteX procura os rostos e planos existentes no episódio. Se houver uma reação segura do entrevistador, ela pode entrar sem alterar o áudio editorial.</p></div>
     {!identityIndex && <button className="btn secondary" disabled={busy} onClick={onPrepare}><Icon name="user"/> {busy ? message || "Analisando pessoas..." : "Analisar pessoas e câmeras"}</button>}
-    {identityIndex && identities.length === 0 && <small>Nenhuma identidade foi confirmada. O enquadramento automático ainda usa os rostos visíveis; reutilização de reações fica indisponível.</small>}
+    {identityIndex && identities.length === 0 && <small>{identityIndex.identities.length > 0 ? (new Set(identityIndex.identities.flatMap(i => i.layout_ids)).size < 2 ? "Foram encontrados rostos, mas os trechos analisados têm apenas um ângulo. Ainda não foi possível confirmar o entrevistador para reutilizar reações." : "Foram encontrados rostos, mas a correspondência entre ângulos ainda é incerta. Não foi possível confirmar o entrevistador para reutilizar reações.") : "Nenhum rosto pôde ser agrupado com segurança nos trechos analisados."} O automático continua disponível e preserva as cenas abertas.</small>}
     {identityIndex && identities.length > 0 && <div className="identity-choice"><strong>Quem é o entrevistador?</strong><div>{identities.map((identity) => <button key={identity.identity_id} disabled={busy} aria-label={`Selecionar entrevistador ${identity.identity_id}`} aria-pressed={interviewerIdentityId === identity.identity_id} className={interviewerIdentityId === identity.identity_id ? "selected" : ""} onClick={() => onSelect(identity.identity_id)}>{artifactId && <img src={api.identityPreviewUrl(projectId, artifactId, identity.identity_id)} alt="Rosto detectado"/>}<span>{interviewerIdentityId === identity.identity_id ? "ENTREVISTADOR" : "Selecionar"}</span></button>)}</div><small>{interviewerIdentityId ? "Entrevistador confirmado. Você pode habilitar o reaproveitamento de reações nas opções de enquadramento." : "Selecione explicitamente o entrevistador. Nenhum papel é inferido a partir de outro rosto."}</small></div>}
   </section>;
 }
@@ -139,7 +140,7 @@ export default function App() {
   const [focusedKey, setFocusedKey] = useState("");
   const [previewVideo, setPreviewVideo] = useState<{url:string;title:string}|null>(null);
   const [recent, setRecent] = useState(recentEpisodes);
-  const [screen, setScreen] = useState<SimpleScreen>("library");
+  const [screen, setScreen] = useState<SimpleScreen>("new");
   const [file, setFile] = useState<File | null>(null);
   const [youtube, setYoutube] = useState("");
   const [sourceMode, setSourceMode] = useState<"file" | "youtube">("youtube");
@@ -158,6 +159,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [settings, setSettings] = useState<RenderSettings>(defaultRenderSettings);
+  const [currentJob, setCurrentJob] = useState<ApiJob | null>(null);
+  const [jobHistory, setJobHistory] = useState<JobActivity[]>([]);
   const [renderProgress, setRenderProgress] = useState(0);
   const [rendered, setRendered] = useState<Array<{ title: string; url: string; subtitles: string }>>([]);
   const [visualBusy, setVisualBusy] = useState(false);
@@ -180,6 +183,21 @@ export default function App() {
     } catch { setDraftError("Não foi possível salvar os ajustes neste navegador. Libere espaço antes de fechar a página."); }
   }, [run, selection, draftRunKey, settings, selectedKeys, captionEdits, headlines, focusedKey, rendered, reuseReactions, visualArtifacts]);
 
+  function trackJob(job: ApiJob) {
+    setCurrentJob(job);
+    setJobHistory(items => {
+      const last = items.at(-1)?.job;
+      if (last?.id === job.id && last.status === job.status && last.progress === job.progress && last.message === job.message) return items;
+      return [...items.slice(-39), {job, receivedAt: Date.now()}];
+    });
+  }
+  async function completeJob(job: ApiJob, signal: AbortSignal, onUpdate?: (job: ApiJob) => void) {
+    trackJob(job);
+    const done = await finishJob(job, signal, update => { if (!signal.aborted) {trackJob(update); onUpdate?.(update);} });
+    trackJob(done);
+    return done;
+  }
+
   function beginEpisode() {
     episode.current?.abort();
     const controller = new AbortController();
@@ -188,6 +206,7 @@ export default function App() {
   }
 
   function clearEpisodeState() {
+    setCurrentJob(null); setJobHistory([]);
     setDraftRunKey(null); setDraftError("");
     setRun(null); setSelection(null); setSelectedKeys([]); setCaptionEdits({}); setHeadlines({});
     setFocusedKey(""); setPreviewVideo(null); setRendered([]);
@@ -311,12 +330,15 @@ export default function App() {
       } else {
         const entry = await api.registerEpisode(youtube);
         signal.throwIfAborted();
+        if (entry.archived) await api.archiveEpisode(entry.id, false);
+        if (!entry.metadata_updated_at) await api.refreshEpisodeMetadata(entry.id);
+        signal.throwIfAborted();
         const download = await api.downloadEpisode(entry.id);
         if (download.source) {
           project = {id: download.source.project_id}; sourceAssetId = download.source.id;
         } else if (download.job) {
           project = {id: entry.project_ids[0]};
-          const finished = await finishJob(download.job, signal, job => setUploadProgress(job.progress || 0));
+          const finished = await completeJob(download.job, signal, job => setUploadProgress(job.progress || 0));
           sourceAssetId = resultArtifact(finished, "source_asset_id");
         } else throw new Error("Download sem fonte nem tarefa");
       }
@@ -339,7 +361,7 @@ export default function App() {
       async function finish(job: ApiJob, label: string, key: string) {
         signal.throwIfAborted();
         setVisualMessage(label); setVisualProgress(0);
-        const done = await finishJob(job, signal, (update) => {
+        const done = await completeJob(job, signal, (update) => {
           if (!signal.aborted) { setVisualMessage(update.message || label); setVisualProgress(update.progress || 0); }
         });
         return resultArtifact(done, key);
@@ -389,7 +411,7 @@ export default function App() {
     const signal = episode.current.signal;
     const clips = preview ? (focusedClip ? [focusedClip] : []) : selection.clips.filter((clip) => selectedKeys.includes(clipKey(clip)));
     if (!clips.length) { setError("Selecione pelo menos um corte"); return; }
-    setBusy(true); setError(null); if (!preview) setRendered([]); else setPreviewVideo(null); setRenderProgress(0);
+    setBusy(true); setJobHistory([]); setCurrentJob(null); setError(null); if (!preview) setRendered([]); else setPreviewVideo(null); setRenderProgress(0);
     try {
       const visual = settings.framing.mode === "speaker_auto"
         ? await prepareCameraDynamics() : visualArtifacts;
@@ -407,7 +429,7 @@ export default function App() {
             run.project_id, visual.speaker, visual.camera,
             visual.identity, visual.quality, interviewerIdentityId,
           );
-          reactionArtifactId = resultArtifact(await finishJob(reactionJob, signal), "reaction_candidate_artifact_id");
+          reactionArtifactId = resultArtifact(await completeJob(reactionJob, signal), "reaction_candidate_artifact_id");
         } catch (reason) {
           signal.throwIfAborted();
           setWarnings((items) => [...items, `Render continuará sem reações: ${errorMessage(reason)}`]);
@@ -420,7 +442,7 @@ export default function App() {
           run.project_id, run.artifacts.transcript, run.artifacts.analysis,
           clip.start_second, preview ? Math.min(clip.end_second,clip.start_second+10) : clip.end_second, clip.pacing,
         );
-        const planDone = await finishJob(planJob, signal, (job) => {
+        const planDone = await completeJob(planJob, signal, (job) => {
           if (!signal.aborted) setRenderProgress(((index + (job.progress || 0) / 200) / clips.length) * 100);
         });
         const planId = resultArtifact(planDone, "edit_plan_artifact_id");
@@ -431,7 +453,7 @@ export default function App() {
               run.project_id, planId, visual.camera, visual.identity,
               visual.quality, reactionArtifactId,
             );
-            cameraPlanId = resultArtifact(await finishJob(cameraPlanJob, signal), "camera_edit_plan_artifact_id");
+            cameraPlanId = resultArtifact(await completeJob(cameraPlanJob, signal), "camera_edit_plan_artifact_id");
           } catch (reason) {
             signal.throwIfAborted();
             if (settings.framing.mode === "speaker_auto") throw reason;
@@ -443,7 +465,7 @@ export default function App() {
           text: headlines[clipKey(clip)]?.trim() || clip.headline || clip.title,
         }};
         const renderJob = await api.startRender(run.project_id, planId, effective, cameraPlanId);
-        const renderDone = await finishJob(renderJob, signal, (job) => {
+        const renderDone = await completeJob(renderJob, signal, (job) => {
           if (!signal.aborted) setRenderProgress(((index + 0.5 + (job.progress || 0) / 200) / clips.length) * 100);
         });
         const artifactId = resultArtifact(renderDone, "render_artifact_id");
@@ -451,7 +473,7 @@ export default function App() {
           const manifest = await api.renderArtifact(run.project_id, artifactId);
           signal.throwIfAborted();
           const contextShots = manifest.document.auto_framing?.filter((span) => span.mode === "blurred_background" && span.reason !== "manual_full_frame").length || 0;
-          if (contextShots) setWarnings((items) => [...items, `“${clip.title}”: ${contextShots} planos mantiveram o quadro inteiro porque o recorte de rosto não era seguro.`]);
+          if (contextShots) setWarnings((items) => [...items, `“${clip.title}”: ${contextShots} planos mantiveram o quadro inteiro porque a cena mostrava o contexto da conversa ou não permitia um recorte seguro.`]);
         } catch (reason) {
           signal.throwIfAborted();
           setWarnings((items) => [...items, `Vídeo pronto; não foi possível ler os detalhes do enquadramento: ${errorMessage(reason)}`]);
@@ -472,9 +494,9 @@ export default function App() {
   const activeClips = selection?.clips.filter((clip) => selectedKeys.includes(clipKey(clip))) ?? [];
   const focusedClip = activeClips.find(c => clipKey(c) === focusedKey) || activeClips[0];
   return <div className="simple-app">
-    <header className="simple-header"><div className="brand"><span className="brand-mark">CX<i/></span><div><b>Corte<span>X</span></b><small>PODCAST CLIPPER</small></div></div><nav>{(["library", "new", "review", "export"] as SimpleScreen[]).map((item, index) => <button key={item} className={screen === item ? "active" : ""} disabled={(item === "review" || item === "export") && !selection} onClick={() => setScreen(item)}><span>{index + 1}</span>{item === "library" ? "Biblioteca" : item === "new" ? "Novo episódio" : item === "review" ? "Escolher cortes" : "Exportar"}</button>)}</nav><span className={`simple-status ${busy ? "working" : ""}`}>{busy ? "PROCESSANDO" : "LOCAL"}</span></header>
+    <header className="simple-header"><div className="brand"><span className="brand-mark">CX<i/></span><div><b>Corte<span>X</span></b><small>PODCAST CLIPPER</small></div></div><nav aria-label="Jornada do episódio">{(["new", "review", "export"] as SimpleScreen[]).map((item, index) => <button key={item} className={screen === item ? "active" : ""} disabled={(item === "new" && (busy || visualBusy)) || ((item === "review" || item === "export") && !selection)} onClick={() => item === "new" ? resetEpisode() : setScreen(item)}><span>{index + 1}</span>{item === "new" ? "Novo episódio" : item === "review" ? "Escolher cortes" : "Exportar"}</button>)}</nav><button className={`library-nav ${screen === "library" ? "active" : ""}`} onClick={() => setScreen("library")}>Biblioteca</button><span className={`simple-status ${busy ? "working" : ""}`}>{busy ? "PROCESSANDO" : "LOCAL"}</span></header>
     <main className="simple-main">
-      {run && <div className="episode-history"><button className="btn secondary" disabled={busy || visualBusy} onClick={resetEpisode}>Começar outro episódio</button><small>Guarda este episódio para retomar; não apaga vídeos nem cortes.</small></div>}
+
       {(screen === "new" || screen === "library") && !run && recent.length > 0 && <div className="episode-history"><b>Retomar episódio</b>{recent.map(item => <button key={item.runId} className="btn secondary" disabled={busy || visualBusy} onClick={() => void resumeEpisode(item)}>{item.label}</button>)}</div>}
 
       {screen === "library" && <EpisodeLibrary busy={busy || visualBusy} onOpen={saved => void resumeEpisode({projectId:saved.project_id, runId:saved.id, label:saved.message})} onUse={entry => {
@@ -486,31 +508,39 @@ export default function App() {
           } catch(reason) { if(!signal.aborted) setError(errorMessage(reason)); } finally { if(!signal.aborted) setBusy(false); }
         })(); }
       }}/>}
-      {screen === "new" && <section className="simple-page enter"><div className="simple-title"><span>01 · NOVO EPISÓDIO</span><h1>Do episódio aos cortes, em um clique.</h1><p>Envie o vídeo, escolha a duração e deixe o CorteX transcrever, analisar e encontrar os melhores momentos.</p></div><div className="simple-grid"><div className="simple-card source-card"><div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}><Icon name="upload"/> Arquivo</button><button className={sourceMode === "youtube" ? "active" : ""} onClick={() => setSourceMode("youtube")}><Icon name="link"/> YouTube</button></div>{sourceMode === "file" ? <label className={`dropzone ${file ? "has-file" : ""}`}><input type="file" accept="video/*,audio/*" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] || null)}/><Icon name={file ? "check" : "upload"} size={30}/><strong>{file?.name || "Solte o episódio aqui"}</strong><small>MP4, MOV, MKV, WebM, MP3 ou WAV</small></label> : <div className="simple-url"><Icon name="link"/><input value={youtube} onChange={(event) => setYoutube(event.target.value)} placeholder="https://youtube.com/watch?v=..."/></div>}</div><div className="simple-card settings-card"><h3>O que você quer receber</h3><Range label="Quantidade" value={count} min={1} max={25} onChange={setCount}/><Range label="Mínimo" value={minimum} min={15} max={180} suffix="s" onChange={(value) => { setMinimum(value); if (value > maximum) setMaximum(value); }}/><Range label="Máximo" value={maximum} min={15} max={180} suffix="s" onChange={(value) => { setMaximum(value); if (value < minimum) setMinimum(value); }}/><Field label="Protagonista dos cortes"><input value={primarySubject} onChange={event => setPrimarySubject(event.target.value)}/></Field><Toggle checked={newClipsOnly} onChange={setNewClipsOnly} label="Evitar trechos já sugeridos"/><Field label="Direção editorial"><textarea value={instructions} onChange={(event) => setInstructions(event.target.value)}/></Field></div></div>{run && busy && <div className="simple-progress"><div><b>{run.message}</b><span>{Math.round(run.progress)}%</span></div><i><em style={{ width: `${run.progress}%` }}/></i><small>{uploadProgress > 0 && uploadProgress < 1 ? `Enviando · ${Math.round(uploadProgress * 100)}%` : "O processamento continua mesmo se você fechar esta tela."}</small></div>}<button className="btn primary simple-primary" disabled={busy || visualBusy || (sourceMode === "file" ? !file : !youtube)} onClick={() => void processEpisode()}><Icon name="spark"/> {busy ? "Processando episódio..." : "Processar episódio"}</button></section>}
+      {screen === "new" && <section className="simple-page enter"><div className="simple-title"><span>01 · NOVO EPISÓDIO</span><h1>Do episódio aos cortes, em um clique.</h1><p>Envie o vídeo, escolha a duração e deixe o CorteX transcrever, analisar e encontrar os melhores momentos.</p></div><div className="simple-grid"><div className="simple-card source-card"><div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}><Icon name="upload"/> Arquivo</button><button className={sourceMode === "youtube" ? "active" : ""} onClick={() => setSourceMode("youtube")}><Icon name="link"/> YouTube</button></div>{sourceMode === "file" ? <label className={`dropzone ${file ? "has-file" : ""}`}><input type="file" accept="video/*,audio/*" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] || null)}/><Icon name={file ? "check" : "upload"} size={30}/><strong>{file?.name || "Solte o episódio aqui"}</strong><small>MP4, MOV, MKV, WebM, MP3 ou WAV</small></label> : <div className="simple-url"><Icon name="link"/><input value={youtube} onChange={(event) => setYoutube(event.target.value)} placeholder="https://youtube.com/watch?v=..."/></div>}</div><div className="simple-card settings-card"><h3>O que você quer receber</h3><Range label="Quantidade" value={count} min={1} max={25} onChange={setCount}/><Range label="Mínimo" value={minimum} min={15} max={180} suffix="s" onChange={(value) => { setMinimum(value); if (value > maximum) setMaximum(value); }}/><Range label="Máximo" value={maximum} min={15} max={180} suffix="s" onChange={(value) => { setMaximum(value); if (value < minimum) setMinimum(value); }}/><Field label="Protagonista dos cortes" hint="Orienta a IA; não reconhece a voz pelo nome"><input value={primarySubject} onChange={event => setPrimarySubject(event.target.value)}/></Field><p className="field-help">Para confirmar sua voz, use “Identificar a voz do Dayon” no episódio salvo na Biblioteca.</p><Toggle checked={newClipsOnly} onChange={setNewClipsOnly} label="Evitar trechos já sugeridos"/><Field label="Direção editorial" hint="Este pedido é enviado à IA para escolher os trechos"><textarea placeholder="Ex.: priorize minhas explicações sobre consciência; inclua a pergunta quando ajudar a entender; preserve o contexto e evite frases cortadas." value={instructions} onChange={(event) => setInstructions(event.target.value)}/></Field></div></div>{run && busy && <div className="simple-progress"><div><b>{run.message}</b><span>{Math.round(run.progress)}%</span></div><i><em style={{ width: `${run.progress}%` }}/></i><small>{uploadProgress > 0 && uploadProgress < 1 ? `Enviando · ${Math.round(uploadProgress * 100)}%` : "O processamento continua mesmo se você fechar esta tela."}</small></div>}<button className="btn primary simple-primary" disabled={busy || visualBusy || (sourceMode === "file" ? !file : !youtube)} onClick={() => void processEpisode()}><Icon name="spark"/> {busy ? "Processando episódio..." : "Processar episódio"}</button></section>}
       {screen === "review" && selection && run && <section className="simple-page enter"><div className="simple-title row"><div><span>02 · ESCOLHER CORTES</span><h1>{selection.clips.length} momentos encontrados.</h1><p>{selection.selection_notes}</p></div><button className="btn primary" disabled={!activeClips.length} onClick={() => setScreen("export")}>Editar {activeClips.length} selecionado{activeClips.length === 1 ? "" : "s"} <Icon name="chevron"/></button></div><div className="clip-grid">{selection.clips.map((clip) => { const key = clipKey(clip); const selected = selectedKeys.includes(key); return <article key={key} className={`simple-clip ${selected ? "selected" : ""}`} onClick={() => setSelectedKeys((items) => selected ? items.filter((item) => item !== key) : [...items, key])}><div className="clip-frame"><img src={api.sourcePreviewUrl(run.project_id, run.source_asset_id, clip.start_second + 1)} alt="Preview do corte"/><span>{timestamp(clip.estimated_duration)}</span><i>{selected ? <Icon name="check"/> : null}</i></div><div><span className="clip-rank">#{clip.rank} · {clip.primary_speaker}</span><h3>{clip.title}</h3><p>{clip.reasoning}</p><strong>{timestamp(clip.start_second)} — {timestamp(clip.end_second)}</strong></div></article>; })}</div></section>}
-      {screen === "export" && selection && run && <section className="simple-page enter"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Legenda bonita. Vertical. Pronto para postar.</h1><p>{activeClips.length} cortes selecionados · formato fixo 1080 × 1920 para Reels e TikTok.</p><p>Mantenha esta tela aberta para enviar todos os cortes à fila. Cada render enviado continua no servidor.</p></div><div className="export-layout"><div className="simple-card"><h3>Enquadramento</h3><Field label="Composição"><select value={settings.framing.mode} disabled={busy || visualBusy} onChange={(event) => setSettings((value) => ({ ...value, framing: { ...value.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } }))}><option value="speaker_auto">Automático por pessoa e câmera</option><option value="blurred_background">Quadro inteiro com fundo desfocado</option><option value="vertical_crop">Recorte central</option></select></Field><p>Quadro inteiro exporta sem análise de rostos. O automático analisa apenas os cortes selecionados, com uma margem de 3 segundos. O resultado fica em cache.</p><div className="toggles"><Toggle checked={settings.framing.punch_in.enabled} onChange={(enabled) => setSettings((value) => ({ ...value, framing: { ...value.framing, punch_in: { ...value.framing.punch_in, enabled } } }))} label="Zoom discreto alternado (1,15×)"/><Toggle checked={reuseReactions} onChange={setReuseReactions} label="Reaproveitar reações de outro instante"/></div>{reuseReactions && <p>{interviewerIdentityId ? "Usa apenas candidatos validados do entrevistador, preservando o áudio da sua fala." : "Analise as pessoas e selecione o entrevistador abaixo para habilitar o reaproveitamento."}</p>}{focusedClip && <><Field label="Corte em revisão"><select disabled={busy || visualBusy} value={clipKey(focusedClip)} onChange={e=>{setFocusedKey(e.target.value);setPreviewVideo(null);}}>{activeClips.map(c=><option key={clipKey(c)} value={clipKey(c)}>{c.title}</option>)}</select></Field><TranscriptEditor projectId={run.project_id} artifactId={run.artifacts.transcript} clip={focusedClip} corrections={captionEdits[clipKey(focusedClip)] || []} disabled={busy || visualBusy} onChange={edits=>{
+      {screen === "export" && selection && run && <section className="simple-page enter"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Seu corte, do seu jeito.</h1><p>{activeClips.length} cortes selecionados · 1080 × 1920. Estilo aplicado ao lote; headline e correções de legenda são individuais.</p><p>Mantenha esta tela aberta para enviar todos os cortes à fila. Cada render enviado continua no servidor.</p></div><div className="export-layout"><fieldset disabled={busy || visualBusy} className="export-controls simple-card"><legend className="sr-only">Ajustes da exportação</legend><h3>Enquadramento</h3><Field label="Composição"><select value={settings.framing.mode} disabled={busy || visualBusy} onChange={(event) => setSettings((value) => ({ ...value, framing: { ...value.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } }))}><option value="speaker_auto">Automático por pessoa e câmera</option><option value="blurred_background">Quadro inteiro com fundo desfocado</option><option value="vertical_crop">Recorte central</option></select></Field><p>{settings.framing.mode === "blurred_background" ? "Mantém o vídeo inteiro sobre um fundo com Gaussian blur. Ideal para mostrar a mesa e todos os participantes." : settings.framing.mode === "speaker_auto" ? "Preserva cenas abertas e acompanha os closes existentes. Analisa somente os cortes selecionados com margem de 3 segundos e reutiliza o cache." : "Preenche a tela vertical pelo centro do vídeo. As laterais ficam fora do quadro."}</p>{settings.framing.mode === "blurred_background" && <Range label="Posição vertical do vídeo" value={Math.round((settings.framing.position_y ?? .5)*100)} min={0} max={100} suffix="%" onChange={value => setSettings(s => ({...s, framing:{...s.framing,position_y:value/100}}))}/>}<div className="toggles"><Toggle checked={settings.framing.punch_in.enabled} onChange={(enabled) => setSettings((value) => ({ ...value, framing: { ...value.framing, punch_in: { ...value.framing.punch_in, enabled } } }))} label="Zoom discreto alternado (1,15×)"/></div><p className="field-help">O zoom alterna uma ampliação fixa entre trechos separados por cortes de pausa. Não é um movimento contínuo; um trecho único pode ficar sem zoom. Planos abertos são preservados no automático.</p>{reuseReactions && <p>{interviewerIdentityId ? "Usa apenas candidatos validados do entrevistador, preservando o áudio da sua fala." : "Analise as pessoas e selecione o entrevistador abaixo para habilitar o reaproveitamento."}</p>}{focusedClip && <><Field label="Corte em revisão"><select disabled={busy || visualBusy} value={clipKey(focusedClip)} onChange={e=>{setFocusedKey(e.target.value);setPreviewVideo(null);}}>{activeClips.map(c=><option key={clipKey(c)} value={clipKey(c)}>{c.title}</option>)}</select></Field><TranscriptEditor projectId={run.project_id} artifactId={run.artifacts.transcript} clip={focusedClip} corrections={captionEdits[clipKey(focusedClip)] || []} disabled={busy || visualBusy} onChange={edits=>{
  const next={...captionEdits,[clipKey(focusedClip)]:edits}; setCaptionEdits(next); setPreviewVideo(null);
-}}/></>}<CaptionEditor controls={<> <Range label="Tamanho" value={settings.captions.font_size} min={16} max={96} onChange={(font_size) => setSettings((value) => ({ ...value, captions: { ...value.captions, font_size } }))}/><ColorField label="Texto" value={settings.captions.text_color} onChange={(text_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color } }))}/><ColorField label="Palavra ativa" value={settings.captions.karaoke_color} onChange={(karaoke_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, karaoke_color } }))}/> </>} settings={settings} disabled={busy || visualBusy} onChange={(patch) => setSettings(value => ({...value, captions:{...value.captions,...patch}}))} image={focusedClip ? api.sourcePreviewUrl(run.project_id, run.source_asset_id, focusedClip.start_second + 1) : undefined}/><details><summary>Configurações avançadas</summary><div className="toggles"><Toggle checked={settings.headline.enabled} onChange={(enabled) => setSettings((value) => ({ ...value, headline: { ...value.headline, enabled } }))} label="Mostrar headline"/></div></details></div></div>{busy && <div className="simple-progress"><div><b>{visualBusy ? visualMessage : "Preparando e renderizando cortes com NVENC"}</b><span>{Math.round(visualBusy ? visualProgress : renderProgress)}%</span></div><i><em style={{ width: `${visualBusy ? visualProgress : renderProgress}%` }}/></i></div>}<div className="clip-preview-actions"><button className="btn secondary" disabled={busy || visualBusy || !focusedClip} onClick={()=>void renderSelected(true)}>Gerar prévia curta (~10 s)</button><p>Duração aproximada para respeitar o fechamento da fala. Usa legenda corrigida, enquadramento e áudio da exportação. Mudanças nos ajustes exigem nova prévia.</p>{previewVideo && <div><h3>Prévia · {previewVideo.title}</h3><video controls src={previewVideo.url}/></div>}</div>{rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}<button className="btn primary simple-primary" disabled={busy || visualBusy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button></section>}
-      {screen === "export" && run && focusedClip && <section className="simple-card headline-editor">
-        <h3>Headline deste corte</h3>
+}}/></>}      {screen === "export" && run && focusedClip && <section className="headline-editor">
+        <h3>Headline deste corte</h3><Toggle checked={settings.headline.enabled} onChange={(enabled) => setSettings(value => ({...value, headline:{...value.headline,enabled}}))} label="Mostrar headline"/>
         <Field label="Headline manual" hint="Campo vazio usa a sugestão da IA">
           <textarea maxLength={300} disabled={busy || visualBusy} value={headlines[clipKey(focusedClip)] || ""}
             placeholder={focusedClip.headline || focusedClip.title}
             onChange={event => setHeadlines(current => ({...current, [clipKey(focusedClip)]: event.target.value}))}/>
         </Field>
         <p>Sugestão da IA: {focusedClip.headline || focusedClip.title}</p>
-        <p>{settings.headline.enabled ? `Texto para exportação: ${headlines[clipKey(focusedClip)]?.trim() || focusedClip.headline || focusedClip.title}` : "Headline desativada nas configurações avançadas."}</p>
+        <details><summary>Estilo da headline</summary>
+          <Field label="Fonte da headline"><select value={settings.headline.font_family} onChange={e => setSettings(s => ({...s,headline:{...s.headline,font_family:e.target.value}}))}>{['Montserrat','Lato','DejaVu Sans'].map(f => <option key={f}>{f}</option>)}</select></Field>
+          <Range label="Escala da headline" value={settings.headline.font_size} min={24} max={96} onChange={font_size => setSettings(s => ({...s,headline:{...s.headline,font_size}}))}/>
+          <Range label="Tempo da headline" value={settings.headline.duration_seconds} min={1} max={10} suffix="s" onChange={duration_seconds => setSettings(s => ({...s,headline:{...s.headline,duration_seconds}}))}/>
+          <Field label="Entrada da headline"><select value={settings.headline.animation.entrance} onChange={e => setSettings(s => ({...s,headline:{...s.headline,animation:{...s.headline.animation,entrance:e.target.value as RenderSettings['headline']['animation']['entrance']}}}))}><option value="none">Sem animação</option><option value="fade">Aparecer suave</option><option value="slide">Deslizar</option></select></Field>
+        </details>
+        <p>{settings.headline.enabled ? `Texto para exportação: ${headlines[clipKey(focusedClip)]?.trim() || focusedClip.headline || focusedClip.title}` : "Headline desativada."}</p>
         <button className="btn secondary" disabled={busy || visualBusy || !headlines[clipKey(focusedClip)]}
           onClick={() => setHeadlines(current => { const next = {...current}; delete next[clipKey(focusedClip)]; return next; })}>Usar sugestão da IA</button>
-        <p>O texto aparece animado na prévia curta e no vídeo exportado. Os ajustes são salvos automaticamente neste navegador.</p>
+        <p>Revise a acentuação e os nomes próprios. O texto aparece na prévia ao vivo e na exportação. Os ajustes são salvos automaticamente neste navegador.</p>
       </section>}
-      {screen === "export" && run && settings.framing.mode === "speaker_auto" && <FramingReview
+<CaptionControls controls={<> <Range label="Tamanho" value={settings.captions.font_size} min={16} max={96} onChange={(font_size) => setSettings((value) => ({ ...value, captions: { ...value.captions, font_size } }))}/><ColorField label="Texto" value={settings.captions.text_color} onChange={(text_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color } }))}/><ColorField label="Palavra ativa" value={settings.captions.karaoke_color} onChange={(karaoke_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, karaoke_color } }))}/> </>} settings={settings} disabled={busy || visualBusy} onChange={(patch) => setSettings(value => ({...value, captions:{...value.captions,...patch}}))}/>
+<details className="reactions-options"><summary>Reações e câmeras · opcional</summary><Toggle checked={reuseReactions} onChange={setReuseReactions} label="Reaproveitar reações de outro instante"/>      {screen === "export" && run && settings.framing.mode === "speaker_auto" && <FramingReview
         projectId={run.project_id} sourceId={run.source_asset_id} scenes={cameraScenes}
         clips={activeClips} disabled={busy || visualBusy} overrides={settings.framing.scene_overrides || []}
         onChange={(scene_overrides) => setSettings((value) => ({ ...value, framing: { ...value.framing, scene_overrides } }))}
       />}
       {screen === "export" && run && <CameraDynamicsPanel projectId={run.project_id} artifactId={visualArtifacts?.identity} identityIndex={identityIndex} interviewerIdentityId={interviewerIdentityId} busy={visualBusy || busy} message={visualMessage} onPrepare={() => void prepareCameraDynamics()} onSelect={(identityId) => void selectInterviewer(identityId)}/>}
-      {warnings.length > 0 && <aside className="simple-warnings" role="status" aria-label="Avisos de câmera"><b>Avisos de câmera</b>{warnings.map((warning, index) => <p key={index}>{warning}</p>)}</aside>}
+</details>
+</fieldset><aside className="export-preview"><LivePreview settings={{...settings,headline:{...settings.headline,text:focusedClip ? headlines[clipKey(focusedClip)]?.trim() || focusedClip.headline || focusedClip.title : ""}}} image={focusedClip ? api.sourcePreviewUrl(run.project_id,run.source_asset_id,focusedClip.start_second+1) : undefined}/></aside></div>{(busy || currentJob) && <JobProgress job={currentJob} history={jobHistory} progress={visualBusy ? visualProgress : renderProgress} label={busy ? visualBusy ? visualMessage : currentJob?.message || "Preparando exportação" : "Último processamento"} busy={busy || visualBusy}/>}<div className="clip-preview-actions"><div className="export-actionbar"><button className="btn primary simple-primary" disabled={busy || visualBusy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button><button className="btn secondary" disabled={busy || visualBusy || !focusedClip} onClick={()=>void renderSelected(true)}>Gerar prévia curta (~10 s)</button></div><p>Duração aproximada para respeitar o fechamento da fala. Usa legenda corrigida, enquadramento e áudio da exportação. Mudanças nos ajustes exigem nova prévia.</p>{previewVideo && <div><h3>Prévia · {previewVideo.title}</h3><video controls src={previewVideo.url}/></div>}</div>{rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}</section>}
+      {screen === "export" && warnings.length > 0 && <aside className="simple-warnings" role="status" aria-label="Avisos de câmera"><b>Avisos de câmera</b>{warnings.map((warning, index) => <p key={index}>{warning}</p>)}</aside>}
       {draftError && <p role="alert">{draftError}</p>}
       {error && <div className="simple-error" role="alert"><b>Não deu certo ainda</b><p>{error}</p><button onClick={() => setError(null)}>Fechar</button></div>}
     </main>

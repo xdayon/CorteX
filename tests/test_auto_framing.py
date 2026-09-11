@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -70,45 +71,78 @@ def _resolve(plan, faces, speakers, **kwargs):
                                 width=1080, height=1920, fps=30, **kwargs)
 
 
+def _close_plan(windows):
+    plan = _plan(windows)
+    for shot in plan.shots:
+        shot.camera_role, shot.intent = "speaker_close", "speaker"
+    return plan
+
+
+def _single_faces():
+    faces = _faces(False)
+    for frame in faces.frames:
+        frame.faces = frame.faces[:1]
+        frame.shot_type = "close"
+    return faces
+
+
 def test_wide_speaker_then_real_silent_listener_then_uncertain_context():
-    spans = _resolve(_plan([(0, 2_000_000), (2_000_000, 4_000_000), (4_000_000, 6_000_000)]),
-                     _faces(), _speakers([(0, 2_000_000, "left")]))
+    plan = _plan([(0, 2_000_000), (2_000_000, 4_000_000), (4_000_000, 6_000_000)])
+    plan.shots[1].camera_role, plan.shots[1].intent = "unknown", "fallback"
+    spans = _resolve(plan, _faces(), _speakers([(0, 2_000_000, "left")]))
     assert [(s.mode, s.track_id) for s in spans] == [
-        ("face_crop", "left"), ("face_crop", "right"), ("blurred_background", None)]
-    assert spans[0].crop_x < 600
+        ("blurred_background", None), ("face_crop", "right"), ("blurred_background", None)]
+    assert spans[0].reason == "source_context_preserved"
     assert spans[1].crop_x > 1000
     assert spans[1].reason == "single_visible_person"
-    assert spans[2].reason == "speaker_uncertain_keep_context"
+    assert spans[2].reason == "source_context_preserved"
     assert sum(s.source_end_us - s.source_start_us for s in spans) == 6_000_000
 
 
-def test_speaker_turn_within_the_same_wide_camera_changes_crop():
+def test_speaker_turn_within_the_same_wide_camera_preserves_context():
     spans = _resolve(_plan([(0, 6_000_000)]), _faces(False),
                      _speakers([(0, 3_000_000, "left"), (3_000_000, 6_000_000, "right")]))
-    assert [s.track_id for s in spans] == ["left", "right"]
-    assert spans[0].source_end_us == spans[1].source_start_us == 3_000_000
+    assert len(spans) == 1
+    assert spans[0].mode == "blurred_background"
+    assert spans[0].reason == "source_context_preserved"
+    assert (spans[0].source_start_us, spans[0].source_end_us) == (0, 6_000_000)
 
 
-@pytest.mark.parametrize("kind", ["absent", "low_confidence", "brief", "empty_frame", "unsafe_face"])
+@pytest.mark.parametrize("signal", ["wide", "two_shot", "context", "visible_companions"])
+def test_context_survives_missing_or_inconsistent_camera_evidence(signal):
+    plan, faces = _close_plan([(0, 6_000_000)]), _single_faces()
+    if signal == "context":
+        plan.shots[0].intent = "context"
+    elif signal == "visible_companions":
+        faces = _faces(False)
+    else:
+        plan.shots[0].camera_role = signal
+    spans = _resolve(plan, faces, _speakers([(0, 6_000_000, "left")]), zoom=1.15)
+    assert len(spans) == 1
+    assert spans[0].reason == "source_context_preserved"
+    assert spans[0].mode == "blurred_background"
+    assert spans[0].requested_zoom == 1.15 and spans[0].effective_zoom == 1
+    assert spans[0].zoom_reason == "context_preserved"
+
+
+@pytest.mark.parametrize("kind", ["low_confidence", "empty_frame", "unsafe_face", "sparse_samples"])
 def test_uncertainty_never_becomes_center_table_crop(kind):
-    faces = _faces(False)
+    faces = _single_faces()
     speakers = _speakers([(0, 6_000_000, "left")])
-    if kind == "absent":
-        speakers.segments[0].speaker_track_id = "missing"
-    elif kind == "low_confidence":
-        speakers.segments[0].confidence = .2
-    elif kind == "brief":
-        speakers.segments[0].end_us = 500_000
+    if kind == "low_confidence":
+        faces.frames[1].faces[0].score = .2
     elif kind == "empty_frame":
         faces.frames[1].faces = []
     elif kind == "unsafe_face":
         faces.frames[1].faces[0].x = .6
-    spans = _resolve(_plan([(0, 6_000_000)]), faces, speakers)
+    elif kind == "sparse_samples":
+        faces.frames = faces.frames[:1]
+    spans = _resolve(_close_plan([(0, 6_000_000)]), faces, speakers)
     assert all(span.mode == "blurred_background" for span in spans)
 
 
 def test_zoom_records_effective_geometry_and_keeps_face_inside_crop():
-    spans = _resolve(_plan([(0, 6_000_000)]), _faces(False),
+    spans = _resolve(_close_plan([(0, 6_000_000)]), _single_faces(),
                      _speakers([(0, 6_000_000, "left")]), zoom=1.15)
     assert spans[0].effective_zoom == 1.15
     assert spans[0].crop_width < 606
@@ -133,6 +167,9 @@ def _fixture(tmp_path):
     edit = _make_edit_plan_artifact(domain, tmp_path, project.id, source.id, transcript.id, duration=6)
     common = dict(project_id=project.id, source_asset_id=source.id, source_sha256=source.sha256)
     faces = _faces().model_copy(update=common)
+    for frame in faces.frames:
+        if frame.time < 2:
+            frame.faces = frame.faces[:1]
     face = _persist(domain, project.id, "face_index", tmp_path / "faces.json", faces, 2)
     speakers = _speakers([(0, 2_000_000, "left")]).model_copy(update={
         **common, "face_index_artifact_id": face.id, "face_index_input_hash": face.input_hash})
@@ -146,6 +183,8 @@ def _fixture(tmp_path):
     })
     camera = _persist(domain, project.id, "camera_timeline", tmp_path / "cameras.json", camera_doc)
     plan = _plan([(0, 2_000_000), (2_000_000, 4_000_000), (4_000_000, 6_000_000)])
+    for shot in plan.shots[:2]:
+        shot.camera_role, shot.intent = "speaker_close", "speaker"
     plan.project_id, plan.source_asset_id = project.id, source.id
     plan.edit_plan_artifact_id, plan.edit_plan_input_hash = edit.id, edit.input_hash
     plan.camera_timeline_artifact_id = camera.id
@@ -167,10 +206,20 @@ def test_real_ffmpeg_render_persists_crop_decisions_and_reuses_cache(tmp_path):
     assert document.quality.passed
     assert len(document.auto_framing) == 3
     assert document.auto_framing_inputs["face_index"]
+    assert document.auto_framing[2].reason == "source_context_preserved"
+    assert document.auto_framing[2].mode == "blurred_background"
     red = _center_pixel(config.render.ffmpeg, Path(document.output_path), 1)
     blue = _center_pixel(config.render.ffmpeg, Path(document.output_path), 3)
     assert red[0] > red[2] + 100
     assert blue[2] > blue[0] + 100
+    context_row = subprocess.run([
+        str(config.render.ffmpeg), "-v", "error", "-ss", "5", "-i", document.output_path,
+        "-frames:v", "1", "-vf", "format=rgb24,crop=iw:1:0:floor(ih/2)",
+        "-f", "rawvideo", "-",
+    ], capture_output=True, check=True, timeout=30).stdout
+    context_left, context_right = context_row[80 * 3:81 * 3], context_row[240 * 3:241 * 3]
+    assert context_left[0] > context_left[2] + 100
+    assert context_right[2] > context_right[0] + 100
     assert abs(document.timeline_duration_seconds - 6) < .04
     again = RenderService(config, domain).run(**arguments)
     assert again["cached"] and again["render_artifact_id"] == artifact.id
@@ -181,7 +230,6 @@ def test_real_ffmpeg_render_persists_crop_decisions_and_reuses_cache(tmp_path):
     assert not changed["cached"] and changed["render_artifact_id"] != artifact.id
     changed_doc = RenderDocument.model_validate_json(
         Path(domain.get_stage_artifact(changed["render_artifact_id"]).path).read_text())
-    import subprocess
     def audio_hash(path):
         return subprocess.run([str(config.render.ffmpeg), "-v", "error", "-i", path,
                                "-map", "0:a:0", "-f", "hash", "-"], capture_output=True,
@@ -209,7 +257,7 @@ def test_legacy_duplicate_track_cannot_select_arbitrary_face():
             face.track_id = "person"
     spans = _resolve(_plan([(0, 6_000_000)]), faces, _speakers([(0, 6_000_000, "person")]))
     assert all(span.mode == "blurred_background" for span in spans)
-    assert spans[0].reason == "ambiguous_duplicate_track"
+    assert spans[0].reason == "source_context_preserved"
 
 
 @pytest.mark.parametrize("target,expected", [("left", "left"), ("right", "right"), ("full", None)])
@@ -229,7 +277,7 @@ def test_auto_mode_requires_camera_plan_in_api_request():
 
 
 def test_brief_uncertainty_does_not_flash_context_between_same_speaker():
-    spans = _resolve(_plan([(0, 6_000_000)]), _faces(False),
+    spans = _resolve(_close_plan([(0, 6_000_000)]), _single_faces(),
                      _speakers([(125_000, 2_500_000, "left"), (3_000_000, 5_700_000, "left")]))
     assert len(spans) == 1
     assert spans[0].source_start_us == 0 and spans[0].source_end_us == 6_000_000

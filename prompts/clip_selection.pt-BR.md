@@ -77,3 +77,13 @@ sobreponham os trechos já sugeridos. Não repita um corte apenas trocando o tí
 O foco editorial é brief.primary_subject. A transcrição sem diarização não comprova
 identidade: não invente quem falou. Sinalize atribuição incerta em warnings.
 Perguntas e comentários de outras pessoas podem complementar a fala do protagonista.
+
+## Idioma e grafia
+
+Escreva títulos, headlines, resumos e justificativas em português brasileiro,
+com acentos e cedilha corretos (ex.: “Religiões”, “consciência”, “ação”).
+Não remova diacríticos nem translitere para ASCII. Ao se referir ao protagonista
+confirmado, preserve exatamente o nome fornecido em brief.primary_subject,
+inclusive “Dayon”; não o substitua por uma variante da transcrição como “Dayan”.
+Isso não confirma identidade vocal: mantenha a incerteza de atribuição quando
+faltar evidência. Evidências citadas devem continuar fiéis à transcrição.

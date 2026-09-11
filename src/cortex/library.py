@@ -13,7 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cortex.config import CortexConfig
 from cortex.domain.store import DomainStore
-from cortex.schemas import JobCreate, JobType
+from cortex.ingest.youtube_metadata import (
+    YoutubeMetadata, YoutubeMetadataError, fetch_youtube_metadata,
+)
+from cortex.schemas import JobCreate, JobType, utc_now
 
 
 class Episode(BaseModel):
@@ -25,6 +28,12 @@ class Episode(BaseModel):
     participant_count: int | None = None
     primary_subject: str = "Dayon"
     subject_reference: dict = Field(default_factory=dict)
+    channel_name: str | None = None
+    channel_url: str | None = None
+    thumbnail_url: str | None = None
+    metadata_updated_at: str | None = None
+    metadata_error: str | None = None
+    archived: bool = False
 
 
 def youtube_id(url: str) -> str:
@@ -74,6 +83,43 @@ class EpisodeLibrary:
             raise ValueError("Episódio não encontrado")
         return Episode.model_validate_json(row[0])
 
+    def _stored_entries(self) -> list[Episode]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT data FROM episode_library ORDER BY rowid").fetchall()
+        return [Episode.model_validate_json(row[0]) for row in rows]
+
+    @serialized
+    def set_archived(self, episode_id: str, archived: bool = True) -> Episode:
+        episode = self.get(episode_id)
+        episode.archived = archived
+        return self.save(episode)
+
+    def refresh_metadata(self, episode_id: str) -> Episode:
+        """Network is opt-in; listing, registering and reopening never refresh metadata."""
+        episode = self.get(episode_id)
+        if not episode.url:
+            raise ValueError("Episódio local não possui link do YouTube para consultar metadados")
+        try:
+            metadata = fetch_youtube_metadata(youtube_id(episode.url))
+        except YoutubeMetadataError as exc:
+            return self._save_metadata_result(episode_id, None, str(exc))
+        return self._save_metadata_result(episode_id, metadata, None)
+
+    @serialized
+    def _save_metadata_result(
+        self, episode_id: str, metadata: YoutubeMetadata | None, error: str | None,
+    ) -> Episode:
+        # Re-read after the network request to preserve concurrent voice/archive changes.
+        episode = self.get(episode_id)
+        if metadata is not None:
+            episode.title = metadata.title
+            episode.channel_name = metadata.channel_name
+            episode.channel_url = metadata.channel_url
+            episode.thumbnail_url = metadata.thumbnail_url
+            episode.metadata_updated_at = utc_now().isoformat()
+        episode.metadata_error = error[:1000] if error else None
+        return self.save(episode)
+
     @serialized
     def register(self, url: str, participant_count: int | None = None):
         key = youtube_id(url)
@@ -98,33 +144,48 @@ class EpisodeLibrary:
             projects = [self.domain.create_project(f"YouTube · {key}").id]
         return self.save(Episode(id=key, url=f"https://www.youtube.com/watch?v={key}", title=f"Episódio · {key}", project_ids=projects, participant_count=participant_count))
 
+    @serialized
+    def _link_source(self, episode_id: str, project_id: str, filename: str | None) -> None:
+        episode = self.get(episode_id)
+        if project_id not in episode.project_ids:
+            episode.project_ids.append(project_id)
+        if filename and episode.metadata_updated_at is None:
+            episode.title = filename
+        self.save(episode)
+
     def reconcile(self):
         """Expose existing saved media without moving or deleting any artifact."""
-        for project in self.domain.list_projects(limit=10000):
-            sources = self.domain.list_source_assets(project.id)
+        projects = [(project, self.domain.list_source_assets(project.id))
+                    for project in self.domain.list_projects(limit=10000)]
+        for project, sources in projects:
             for source in sources:
                 if source.source_url:
                     try:
                         episode = self.register(source.source_url)
-                        if project.id not in episode.project_ids:
-                            episode.project_ids.append(project.id)
-                        if source.original_filename:
-                            episode.title = source.original_filename
-                        self.save(episode)
+                        self._link_source(episode.id, project.id, source.original_filename)
                     except ValueError:
                         pass
-            if sources and not any(source.source_url for source in sources):
+        grouped_projects = {project_id for episode in self._stored_entries() if episode.url
+                            for project_id in episode.project_ids}
+        for project, sources in projects:
+            if (sources and not any(source.source_url for source in sources)
+                    and project.id not in grouped_projects):
                 key = f"local-{project.id}"
                 try:
                     self.get(key)
                 except ValueError:
                     self.save(Episode(id=key, title=project.name, project_ids=[project.id]))
 
-    def entries(self):
+    def entries(self, *, include_archived: bool = False):
         self.reconcile()
-        with self.connect() as connection:
-            rows = connection.execute("SELECT data FROM episode_library ORDER BY rowid").fetchall()
-        return [Episode.model_validate_json(r[0]) for r in rows]
+        entries = self._stored_entries()
+        if include_archived:
+            return entries
+        grouped_projects = {project_id for episode in entries if episode.url
+                            for project_id in episode.project_ids}
+        return [episode for episode in entries if not episode.archived and (
+            episode.url or not set(episode.project_ids).issubset(grouped_projects)
+        )]
 
     def detail(self, episode: Episode):
         sources, runs, renders, suggestions = [], [], [], []
@@ -149,7 +210,8 @@ class EpisodeLibrary:
         with self.connect() as connection:
             placeholders = ",".join("?" for _ in episode.project_ids)
             jobs = [json.loads(r[0]) for r in connection.execute(f"SELECT data FROM jobs WHERE json_extract(data,'$.project_id') IN ({placeholders}) ORDER BY created_at DESC",episode.project_ids)]
-        title = next((s.original_filename for s in available if s.original_filename),episode.title)
+        title = (episode.title if episode.metadata_updated_at is not None else
+                 next((s.original_filename for s in available if s.original_filename), episode.title))
         return {**episode.model_dump(),"title":title,"source":available[0].model_dump(mode="json") if available else None,
                 "source_bytes":sum({s.stored_path:s.size_bytes for s in available}.values()),"runs":[r.model_dump(mode="json") for r in sorted(runs,key=lambda r:r.created_at,reverse=True)],"renders":renders,"suggestions":suggestions,
                 "diarizations":[{"id": a.id, "project_id":p} for p in episode.project_ids for a in self.domain.list_stage_artifacts(p,stage="diarization") if Path(a.path).is_file()],

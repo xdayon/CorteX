@@ -97,6 +97,11 @@ class EpisodeCreate(BaseModel):
     participant_count: int | None = Field(default=None, ge=1, le=20)
 
 
+class EpisodePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    archived: bool = Field(strict=True)
+
+
 class WorkflowRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -308,8 +313,8 @@ def create_app(config: CortexConfig | None = None):
     router_prefix = settings.app.api_prefix.rstrip("/")
 
     @app.get(f"{router_prefix}/episodes")
-    def list_episodes():
-        return [library.detail(entry) for entry in library.entries()]
+    def list_episodes(include_archived: bool = False):
+        return [library.detail(entry) for entry in library.entries(include_archived=include_archived)]
 
     @app.post(f"{router_prefix}/episodes", status_code=201)
     def register_episode(request: EpisodeCreate):
@@ -317,6 +322,23 @@ def create_app(config: CortexConfig | None = None):
             return library.detail(library.register(request.url, request.participant_count))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post(f"{router_prefix}/episodes/{{episode_id}}/metadata")
+    def refresh_episode_metadata(episode_id: str):
+        try:
+            episode = library.get(episode_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not episode.url:
+            raise HTTPException(status_code=400, detail="Episódio local não possui link do YouTube")
+        return library.detail(library.refresh_metadata(episode_id))
+
+    @app.patch(f"{router_prefix}/episodes/{{episode_id}}")
+    def update_episode(episode_id: str, request: EpisodePatch):
+        try:
+            return library.detail(library.set_archived(episode_id, request.archived))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get(f"{router_prefix}/diarization-status")
     def diarization_status():
@@ -385,11 +407,11 @@ def create_app(config: CortexConfig | None = None):
 
     @app.get(f"{router_prefix}/caption-fonts/{{family}}/{{weight}}")
     def caption_font(family: str, weight: int):
-        if family not in {"Montserrat", "Lato", "DejaVu Sans"} or weight not in {400, 900}:
+        if family not in {"Montserrat", "Lato", "DejaVu Sans"} or weight not in {400, 800, 900}:
             raise HTTPException(status_code=404, detail="Fonte indisponível")
         try:
             result = subprocess.run(
-                ["fc-match", "-f", "%{file}", f"{family}:weight={'regular' if weight == 400 else 'black'}"],
+                ["fc-match", "-f", "%{file}", f"{family}:weight={ {400: 'regular', 800: 'extrabold', 900: 'black'}[weight]}"],
                 capture_output=True, text=True, timeout=5, check=True,
             )
             path = Path(result.stdout.strip())

@@ -242,7 +242,6 @@ test("only reviewed selections render, with the chosen caption and headline sett
   fireEvent.click(screen.getByRole("button", { name: /Editar 1 selecionado/ }));
   fireEvent.change(screen.getByRole("slider", { name: /Tamanho/ }), { target: { value: "64" } });
   fireEvent.change(document.querySelector('input[type="color"]')!, { target: { value: "#ffcc00" } });
-  fireEvent.click(screen.getByText("Configurações avançadas"));
   fireEvent.click(screen.getByRole("button", { name: "Mostrar headline" }));
   fireEvent.click(screen.getByRole("button", { name: "Renderizar 1 corte" }));
   await settle();
@@ -342,7 +341,7 @@ test("caption controls update the preview and the render payload", async () => {
 test("starting another episode preserves a resumable draft without deleting artifacts", async () => {
   await openExport(ready, false);
   fireEvent.change(screen.getByRole("slider", {name:/Tamanho/}), {target:{value:"64"}});
-  fireEvent.click(screen.getByRole("button", {name:"Começar outro episódio"}));
+  fireEvent.click(screen.getByRole("button", {name:/1Novo episódio/}));
   expect(localStorage.getItem("cortex-active-run")).toBeNull();
   expect(screen.getByPlaceholderText("https://youtube.com/watch?v=...")).toBeTruthy();
   expect(screen.queryByRole("button", {name:"Renderizar 1 corte"})).toBeNull();
@@ -496,4 +495,54 @@ test.each(['{invalid', JSON.stringify({schema_version:1, settings:{captions:null
   fireEvent.click(screen.getByRole("button", {name:"Gerar prévia curta (~10 s)"}));
   await settle();
   expect(vi.mocked(api.startRender).mock.lastCall?.[2].headline.text).toBe("Headline real");
+});
+
+test("library is separate from the three-stage workflow and new episode is the entry screen", async () => {
+  render(<App/>); await settle();
+  expect(screen.getByRole('heading', {name:'Do episódio aos cortes, em um clique.'})).toBeTruthy();
+  const navigation = screen.getByRole('navigation', {name:'Jornada do episódio'});
+  expect(navigation.querySelectorAll('button')).toHaveLength(3);
+  expect(navigation.textContent).toBe('1Novo episódio2Escolher cortes3Exportar');
+  fireEvent.click(screen.getByRole('button', {name:'Biblioteca'})); await settle();
+  expect(screen.getByRole('heading', {name:'Seus episódios. Seus cortes.'})).toBeTruthy();
+});
+
+test("foreground position and accented manual headline reach both live preview and render", async () => {
+  await openExport(ready, false);
+  expect(screen.queryByRole('button', {name:'Começar outro episódio'})).toBeNull();
+  fireEvent.change(screen.getByRole('slider', {name:/Posição vertical do vídeo/}), {target:{value:'25'}});
+  fireEvent.change(screen.getByRole('textbox', {name:/Headline manual/}), {target:{value:'Religiões, consciência e ação'}});
+  await settle();
+  expect(document.querySelector('[data-cortex-headline-text]')?.textContent).toBe('Religiões, consciência e ação');
+  expect((screen.getByAltText('Frame do corte selecionado') as HTMLImageElement).style.objectPosition).toBe('center 25%');
+  const headline = screen.getByRole('textbox', {name:/Headline manual/});
+  expect(headline.compareDocumentPosition(screen.getByRole('button', {name:'Renderizar 1 corte'})) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', {name:'Renderizar 1 corte'})); await settle();
+  expect(api.startRender).toHaveBeenCalledWith('project','edl',expect.objectContaining({framing:expect.objectContaining({position_y:.25}),headline:expect.objectContaining({text:'Religiões, consciência e ação'})}),undefined);
+});
+
+test("export details show server frame progress and camera messages stay in export", async () => {
+  const pending = deferred<ApiJob>();
+  vi.mocked(api.watchJob).mockImplementation(async (id,onUpdate) => {
+    if (id === 'render') {onUpdate?.({id,stage:'render',status:'running',progress:18,message:'Remotion: 42/300 quadros renderizados; 20/300 codificados',updated_at:'2026-09-11T08:00:00Z',worker_pid:456}); return pending.promise;}
+    return job(id, {edit_plan_artifact_id:'edl'});
+  });
+  await openExport(ready,false);
+  fireEvent.click(screen.getByRole('button', {name:'Renderizar 1 corte'})); await settle();
+  fireEvent.click(screen.getByText('Exibir detalhes do processamento'));
+  const details = document.querySelector('.job-progress details')!;
+  expect(details.textContent).toContain('42/300 quadros');
+  expect(details.textContent).toContain('456');
+  await act(async () => pending.resolve(job('render',{render_artifact_id:'mp4'})));
+  fireEvent.click(screen.getByRole('button', {name:/2Escolher cortes/}));
+  expect(screen.queryByRole('status',{name:'Avisos de câmera'})).toBeNull();
+  expect(screen.queryByRole('region',{name:'Progresso da exportação'})).toBeNull();
+});
+
+test("single-layout identity message distinguishes detected faces from confirmed people", async () => {
+  vi.mocked(api.identityIndex).mockResolvedValue({document:{identities:[{identity_id:'candidate',status:'single_layout',layout_ids:['wide']} ]}} as Awaited<ReturnType<typeof api.identityIndex>>);
+  await openExport(visualRun);
+  fireEvent.click(screen.getByText('Reações e câmeras · opcional'));
+  expect(screen.getByText(/Foram encontrados rostos, mas os trechos analisados têm apenas um ângulo/)).toBeTruthy();
+  expect(screen.queryByRole('button', {name:/Selecionar entrevistador/})).toBeNull();
 });

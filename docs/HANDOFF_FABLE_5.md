@@ -15,17 +15,23 @@ modelo editorial são configurações independentes.
 
 ## Implementado
 
-- Biblioteca persistida por episódio, ingestão YouTube/upload, WAV/transcript e
+- Biblioteca por ID YouTube, título/canal/capa via oEmbed, arquivar/restaurar e busca.
+  Oito links Dayon cadastrados no host; entradas antigas arquivadas, mídia preservada.
+- Ingestão YouTube/upload, WAV/transcript e
   análise de áudio cacheados, seleção Codex validada por schema, jobs SQLite.
 - Workflow encadeia transcrição/análise/sugestão até revisão; exportação ainda
   agenda cada próximo corte no navegador. **Lote durável não está concluído.**
 - Prévia curta real, MP4/SRT/manifests, QA técnico, captions compartilhadas com
   Remotion, correções por palavra, karaoke/pop, headline manual por corte.
+- Jornada em três etapas com Biblioteca separada, prévia lateral, headline/legenda
+  compartilhadas com export, posição vertical do vídeo e detalhes de tarefas reais.
+  Remotion reporta frames; FFmpeg reporta tempo codificado, ambos com IO limitado.
 - Draft versionado com autosave no navegador e restauração isolada por run.
   Isso não é persistência de edição no backend ou sincronização entre navegadores.
 - Quadro inteiro com Gaussian blur é default. Automático visual é opcional e
   analisa apenas intervalos escolhidos + margem. Correção por cena e zoom estático;
-  reação de outro instante exige opção explícita e entrevistador confirmado.
+  cenas abertas/duplas são preservadas (auto v1.2). Reação de outro instante exige
+  opção explícita e entrevistador confirmado; um único ângulo não confirma identidade.
 - Render busca janela física antes de decodificar, preserva clocks absolutos da
   EDL e inclui J/L-cut/reaction. Janela única ainda inclui gaps internos.
 - Pyannote community-1 CPU opcional em `.venv-diarization`; voz confirmada na
@@ -45,6 +51,7 @@ específico; confira [evidência](evidence/2026-09-10-architecture-review.md).
 
 ## Próximo gate
 
+Os ajustes de UX estão em [evidência](evidence/2026-09-11-studio-experience.md).
 Executar P0 do [ROADMAP](ROADMAP.md): export batch + revisão persistidos no
 servidor, retomada independente do navegador e transição de workflow idempotente.
 Separar extração de módulos de mudança de comportamento. Antes de editar, leia

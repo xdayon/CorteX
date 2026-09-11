@@ -94,6 +94,8 @@ const main = async () => {
     onBrowserDownload: rejectBrowserDownload,
     logLevel: 'warn',
   });
+  let lastProgressAt = -Infinity;
+  let lastProgressPercent = -1;
   await renderMedia({
     serveUrl,
     composition,
@@ -108,6 +110,20 @@ const main = async () => {
     imageFormat: 'png',
     overwrite: true,
     logLevel: 'warn',
+    onProgress: ({progress, renderedFrames, encodedFrames}) => {
+      const percent = progress * 100;
+      const now = performance.now();
+      // This is renderer evidence, not a timer pretending that work advanced.
+      // At most two updates per second, plus the renderer's final event.
+      if (!Number.isFinite(percent) || percent <= lastProgressPercent
+          || (now - lastProgressAt < 500 && percent < 100)) return;
+      lastProgressAt = now;
+      lastProgressPercent = percent;
+      writeSync(1, `${JSON.stringify({
+        type: 'cortex.remotion.progress', schemaVersion: 1, percent,
+        renderedFrames, encodedFrames, totalFrames: composition.durationInFrames,
+      })}\n`);
+    },
   });
 
   const probeRaw = await run('ffprobe', [
