@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from cortex.analyze.scope import SourceRange
+
 SCENE_INDEX_SCHEMA_VERSION = 1
 
 
@@ -39,6 +41,7 @@ class SceneIndexDocument(BaseModel):
     source_sha256: str
     input_hash: str
     duration_seconds: float = Field(ge=0)
+    source_ranges: list[SourceRange] = Field(default_factory=list)
     cuts: list[SceneCut]
     scenes: list[SceneSegment]
     cut_count: int = Field(ge=0)

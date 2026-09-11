@@ -169,3 +169,32 @@ def aggregate_scene_summaries(frames: list[dict], scenes: list[dict]) -> list[di
             "sample_count": len(in_scene),
         })
     return summaries
+
+
+def assign_scene_tracks(frames: list[dict], scenes: list[dict]) -> None:
+    """Assign local slots per camera scene, rejecting simultaneous collisions.
+
+    A maximum cluster diameter prevents intermediate positions in other camera
+    layouts from joining the left and right people into a single episode slot.
+    IDs are local positions; cross-camera identity remains the SFace service's job.
+    """
+    for frame in frames:
+        for face in frame["faces"]:
+            face["track_id"] = None
+    for scene in scenes:
+        local = [frame for frame in frames if scene["start"] <= frame["time"] < scene["end"]]
+        centers = sorted(face["x"] + face["width"] / 2 for frame in local for face in frame["faces"])
+        clusters: list[list[float]] = []
+        for center in centers:
+            if not clusters or center - clusters[-1][0] > 0.18:
+                clusters.append([center])
+            else:
+                clusters[-1].append(center)
+        slots = [sum(cluster) / len(cluster) for cluster in clusters]
+        for frame in local:
+            for face in frame["faces"]:
+                face["track_id"] = assign_track_id(face["x"] + face["width"] / 2, slots)
+            counts = Counter(face["track_id"] for face in frame["faces"])
+            for face in frame["faces"]:
+                if counts[face["track_id"]] > 1:
+                    face["track_id"] = None

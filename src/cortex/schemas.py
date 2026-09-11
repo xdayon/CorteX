@@ -13,6 +13,7 @@ def utc_now() -> datetime:
 
 
 class JobType(StrEnum):
+    DIARIZATION = "diarization"
     TRANSCRIPTION = "transcription"
     ANALYSIS = "analysis"
     SCENE_ANALYSIS = "scene_analysis"

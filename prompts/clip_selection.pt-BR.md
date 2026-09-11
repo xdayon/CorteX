@@ -70,3 +70,10 @@ desempate.
 - Se nao houver material suficiente, retorne menos cortes e explique em
   `selection_notes`; nunca preencha a cota com cortes fracos.
 
+
+## Biblioteca pessoal e interlocutores
+Quando brief.exclude_ranges estiver presente, selecione somente intervalos que não
+sobreponham os trechos já sugeridos. Não repita um corte apenas trocando o título.
+O foco editorial é brief.primary_subject. A transcrição sem diarização não comprova
+identidade: não invente quem falou. Sinalize atribuição incerta em warnings.
+Perguntas e comentários de outras pessoas podem complementar a fala do protagonista.

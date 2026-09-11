@@ -178,6 +178,18 @@ class YoutubeIngestTests(unittest.TestCase):
             options = build_ydl_options("bestvideo+bestaudio/best", Path(d))
             self.assertEqual(options["format"], "bestvideo+bestaudio/best")
             self.assertTrue(options["noplaylist"])
+            self.assertIn("node", options["js_runtimes"])
+            self.assertFalse(options["no_warnings"])
+
+    def test_cache_does_not_accept_partial_tracks_or_metadata(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            for name in ("video.f137.mp4", "video.f140.m4a", "video.info.json", "video.mp4.part"):
+                (path / name).write_bytes(b"not a merged video")
+            self.assertIsNone(find_cached_download(path, "video"))
+            (path / "video.mp4").write_bytes(b"merged video")
+            self.assertEqual(find_cached_download(path, "video"), path / "video.mp4")
 
     def test_progress_hook_to_fraction_computes_ratio(self):
         self.assertAlmostEqual(

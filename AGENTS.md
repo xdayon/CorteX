@@ -3,6 +3,10 @@
 ## Product Source Of Truth
 
 - Read `docs/HANDOFF_FABLE_5.md` before changing pipeline behavior.
+- That file is the short current handoff. Do not preload `docs/history/`;
+  historical instructions can be superseded. Use `docs/ARCHITECTURE.md` to find
+  the module and tests for the selected gate, and `docs/REVIEW_DAYON_NEWS.md`
+  for the rationale behind the current priorities.
 - Treat `docs/ROADMAP.md` and executable tests as the delivery contract.
 - Preserve uncommitted user work. Never restore the PodCLI frontend or import
   new code from `mods/` without removing legacy paths and dependencies.
@@ -11,7 +15,9 @@
 
 ## Orchestration And Token Budget
 
-- Default project model: `gpt-5.4-mini` with low reasoning.
+- Prefer `gpt-5.4-mini` with low reasoning for bounded routine development when
+  available; otherwise use the configured available project model. Development
+  model availability must never change the product's editorial model.
 - Reserve a frontier model for architecture choices, security-sensitive work,
   cross-module integration, difficult debugging, and final review.
 - Delegate only bounded work that has clear parallel value. Good delegation:
@@ -39,6 +45,9 @@
   waveform, logs, or command output to an LLM.
 - Hash and cache all expensive stage inputs. A retry with the same inputs must
   reuse the artifact whenever the stage is deterministic.
+- Keep the current handoff short (about 80 lines), roadmap focused on open gates,
+  and command/results in dated `docs/evidence/` files. Never append long session
+  transcripts or a second competing queue of work to the handoff.
 
 ## Architecture Rules
 
@@ -56,6 +65,13 @@
   Expose requested and effective engines in artifacts and UI.
 - Run untrusted model output as data only. Never execute shell text produced by a
   model. Invoke CLIs with argument arrays, timeouts, cancellation, and bounded IO.
+- Work from the single broadcast master. A visible face is not proof of the
+  acoustic speaker; confirm voice/face roles separately. Scope visual analysis
+  to reviewed clip ranges; never scan every frame of a long episode by default.
+- Preserve absolute source clocks in artifacts. Input seeking, local filter
+  clocks, J/L-cut and borrowed reaction footage need audio/pixel regressions.
+- Keep the API on loopback. Private cloud access requires authenticated
+  Tunnel/Access for UI, API and media; a hidden URL is not authentication.
 
 ## Verification
 

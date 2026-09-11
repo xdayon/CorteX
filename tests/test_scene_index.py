@@ -225,3 +225,41 @@ def test_scene_index_endpoint_rejects_missing_source(tmp_path: Path) -> None:
         json={"source_asset_id": asset.id},
     )
     assert response.status_code == 409, response.text
+
+
+def test_scoped_scene_job_seeks_and_persists_source_time_coverage(tmp_path: Path) -> None:
+    from cortex.analyze.face_service import _sample_timestamps
+    from cortex.analyze.scope import intersect_chunks
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    project = domain.create_project("Scoped cameras")
+    folder = config.paths.projects_dir / project.id / "source"
+    folder.mkdir(parents=True)
+    path = folder / "master.mp4"
+    _build_multishot_video(path, str(config.render.ffmpeg))
+    source = domain.create_source_asset(SourceAsset(project_id=project.id, kind=SourceKind.UPLOAD,
+        original_filename=path.name, stored_path=str(path.relative_to(config.paths.data_dir)),
+        sha256="scope-source", size_bytes=path.stat().st_size))
+    client = TestClient(create_app(config))
+    ranges = [{"start":3.0,"end":4.0},{"start":5.5,"end":6.5}]
+    response = client.post(f"/api/v1/projects/{project.id}/scenes", json={"source_asset_id":source.id,"source_ranges":ranges})
+    assert response.status_code == 201
+    store = JobStore(config.paths.database)
+    assert store.get(response.json()["id"]).payload["source_ranges"] == ranges
+    process_next(config, store, domain, engine=FakeTranscriptionEngine())
+    final = store.get(response.json()["id"])
+    assert final.status == JobStatus.SUCCEEDED, final.error
+    result = final.result
+    doc = SceneIndexDocument.model_validate_json(Path(result["scene_index_path"]).read_text())
+    assert [r.model_dump() for r in doc.source_ranges] == ranges
+    assert len(doc.cuts) == 2
+    assert doc.cuts[0].time == pytest.approx(3.5, abs=.1)
+    assert doc.cuts[1].time == pytest.approx(6, abs=.1)
+    samples = _sample_timestamps(scenes=[s.model_dump() for s in doc.scenes], cuts=[c.model_dump() for c in doc.cuts], duration=3600, sample_fps=1)
+    assert samples and all(3 <= t < 4 or 5.5 <= t < 6.5 for t in samples)
+    assert intersect_chunks([(0,3600)], doc.source_ranges) == [(3,4),(5.5,6.5)]
+    cached = SceneIndexService(config,domain).run(source_asset=source,threshold=None,source_ranges=ranges[::-1],progress_cb=lambda *_:None,should_cancel=lambda:False)
+    assert cached["cached"] and cached["scene_index_artifact_id"] == result["scene_index_artifact_id"]
+    invalid = client.post(f"/api/v1/projects/{project.id}/scenes",json={"source_asset_id":source.id,"source_ranges":[{"start":5,"end":4}]})
+    assert invalid.status_code == 422

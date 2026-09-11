@@ -16,6 +16,7 @@ class AppConfig(BaseModel):
     api_prefix: str = "/api/v1"
     host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=1, le=65535)
+    studio_dir: Path | None = None
 
 
 class PathsConfig(BaseModel):

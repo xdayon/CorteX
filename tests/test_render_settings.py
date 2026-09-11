@@ -178,3 +178,16 @@ def test_render_preset_with_face_static_crop_can_be_overridden_per_cut() -> None
     )
     assert reapplied.framing.mode == "face_static_crop"
     assert reapplied.canvas == preset.canvas
+
+
+def test_caption_weight_case_and_position_survive_patch_merge() -> None:
+    base = RenderSettings.model_validate(_payload())
+    merged = _merge_render_settings(base, RenderSettingsPatch.model_validate({
+        "captions": {"font_weight": 400, "uppercase": False, "position_y": 0.62},
+    }))
+    assert merged.captions.font_weight == 400
+    assert merged.captions.uppercase is False
+    assert merged.captions.position_y == 0.62
+    assert merged.captions.font_family == base.captions.font_family
+    with pytest.raises(ValidationError):
+        RenderSettingsPatch.model_validate({"captions": {"font_weight": 500}})

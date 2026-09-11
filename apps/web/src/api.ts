@@ -1,37 +1,3 @@
-export type Telemetry = {
-  gpu_utilization?: number;
-  gpu_memory_used_mb?: number;
-  gpu_memory_total_mb?: number;
-  gpu_temperature_c?: number;
-  encoder_utilization?: number;
-  decoder_utilization?: number;
-  cpu_utilization?: number;
-  ram_used_gb?: number;
-  ram_total_gb?: number;
-  device?: string;
-};
-
-export type HardwareSnapshot = {
-  timestamp?: string;
-  cpu: {
-    usage_percent: number;
-    logical_cores?: number;
-    physical_cores?: number | null;
-    memory_used_percent: number;
-  };
-  gpus: Array<{
-    state: string;
-    name?: string | null;
-    usage_percent?: number | null;
-    memory_used_mb?: number | null;
-    memory_total_mb?: number | null;
-    temperature_c?: number | null;
-    encoder_percent?: number | null;
-    decoder_percent?: number | null;
-    error?: string | null;
-  }>;
-};
-
 export type ApiJob = {
   id: string;
   type?: string;
@@ -44,37 +10,10 @@ export type ApiJob = {
   created_at?: string;
 };
 
-export type ProjectStatusItem = {
-  label: string;
-  completed: boolean;
-};
-
-export type ProjectStatusPhase = {
-  name: string;
-  status: string;
-  items: ProjectStatusItem[];
-};
-
-export type ProjectStatus = {
-  source: string;
-  updated_at: string;
-  summary: { completed: number; pending: number; total: number; progress_percent: number };
-  phases: ProjectStatusPhase[];
-};
-
 export type Project = {
   id: string;
   name: string;
   created_at?: string;
-};
-
-export type RenderPreset = {
-  id: string;
-  project_id: string;
-  name: string;
-  settings: RenderSettings;
-  created_at?: string;
-  updated_at?: string;
 };
 
 export type SourceAsset = {
@@ -89,7 +28,17 @@ export type SourceAsset = {
   probe?: Record<string, unknown>;
 };
 
+export type EpisodeEntry = {
+  id: string; url: string | null; title: string; project_ids: string[];
+  participant_count: number | null; primary_subject: string;
+  subject_reference: {speaker?:string}; diarizations: Array<{id:string;project_id:string}>;
+  source: SourceAsset | null; source_bytes: number; runs: WorkflowRun[];
+  jobs: ApiJob[];
+  renders: Array<{id: string; project_id: string; title: string; duration: number}>;
+};
+
 export type WorkflowRun = {
+  created_at?: string;
   id: string;
   project_id: string;
   source_asset_id: string;
@@ -101,6 +50,7 @@ export type WorkflowRun = {
   active_job_id?: string | null;
   artifacts: Record<string, string>;
   subject_identity_id?: string | null;
+  interviewer_identity_id?: string | null;
   error?: string | null;
 };
 
@@ -109,74 +59,14 @@ export type SuggestionArtifactDocument = {
   selection: SuggestionSelection;
 };
 
-export type TranscribeOverrides = {
-  model?: string;
-  language?: string;
-  batch_size?: number;
-  vad?: boolean;
-};
-
-export type TranscriptWord = {
-  start: number;
-  end: number;
-  word: string;
-  probability: number;
-};
-
-export type TranscriptDocument = {
-  schema_version: number;
-  duration_seconds: number;
-  language?: string | null;
-  segments: Array<{
-    id: number;
-    start: number;
-    end: number;
-    text: string;
-    words: TranscriptWord[];
-  }>;
-};
-
 export type ArtifactEnvelope<T> = {
   artifact: { id: string; project_id: string; schema_version: number; path: string };
   document: T;
 };
 
-export type AnalysisInterval = { start: number; end: number; duration: number };
-
-export type SpeechDensityWindow = AnalysisInterval & { speech_ratio: number };
-
-export type Filler = {
-  word: string;
-  start: number;
-  end: number;
-  kind: "hesitation" | "repetition";
-  confidence: number;
-};
-
-export type AnalysisDocument = {
-  schema_version: number;
-  duration_seconds: number;
-  waveform: Array<{
-    points: number;
-    frames_per_point: number;
-    peaks: number[];
-    rms: number[];
-  }>;
-  vad_intervals: AnalysisInterval[];
-  pauses: AnalysisInterval[];
-  speech_density: SpeechDensityWindow[];
-  overall_speech_ratio: number;
-  loudness: {
-    integrated_lufs: number | null;
-    true_peak_dbfs: number | null;
-    measurement_scope: string;
-  };
-  room_tone: Array<AnalysisInterval & { rms_dbfs: number }>;
-  /** Ausente em artifacts de análise anteriores ao detector de fillers (bump de schema). */
-  fillers?: Filler[];
-};
-
 export type SuggestionBrief = {
+  primary_subject?: string;
+  new_clips_only?: boolean;
   count: number;
   minimum_seconds: number;
   maximum_seconds: number;
@@ -232,138 +122,6 @@ export type SuggestionSelection = {
   provenance?: SuggestionProvenance;
 };
 
-export type EditPlanIssue = {
-  severity: string;
-  code: string;
-  segment?: number | null;
-  boundary?: string | null;
-  word?: string | null;
-  time?: number | null;
-  snapped_from?: number | null;
-  snapped_to?: number | null;
-  delta_ms?: number | null;
-};
-
-export type EditTransition = {
-  video: string;
-  audio: string;
-  duration: number;
-  kind: "hard" | "crossfade" | "j_cut" | "l_cut";
-  audio_offset_seconds: number;
-};
-
-export type EditSegment = {
-  start: number;
-  end: number;
-  video_start: number;
-  video_end: number;
-  audio_start: number;
-  audio_end: number;
-  timeline_order: number;
-  transition?: EditTransition | null;
-};
-
-export type EditPlanDocument = {
-  schema_version: number;
-  project_id: string;
-  source_asset_id: string;
-  transcript_artifact_id: string;
-  analysis_artifact_id: string;
-  scene_index_artifact_id?: string | null;
-  input_hash: string;
-  clip_start: number;
-  clip_end: number;
-  profile: string;
-  segments: EditSegment[];
-  timeline_duration_seconds: number;
-  diagnostics: {
-    profile: string;
-    waveform_used: boolean;
-    candidate_pauses: number;
-    cuts: number;
-    saved_seconds: number;
-    crossfade: number;
-    vad_used: boolean;
-    scene_snap_count: number;
-    j_cuts: number;
-    l_cuts: number;
-    jl_blocked: number;
-  };
-  quality: {
-    passed: boolean;
-    issues: EditPlanIssue[];
-    profile: string;
-    degraded: boolean;
-  };
-  jl_settings: {
-    enabled: boolean;
-    max_offset_seconds: number;
-    requested_by: "profile" | "user" | "disabled";
-  };
-};
-
-export type SceneCut = { time: number; score: number };
-export type SceneSegment = { index: number; start: number; end: number };
-
-export type SceneIndexDocument = {
-  schema_version: number;
-  duration_seconds: number;
-  cuts: SceneCut[];
-  scenes: SceneSegment[];
-  cut_count: number;
-  engine: {
-    filter: string;
-    threshold_requested: number;
-    threshold_effective: number;
-    ffmpeg_version: string;
-  };
-};
-
-export type FaceLandmarks = {
-  right_eye: [number, number];
-  left_eye: [number, number];
-  nose_tip: [number, number];
-  right_mouth_corner: [number, number];
-  left_mouth_corner: [number, number];
-};
-
-export type FaceDetection = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  score: number;
-  landmarks: FaceLandmarks;
-  track_id?: string | null;
-  embedding?: number[] | null;
-};
-
-export type FrameFaces = { time: number; faces: FaceDetection[]; shot_type: string };
-
-export type SceneFaceSummary = {
-  scene_index: number;
-  dominant_shot_type: string;
-  track_ids_present: string[];
-  sample_count: number;
-};
-
-export type FaceIndexDocument = {
-  schema_version: number;
-  scene_index_artifact_id: string;
-  duration_seconds: number;
-  frames: FrameFaces[];
-  scenes: SceneFaceSummary[];
-  frame_count: number;
-  engine: {
-    detector: string;
-    providers: string[];
-    score_threshold: number;
-    nms_threshold: number;
-    sample_fps: number;
-    ffmpeg_version: string;
-  };
-};
-
 export type IdentityIndexDocument = {
   schema_version: number;
   source_asset_id: string;
@@ -377,59 +135,11 @@ export type IdentityIndexDocument = {
   }>;
 };
 
-export type CameraEditShot = {
-  edit_segment_order: number;
-  video_source_asset_id: string;
-  audio_source_asset_id: string;
-  source_start_us: number;
-  source_end_us: number;
-  audio_source_start_us: number;
-  audio_source_end_us: number;
-  sync_offset_us: number;
-  scene_index: number;
-  layout_id: string;
-  camera_role: string;
-  intent: "speaker" | "context" | "fallback" | "reaction";
-  confirmed_identity_ids: string[];
-  visual_quality_usable: boolean;
-  visual_origin: "primary_in_place" | "reaction_reuse";
-  reaction_candidate_id?: string | null;
-  interviewer_identity_id?: string | null;
-  selection_score?: number | null;
-  reaction_blocked_by: string[];
-  evidence: string[];
-};
+export type CameraScene = { scene_index: number; start_us: number; end_us: number; role: string };
+export type SceneFramingOverride = { scene_index: number; target: "left" | "right" | "full" };
 
-export type CameraEditDiagnostics = {
-  shot_count: number;
-  speaker_shot_count: number;
-  context_shot_count: number;
-  fallback_shot_count: number;
-  unusable_scene_count: number;
-  reaction_shots_enabled: boolean;
-  reaction_shot_count: number;
-  reused_candidate_ids: string[];
-  reaction_shots_blocked_by: string[];
-  seconds_by_identity: Record<string, number>;
-  seconds_by_role: Record<string, number>;
-  dominant_identity_id: string | null;
-  dominant_identity_share: number;
-};
-
-export type CameraEditPlanDocument = {
-  schema_version: number;
-  project_id: string;
-  source_asset_id: string;
-  shots: CameraEditShot[];
-  diagnostics: CameraEditDiagnostics;
-  engine: {
-    algorithm: string;
-    algorithm_version: string;
-    audio_continuity_mode: string;
-    temporal_reuse_allowed: boolean;
-  };
-};
-
+export type CaptionCorrection = {word_index: number; original: string; text: string};
+export type TranscriptWord = {start:number; end:number; word:string};
 export type RenderSettings = {
   schema_version: 1;
   encoder: "h264_nvenc" | "libx264";
@@ -440,7 +150,8 @@ export type RenderSettings = {
   };
   framing: {
     schema_version: 1;
-    mode: "vertical_crop" | "blurred_background" | "face_static_crop";
+    mode: "vertical_crop" | "blurred_background" | "face_static_crop" | "speaker_auto";
+    scene_overrides?: SceneFramingOverride[];
     punch_in: {
       enabled: boolean;
       scale: number;
@@ -449,6 +160,10 @@ export type RenderSettings = {
     };
   };
   captions: {
+    corrections?: CaptionCorrection[];
+    font_weight?: 400 | 900;
+    uppercase?: boolean;
+    position_y?: number;
     enabled: boolean;
     font_family: string;
     font_size: number;
@@ -483,101 +198,6 @@ export type RenderSettings = {
   };
 };
 
-export type RenderSettingsPatch = {
-  encoder?: RenderSettings["encoder"];
-  canvas?: Partial<RenderSettings["canvas"]>;
-  framing?: Partial<Pick<RenderSettings["framing"], "mode">> & { punch_in?: RenderSettings["framing"]["punch_in"] };
-  captions?: Partial<RenderSettings["captions"]>;
-  headline?: Partial<RenderSettings["headline"]>;
-  subtitles?: Partial<RenderSettings["subtitles"]>;
-  template?: Partial<RenderSettings["template"]>;
-};
-
-export type RenderDocument = {
-  schema_version: number;
-  project_id: string;
-  source_asset_id: string;
-  edit_plan_artifact_id: string;
-  output_path: string;
-  output_sha256: string;
-  output_size_bytes: number;
-  timeline_duration_seconds: number;
-  segment_count: number;
-  punch_ins?: { segment_order: number; requested_scale: number; effective_scale: number; anchor_x: number; anchor_y: number; applied: boolean; reason?: string | null }[];
-  subtitles_path?: string | null;
-  subtitles_sha256?: string | null;
-  overlays?: { renderer: string; captions_enabled: boolean; karaoke_enabled: boolean; caption_font?: string | null; headline_enabled: boolean; headline_text?: string | null; artifact_sha256?: string | null; remotion_version?: string | null } | null;
-  requested_settings?: RenderSettings | null;
-  effective_settings?: RenderSettings | null;
-  engine: { requested_encoder: string; effective_encoder: string; width: number; height: number; fps: number };
-  quality: {
-    passed: boolean;
-    actual_duration_seconds: number;
-    duration_delta_seconds: number;
-    has_video: boolean;
-    has_audio: boolean;
-    issues: string[];
-    loudness_target_lufs?: number | null;
-    integrated_loudness_lufs?: number | null;
-    loudness_delta_lu?: number | null;
-    true_peak_dbfs?: number | null;
-    true_peak_limit_dbfs?: number | null;
-    caption_cue_count: number;
-    subtitles_present: boolean;
-    headline_present: boolean;
-    visual_analysis_performed?: boolean;
-    black_threshold_seconds?: number | null;
-    black_interval_count?: number;
-    black_total_duration_seconds?: number;
-    black_max_duration_seconds?: number;
-    freeze_threshold_seconds?: number | null;
-    freeze_interval_count?: number;
-    freeze_total_duration_seconds?: number;
-    freeze_max_duration_seconds?: number;
-    technical?: RenderTechnicalQuality | null;
-  };
-  publication?: {
-    publish_ready: boolean;
-    reasons: string[];
-    warnings?: string[];
-    checks?: {
-      code: string;
-      status: "pass" | "warning" | "fail";
-      severity: "info" | "warning" | "blocking";
-      evidence: Record<string, boolean | number | string | null>;
-      thresholds: Record<string, number | string>;
-    }[];
-    loudness: Record<string, number | null>;
-    visual: Record<string, number | boolean | null>;
-    captions: Record<string, number | boolean | null>;
-    safe_zones: Record<string, unknown>;
-    encoder: Record<string, string>;
-    dimensions: Record<string, number>;
-    hashes: Record<string, string | null>;
-    provenance: Record<string, string | null>;
-    punch_in?: Record<string, unknown>;
-    technical?: RenderTechnicalQuality | null;
-  } | null;
-};
-
-export type RenderTechnicalQuality = {
-  version: 1;
-  full_decode_passed: boolean;
-  faststart: boolean;
-  moov_offset?: number | null;
-  mdat_offset?: number | null;
-  pts_discontinuity_count: number;
-  dts_discontinuity_count: number;
-  av_sync_delta_seconds?: number | null;
-  audio_channel_count?: number | null;
-  audio_peak_amplitude?: number | null;
-  clipped_sample_count: number;
-  waveform_jump_count: number;
-  channel_phase_correlation?: number | null;
-  thresholds: Record<string, number>;
-  engine: Record<string, string>;
-};
-
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -597,38 +217,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<Record<string, unknown>>("/api/v1/health"),
-  projectStatus: () => request<ProjectStatus>("/api/v1/project-status"),
-  hardware: () => request<HardwareSnapshot>("/api/v1/hardware"),
-  jobs: () => request<ApiJob[] | { jobs: ApiJob[] }>("/api/v1/jobs"),
-  createJob: (type: "transcription" | "analysis" | "suggestion" | "render", payload: Record<string, unknown>, projectId?: string) =>
-    request<ApiJob>("/api/v1/jobs", { method: "POST", body: JSON.stringify({ type, project_id: projectId, payload }) }),
-
+  diarizeEpisode: (id:string) => request<ApiJob>(`/api/v1/episodes/${id}/diarization`, {method:"POST"}),
+  episodeVoices: (id:string, artifact:string) => request<{turns:Array<{start:number;end:number;speaker:string}>}>(`/api/v1/episodes/${id}/diarization/${artifact}`),
+  selectEpisodeVoice: (id:string, artifact_id:string, speaker:string) => request<EpisodeEntry>(`/api/v1/episodes/${id}/voice`,{method:"PUT",body:JSON.stringify({artifact_id,speaker})}),
+  episodes: () => request<EpisodeEntry[]>("/api/v1/episodes"),
+  registerEpisode: (url: string, participant_count?: number) => request<EpisodeEntry>("/api/v1/episodes", {method:"POST", body:JSON.stringify({url, participant_count})}),
+  downloadEpisode: (id: string) => request<{source: SourceAsset | null; job: ApiJob | null; cached: boolean}>(`/api/v1/episodes/${id}/download`, {method:"POST"}),
   createProject: (name: string) =>
     request<Project>("/api/v1/projects", { method: "POST", body: JSON.stringify({ name }) }),
-
-  projects: () => request<Project[]>("/api/v1/projects"),
-
-  sources: (projectId: string) =>
-    request<SourceAsset[]>(`/api/v1/projects/${projectId}/sources`),
 
   createWorkflowRun: (projectId: string, sourceAssetId: string, brief: SuggestionBrief) =>
     request<WorkflowRun>(`/api/v1/projects/${projectId}/runs`, {
       method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, ...brief }),
     }),
 
-  workflowRun: (projectId: string, runId: string) =>
-    request<WorkflowRun>(`/api/v1/projects/${projectId}/runs/${runId}`),
-
-  workflowRuns: (projectId: string) =>
-    request<WorkflowRun[]>(`/api/v1/projects/${projectId}/runs`),
+  workflowRun: (projectId: string, runId: string, signal?: AbortSignal) =>
+    request<WorkflowRun>(`/api/v1/projects/${projectId}/runs/${runId}`, { signal }),
 
   selectWorkflowIdentity: (projectId: string, runId: string, identityId: string, artifacts: {
     scene: string; face: string; speaker: string; camera: string; quality: string; identity: string;
   }) => request<WorkflowRun>(`/api/v1/projects/${projectId}/runs/${runId}/identity`, {
     method: "PUT",
     body: JSON.stringify({
-      identity_id: identityId,
+      interviewer_identity_id: identityId,
       scene_index_artifact_id: artifacts.scene,
       face_index_artifact_id: artifacts.face,
       speaker_timeline_artifact_id: artifacts.speaker,
@@ -641,69 +252,29 @@ export const api = {
   suggestion: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<SuggestionArtifactDocument>>(`/api/v1/projects/${projectId}/suggestions/${artifactId}`),
 
-  renderPresets: (projectId: string) =>
-    request<RenderPreset[]>(`/api/v1/projects/${projectId}/render-presets`),
-
-  createRenderPreset: (projectId: string, name: string, settings: RenderSettings) =>
-    request<RenderPreset>(`/api/v1/projects/${projectId}/render-presets`, {
-      method: "POST", body: JSON.stringify({ name, settings }),
-    }),
-
-  updateRenderPreset: (projectId: string, presetId: string, name: string | undefined, settings: RenderSettings | undefined) =>
-    request<RenderPreset>(`/api/v1/projects/${projectId}/render-presets/${presetId}`, {
-      method: "PUT", body: JSON.stringify({ ...(name === undefined ? {} : { name }), ...(settings === undefined ? {} : { settings }) }),
-    }),
-
   createYoutubeSource: (projectId: string, url: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/sources/youtube`, { method: "POST", body: JSON.stringify({ url }) }),
 
-  startTranscription: (projectId: string, sourceAssetId: string, overrides: TranscribeOverrides = {}) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/transcribe`, {
-      method: "POST",
-      body: JSON.stringify({ source_asset_id: sourceAssetId, ...overrides }),
-    }),
+  transcript: (projectId: string, artifactId: string, signal?: AbortSignal) =>
+    request<{document:{segments:Array<{words:TranscriptWord[]}>}}>(`/api/v1/projects/${projectId}/transcripts/${artifactId}`, {signal}),
 
-  transcript: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<TranscriptDocument>>(`/api/v1/projects/${projectId}/transcripts/${artifactId}`),
-
-  startAnalysis: (projectId: string, transcriptArtifactId: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/analyze`, {
-      method: "POST",
-      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId }),
-    }),
-
-  analysis: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<AnalysisDocument>>(`/api/v1/projects/${projectId}/analysis/${artifactId}`),
-
-  startSuggestion: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, brief: SuggestionBrief) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/suggest`, {
-      method: "POST",
-      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, ...brief }),
-    }),
-
-  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string, sceneIndexArtifactId?: string, jlCut?: boolean, maxJlOffsetSeconds?: number) =>
+  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/edit-plans`, {
       method: "POST",
-      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, scene_index_artifact_id: sceneIndexArtifactId ?? null, start, end, profile, jl_cut: jlCut ?? null, max_jl_offset_seconds: maxJlOffsetSeconds ?? null }),
+      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, start, end, profile }),
     }),
 
-  startSceneIndex: (projectId: string, sourceAssetId: string, sceneThreshold?: number) =>
+  startSceneIndex: (projectId: string, sourceAssetId: string, sourceRanges?: Array<{start:number;end:number}>) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/scenes`, {
       method: "POST",
-      body: JSON.stringify({ source_asset_id: sourceAssetId, scene_threshold: sceneThreshold ?? null }),
+      body: JSON.stringify({ source_asset_id: sourceAssetId, source_ranges: sourceRanges }),
     }),
 
-  sceneIndex: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<SceneIndexDocument>>(`/api/v1/projects/${projectId}/scenes/${artifactId}`),
-
-  startFaceIndex: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string, faceSampleFps?: number) =>
+  startFaceIndex: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/faces`, {
       method: "POST",
-      body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId, face_sample_fps: faceSampleFps ?? null }),
+      body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId }),
     }),
-
-  faceIndex: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<FaceIndexDocument>>(`/api/v1/projects/${projectId}/faces/${artifactId}`),
 
   startSpeakerTimeline: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string, faceIndexArtifactId: string, analysisArtifactId: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/speakers`, { method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId, face_index_artifact_id: faceIndexArtifactId, analysis_artifact_id: analysisArtifactId }) }),
@@ -713,6 +284,9 @@ export const api = {
 
   startVisualQuality: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string, faceIndexArtifactId: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/visual-quality`, { method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId, face_index_artifact_id: faceIndexArtifactId }) }),
+
+  cameraTimeline: (projectId: string, artifactId: string) =>
+    request<ArtifactEnvelope<{ scenes: CameraScene[] }>>(`/api/v1/projects/${projectId}/cameras/${artifactId}`),
 
   startIdentityIndex: (projectId: string, faceIndexArtifactId: string, cameraTimelineArtifactId: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/identities`, { method: "POST", body: JSON.stringify({ face_index_artifact_id: faceIndexArtifactId, camera_timeline_artifact_id: cameraTimelineArtifactId }) }),
@@ -732,38 +306,24 @@ export const api = {
   sourcePreviewUrl: (projectId: string, sourceAssetId: string, timeSeconds: number) =>
     `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/preview?time_seconds=${encodeURIComponent(timeSeconds.toFixed(3))}`,
 
-  cameraPlan: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<CameraEditPlanDocument>>(`/api/v1/projects/${projectId}/camera-plans/${artifactId}`),
-
-  editPlan: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<EditPlanDocument>>(`/api/v1/projects/${projectId}/edit-plans/${artifactId}`),
-
-  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, renderSettingsOverride?: RenderSettingsPatch, exportDirectory?: string, faceCrop?: { faceIndexArtifactId: string; identityIndexArtifactId: string; targetIdentityId: string }, cameraEditPlanArtifactId?: string) =>
+  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, cameraEditPlanArtifactId?: string) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/renders`, {
       method: "POST",
       body: JSON.stringify({
         edit_plan_artifact_id: editPlanArtifactId,
         camera_edit_plan_artifact_id: cameraEditPlanArtifactId ?? null,
         render_settings: renderSettings,
-        render_settings_override: renderSettingsOverride,
-        export_directory: exportDirectory?.trim() || null,
-        face_index_artifact_id: faceCrop?.faceIndexArtifactId ?? null,
-        identity_index_artifact_id: faceCrop?.identityIndexArtifactId ?? null,
-        target_identity_id: faceCrop?.targetIdentityId ?? null,
       }),
     }),
 
-  render: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<RenderDocument>>(`/api/v1/projects/${projectId}/renders/${artifactId}`),
+  renderArtifact: (projectId: string, artifactId: string) =>
+    request<ArtifactEnvelope<{ auto_framing?: Array<{ mode: string; reason: string }> }>>(`/api/v1/projects/${projectId}/renders/${artifactId}`),
 
   renderMediaUrl: (projectId: string, artifactId: string) =>
     `/api/v1/projects/${projectId}/renders/${artifactId}/media`,
 
   renderSubtitlesUrl: (projectId: string, artifactId: string) =>
     `/api/v1/projects/${projectId}/renders/${artifactId}/subtitles`,
-
-  renderReportUrl: (projectId: string, artifactId: string) =>
-    `/api/v1/projects/${projectId}/renders/${artifactId}/report`,
 
   // Upload via XHR para ter progresso real de envio (fetch não expõe upload progress).
   uploadSource: (projectId: string, file: File, onProgress?: (fraction: number) => void) =>
@@ -789,22 +349,27 @@ export const api = {
     }),
 
   // Acompanha um job via SSE até estado terminal; resolve com o job final.
-  watchJob: (jobId: string, onUpdate?: (job: ApiJob) => void) =>
+  watchJob: (jobId: string, onUpdate?: (job: ApiJob) => void, signal?: AbortSignal) =>
     new Promise<ApiJob>((resolve, reject) => {
+      signal?.throwIfAborted();
       const source = new EventSource(`/api/v1/jobs/${jobId}/events`);
+      function close() {
+        source.close();
+        signal?.removeEventListener("abort", abort);
+      }
+      function abort() { close(); reject(signal?.reason); }
+      signal?.addEventListener("abort", abort, { once: true });
       source.addEventListener("job", (event) => {
-        const job = JSON.parse((event as MessageEvent).data) as ApiJob;
-        onUpdate?.(job);
-        if (TERMINAL_STATUSES.has(job.status)) {
-          source.close();
-          resolve(job);
-        }
+        if (signal?.aborted) return;
+        try {
+          const job = JSON.parse((event as MessageEvent).data) as ApiJob;
+          onUpdate?.(job);
+          if (TERMINAL_STATUSES.has(job.status)) { close(); resolve(job); }
+        } catch (reason) { close(); reject(reason); }
       });
       source.onerror = () => {
-        source.close();
+        close();
         reject(new Error("Conexão de eventos perdida — verifique se a API está de pé"));
       };
     }),
-
-  cancelJob: (jobId: string) => request<ApiJob>(`/api/v1/jobs/${jobId}/cancel`, { method: "POST" }),
 };

@@ -47,6 +47,16 @@ def test_caption_cues_remap_source_words_to_crossfaded_timeline() -> None:
         )],
     )
 
+    from cortex.render.captions import corrected_transcript
+    from cortex.render.schemas import CaptionCorrection
+    import pytest
+    corrected = corrected_transcript(transcript, [CaptionCorrection(word_index=1, original="primeiro", text="CorteX")])
+    assert "CorteX" in render_srt(build_caption_cues(plan, corrected))
+    assert transcript.segments[0].words[1].word == "primeiro"
+    assert corrected.segments[0].words[1].start == transcript.segments[0].words[1].start
+    with pytest.raises(ValueError):
+        corrected_transcript(transcript, [CaptionCorrection(word_index=1, original="texto errado", text="CorteX")])
+
     cues = build_caption_cues(plan, transcript)
     words = build_timeline_words(plan, transcript)
 

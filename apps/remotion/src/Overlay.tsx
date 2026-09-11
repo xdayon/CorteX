@@ -1,4 +1,4 @@
-import type {CSSProperties} from 'react';
+import {CaptionLayer} from './CaptionLayer';
 import {AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig} from 'remotion';
 import type {OverlayPayload} from './types';
 
@@ -13,9 +13,6 @@ const safeInterpolate = (
   }
   return interpolate(value, inputRange, outputRange, options);
 };
-
-const cueAt = (cues: OverlayPayload['cues'], time: number) =>
-  cues.find((cue) => time >= cue.start && time < cue.end) ?? {words: [], start: 0, end: 0};
 
 export const Overlay = ({caption, headline, cues}: OverlayPayload) => {
   const frame = useCurrentFrame();
@@ -35,31 +32,6 @@ export const Overlay = ({caption, headline, cues}: OverlayPayload) => {
       [1, 0],
       {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'},
     );
-  const cue = cueAt(cues, time);
-  const captionFade = caption.animation.style === 'fade'
-    ? safeInterpolate(
-      time,
-      [
-        Math.max(0, cue.words[0]?.start ?? 0),
-        Math.min(
-          cue.words[cue.words.length - 1]?.end ?? 0,
-          (cue.words[0]?.start ?? 0) + caption.animation.durationSeconds,
-        ),
-      ],
-      [0.4, 1],
-      {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'},
-    )
-    : 1;
-
-  const captionStyle: CSSProperties = {
-    fontFamily: caption.fontFamily,
-    fontSize: caption.fontSize * scale,
-    textShadow: caption.shadow
-      ? `0 ${4 * scale}px ${14 * scale}px ${caption.shadowColor}`
-      : undefined,
-    WebkitTextStroke: caption.outline ? `${3 * scale}px ${caption.outlineColor}` : undefined,
-    paintOrder: 'stroke fill',
-  };
 
   return (
     <AbsoluteFill style={{backgroundColor: 'transparent', color: 'white'}}>
@@ -108,43 +80,7 @@ export const Overlay = ({caption, headline, cues}: OverlayPayload) => {
         </div>
       ) : null}
 
-      {caption.enabled && cue.words.length > 0 ? (
-        <div
-          style={{
-            ...captionStyle,
-            position: 'absolute',
-            left: width * 0.075,
-            right: width * 0.075,
-            // Reserve space for the visible stroke and shadow inside the safe zone.
-            top: height * caption.positionY,
-            transform: 'translateY(-50%)',
-            display: 'flex',
-            flexWrap: 'wrap',
-            justifyContent: 'center',
-            gap: `${8 * scale}px ${14 * scale}px`,
-            fontWeight: 900,
-            lineHeight: 1.08,
-            textAlign: 'center',
-            textTransform: 'uppercase',
-          }}
-        >
-          {cue.words.map((word, index) => {
-            const active = time >= word.start && time < word.end;
-            return (
-              <span
-                key={`${index}-${word.start}-${word.end}`}
-                style={{
-              color: caption.karaoke && active ? caption.karaokeColor : caption.textColor,
-              transform: caption.karaoke && active && caption.animation.style === 'pop' ? 'scale(1.08)' : 'scale(1)',
-              opacity: caption.animation.style === 'fade' ? captionFade : 1,
-            }}
-          >
-                {word.text}
-              </span>
-            );
-          })}
-        </div>
-      ) : null}
+      <CaptionLayer caption={caption} cues={cues} time={time} width={width} height={height} />
     </AbsoluteFill>
   );
 };

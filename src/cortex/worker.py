@@ -187,6 +187,7 @@ def run_youtube_ingest_job(
                 project_id=project_id,
                 kind=SourceKind.YOUTUBE,
                 source_url=url,
+                original_filename=download.title,
                 stored_path=str(stored_path),
                 sha256=sha256,
                 size_bytes=download.path.stat().st_size,
@@ -322,6 +323,7 @@ def run_scene_analysis_job(
         result = service.run(
             source_asset=source_asset,
             threshold=job.payload.get("scene_threshold"),
+            source_ranges=job.payload.get("source_ranges"),
             progress_cb=progress_cb,
             should_cancel=should_cancel,
         )
@@ -858,7 +860,20 @@ def run_render_job(
     ))
 
 
+def run_diarization_job(job, config, jobs, domain):
+    from cortex.diarize.service import run_diarization
+    source = domain.get_source_asset(job.payload["source_asset_id"])
+    if source.project_id != job.project_id:
+        raise ValueError("Fonte de outro projeto")
+    result = run_diarization(config, domain, source, job.payload.get("speakers"),
+        lambda percent, message: _safe_progress(jobs, job.id, percent, message, PipelineStage.ANALYZE),
+        lambda: _job_is_cancelled(jobs, job.id))
+    if result is not None and not _job_is_cancelled(jobs, job.id):
+        jobs.update(job.id, JobUpdate(status=JobStatus.SUCCEEDED, progress=100, stage=PipelineStage.COMPLETE, message="Vozes salvas; confirme a voz do Dayon", result=result))
+
+
 _HANDLERS: dict[JobType, Any] = {
+    JobType.DIARIZATION: run_diarization_job,
     JobType.TRANSCRIPTION: run_transcription_job,
     JobType.ANALYSIS: run_analysis_job,
     JobType.SCENE_ANALYSIS: run_scene_analysis_job,

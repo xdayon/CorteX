@@ -166,6 +166,8 @@ class RemotionOverlayService:
                 "enabled": settings.captions.enabled,
                 "fontFamily": settings.captions.font_family,
                 "fontSize": settings.captions.font_size,
+                "fontWeight": settings.captions.font_weight,
+                "uppercase": settings.captions.uppercase,
                 "outline": settings.captions.outline,
                 "shadow": settings.captions.shadow,
                 "karaoke": settings.captions.karaoke,

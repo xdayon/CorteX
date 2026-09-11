@@ -10,9 +10,8 @@ import numpy as np
 
 from cortex.analyze.face_classify import (
     aggregate_scene_summaries,
-    assign_track_id,
+    assign_scene_tracks,
     classify_frame_shot,
-    cluster_identity_slots,
 )
 from cortex.analyze.face_detect import (
     DEFAULT_NMS_THRESHOLD,
@@ -47,7 +46,7 @@ from cortex.domain.store import DomainStore
 from cortex.ingest.ffprobe import duration_seconds, probe_media
 from cortex.paths import faces_dir
 
-FACE_ALGORITHM_VERSION = "2.0.0"
+FACE_ALGORITHM_VERSION = "3.0.0"
 FRAME_EXTRACTION_WIDTH = 640
 
 
@@ -124,7 +123,8 @@ def _sample_timestamps(
         while grid_ts < duration:
             timestamps.add(round(grid_ts, 3))
             grid_ts += step
-    clipped = sorted(t for t in timestamps if 0.0 <= t < max(duration, 0.0))
+    clipped = sorted(t for t in timestamps if 0.0 <= t < max(duration, 0.0)
+                     and any(scene["start"] <= t < scene["end"] for scene in scenes))
     return clipped or ([0.0] if duration > 0 else [])
 
 
@@ -220,20 +220,12 @@ class FaceIndexService:
                 )
             shot_type = classify_frame_shot(faces)
             frames_data.append({"time": timestamp, "faces": faces, "shot_type": shot_type})
-            progress_cb(10.0 + 75.0 * (position + 1) / total, f"Analisando frame em {timestamp:.2f}s")
+            progress_cb(10.0 + 75.0 * (position + 1) / total, f"Rostos: {position + 1}/{total} amostras · posição {timestamp:.0f}s do episódio")
 
         if should_cancel():
             raise FaceIndexJobCancelled()
-        progress_cb(88.0, "Atribuindo identidade por posição")
-        centroids_x = [
-            face["x"] + face["width"] / 2.0
-            for frame in frames_data
-            for face in frame["faces"]
-        ]
-        slot_centers = cluster_identity_slots(centroids_x)
-        for frame in frames_data:
-            for face in frame["faces"]:
-                face["track_id"] = assign_track_id(face["x"] + face["width"] / 2.0, slot_centers)
+        progress_cb(88.0, "Associando rostos por posição em cada cena")
+        assign_scene_tracks(frames_data, scenes)
 
         if should_cancel():
             raise FaceIndexJobCancelled()

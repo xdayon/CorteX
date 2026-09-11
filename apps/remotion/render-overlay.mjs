@@ -101,6 +101,8 @@ const main = async () => {
     browserExecutable,
     onBrowserDownload: rejectBrowserDownload,
     outputLocation: outputPath,
+    // Keep browser frame workers bounded on the 16 GB / GTX 1060 host.
+    concurrency: 2,
     codec: 'vp9',
     pixelFormat: 'yuva420p',
     imageFormat: 'png',

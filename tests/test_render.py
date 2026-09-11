@@ -36,7 +36,6 @@ from cortex.render.service import (
     RenderPreconditionError,
     RenderService,
     _encoder_args,
-    _filtergraph,
     _resolve_font_family,
 )
 from cortex.schemas import JobCreate, JobStatus, JobType
@@ -309,13 +308,15 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
         input_hash=plan.input_hash,
     ))
 
+    from cortex.render.schemas import CaptionCorrection
     service = RenderService(config, domain)
     render_settings = RenderSettings(
         encoder="libx264",
         canvas=RenderCanvasSettings(width=320, height=320, fps=30),
         captions=RenderCaptionSettings(
             enabled=True, font_family="Montserrat", font_size=28,
-            words_per_cue=3, outline=False,
+            words_per_cue=3, outline=False, font_weight=400, uppercase=False,
+            corrections=[CaptionCorrection(word_index=0, original="um", text="CorteX")],
         ),
         headline=RenderHeadlineSettings(
             enabled=True, text="Corte real", font_family="Montserrat",
@@ -331,6 +332,8 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
     assert first["cached"] is False
     artifact = domain.get_stage_artifact(first["render_artifact_id"])
     document = RenderDocument.model_validate_json(Path(artifact.path).read_text())
+    assert document.effective_settings.captions.font_weight == 400
+    assert document.effective_settings.captions.uppercase is False
     assert document.quality.passed is True
     assert document.quality.has_video is True and document.quality.has_audio is True
     assert document.quality.actual_duration_seconds == pytest.approx(2.94, abs=0.15)
@@ -370,6 +373,8 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
     assert early_alpha != next_word_alpha
     assert max(blank_alpha, default=0) == 0
     assert document.subtitles_path is not None
+    assert "CorteX" in Path(document.subtitles_path).read_text()
+    assert TranscriptDocument.model_validate_json(transcript_path.read_text()).segments[0].words[0].word == "um"
     assert Path(document.subtitles_path).read_text(encoding="utf-8").count(" --> ") == 2
     assert document.subtitles_sha256 == hashlib.sha256(
         Path(document.subtitles_path).read_bytes()

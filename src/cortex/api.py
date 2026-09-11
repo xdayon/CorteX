@@ -6,7 +6,7 @@ import json
 import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -15,8 +15,10 @@ from cortex.analyze.camera_schemas import CameraTimelineDocument
 from cortex.analyze.face_schemas import FaceIndexDocument
 from cortex.analyze.identity_schemas import IdentityIndexDocument
 from cortex.analyze.reaction_candidate_schemas import ReactionCandidateIndexDocument
+from cortex.analyze.scene_schemas import SceneIndexDocument
 from cortex.analyze.speaker_schemas import SpeakerTimelineDocument
 from cortex.analyze.visual_quality_schemas import VisualQualityDocument
+from cortex.analyze.scope import SourceRange
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import RenderPreset, SourceAsset, SourceKind, WorkflowRun, WorkflowStatus
 from cortex.domain.store import (
@@ -83,10 +85,24 @@ class TranscribeRequest(BaseModel):
     vad: bool | None = None
 
 
+class EpisodeVoiceSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_id: str
+    speaker: str
+
+
+class EpisodeCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(max_length=2048)
+    participant_count: int | None = Field(default=None, ge=1, le=20)
+
+
 class WorkflowRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_asset_id: str
+    primary_subject: str = Field(default="Dayon", min_length=1, max_length=100)
+    new_clips_only: bool = False
     count: int = Field(default=10, ge=1, le=25)
     minimum_seconds: float = Field(default=40, ge=15, le=180)
     maximum_seconds: float = Field(default=120, ge=15, le=180)
@@ -103,7 +119,7 @@ class WorkflowRunCreate(BaseModel):
 class WorkflowIdentitySelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    identity_id: str = Field(min_length=1)
+    interviewer_identity_id: str = Field(min_length=1)
     scene_index_artifact_id: str
     face_index_artifact_id: str
     speaker_timeline_artifact_id: str
@@ -143,6 +159,7 @@ class EditPlanRequest(BaseModel):
 class SceneIndexRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    source_ranges: list[SourceRange] | None = Field(default=None, min_length=1, max_length=100)
     source_asset_id: str
     scene_threshold: float | None = Field(default=None, ge=0.0, le=100.0)
 
@@ -230,6 +247,10 @@ class RenderRequest(BaseModel):
             self.encoder is not None or self.headline is not None or self.render_settings_override is not None
         ):
             raise ValueError("render_settings não pode ser combinado com encoder/headline legados")
+        if (self.render_settings is not None
+                and self.render_settings.framing.mode == "speaker_auto"
+                and not self.camera_edit_plan_artifact_id):
+            raise ValueError("speaker_auto exige camera_edit_plan_artifact_id")
         face_fields = (
             self.face_index_artifact_id,
             self.identity_index_artifact_id,
@@ -271,6 +292,8 @@ def create_app(config: CortexConfig | None = None):
     settings.ensure_runtime_dirs()
     jobs = JobStore(settings.paths.database)
     domain = DomainStore(settings.paths.database)
+    from cortex.library import EpisodeLibrary
+    library = EpisodeLibrary(settings, domain)
     app = FastAPI(title=settings.app.name, version="0.1.0")
     app.state.config = settings
     app.state.jobs = jobs
@@ -283,6 +306,98 @@ def create_app(config: CortexConfig | None = None):
         allow_headers=["*"],
     )
     router_prefix = settings.app.api_prefix.rstrip("/")
+
+    @app.get(f"{router_prefix}/episodes")
+    def list_episodes():
+        return [library.detail(entry) for entry in library.entries()]
+
+    @app.post(f"{router_prefix}/episodes", status_code=201)
+    def register_episode(request: EpisodeCreate):
+        try:
+            return library.detail(library.register(request.url, request.participant_count))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{router_prefix}/diarization-status")
+    def diarization_status():
+        from cortex.diarize.service import readiness
+        return readiness()
+
+    @app.post(f"{router_prefix}/episodes/{{episode_id}}/diarization")
+    def start_episode_diarization(episode_id: str):
+        try:
+            entry = library.get(episode_id)
+            detail = library.detail(entry)
+            source = detail["source"]
+            if not source:
+                raise ValueError("Baixe o episódio primeiro")
+            from cortex.diarize.service import readiness
+            state = readiness()
+            if not state["runtime_installed"] or not state["token_configured"]:
+                raise ValueError("Configure o ambiente CPU e HF_TOKEN conforme docs/DIARIZATION.md")
+            active = next((j for j in detail["jobs"] if j["type"] == "diarization" and j["status"] in {"running", "queued"}), None)
+            if active:
+                return jobs.get(active["id"])
+            return jobs.create(JobCreate(type=JobType.DIARIZATION, project_id=source["project_id"], payload={"source_asset_id":source["id"], "speakers":entry.participant_count}))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def episode_diarization(episode_id, artifact_id):
+        from cortex.diarize.service import DiarizationDocument
+        entry = library.get(episode_id)
+        artifact = domain.get_stage_artifact(artifact_id)
+        if artifact.stage != "diarization" or artifact.project_id not in entry.project_ids:
+            raise ValueError("Vozes não pertencem ao episódio")
+        return entry, artifact, DiarizationDocument.model_validate_json(Path(artifact.path).read_text())
+
+    @app.get(f"{router_prefix}/episodes/{{episode_id}}/diarization/{{artifact_id}}")
+    def get_episode_diarization(episode_id: str, artifact_id: str):
+        try:
+            return episode_diarization(episode_id, artifact_id)[2]
+        except (ValueError, LookupError, OSError) as exc:
+            raise HTTPException(status_code=404, detail="Diarização indisponível") from exc
+
+    @app.put(f"{router_prefix}/episodes/{{episode_id}}/voice")
+    def select_episode_voice(episode_id: str, request: EpisodeVoiceSelection):
+        try:
+            entry, artifact, document = episode_diarization(episode_id, request.artifact_id)
+            if request.speaker not in {turn.speaker for turn in document.turns}:
+                raise ValueError("Voz não existe nesta análise")
+            entry.subject_reference = {"diarization_artifact_id":artifact.id, "speaker":request.speaker}
+            library.save(entry)
+            return library.detail(entry)
+        except (ValueError, LookupError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{router_prefix}/episodes/{{episode_id}}")
+    def get_episode(episode_id: str):
+        try:
+            return library.detail(library.get(episode_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(f"{router_prefix}/episodes/{{episode_id}}/download")
+    def download_episode(episode_id: str):
+        try:
+            return library.download(library.get(episode_id), jobs)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{router_prefix}/caption-fonts/{{family}}/{{weight}}")
+    def caption_font(family: str, weight: int):
+        if family not in {"Montserrat", "Lato", "DejaVu Sans"} or weight not in {400, 900}:
+            raise HTTPException(status_code=404, detail="Fonte indisponível")
+        try:
+            result = subprocess.run(
+                ["fc-match", "-f", "%{file}", f"{family}:weight={'regular' if weight == 400 else 'black'}"],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            path = Path(result.stdout.strip())
+            if not path.is_file():
+                raise ValueError("Fonte não encontrada")
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise HTTPException(status_code=503, detail="Fonte local indisponível") from exc
+        return FileResponse(path, media_type="font/ttf")
 
     @app.get(f"{router_prefix}/health")
     def health() -> dict[str, str]:
@@ -485,6 +600,33 @@ def create_app(config: CortexConfig | None = None):
             raise HTTPException(status_code=400, detail="Fonte não pertence a este projeto")
 
         brief = request.model_dump(exclude={"source_asset_id"}, exclude_none=True)
+        if asset.source_url:
+            from cortex.library import youtube_id
+            try:
+                entry = library.get(youtube_id(asset.source_url))
+                reference = entry.subject_reference
+                if reference.get("diarization_artifact_id"):
+                    _, voice_artifact, voice_doc = episode_diarization(entry.id, reference["diarization_artifact_id"])
+                    if voice_artifact.metadata.get("source_sha256") == asset.sha256:
+                        brief["confirmed_voice"] = {**reference, "turns":[t.model_dump() for t in voice_doc.turns]}
+            except ValueError:
+                pass
+        if request.new_clips_only:
+            from cortex.library import youtube_id
+            project_ids = [project_id]
+            if asset.source_url:
+                try:
+                    project_ids = library.get(youtube_id(asset.source_url)).project_ids
+                except ValueError:
+                    pass
+            excluded = []
+            for previous_project in project_ids:
+                for artifact in domain.list_stage_artifacts(previous_project, stage="suggestion"):
+                    if Path(artifact.path).is_file():
+                        document = json.loads(Path(artifact.path).read_text())
+                        excluded.extend({"start": c["start_second"], "end": c["end_second"]}
+                                        for c in document.get("selection", {}).get("clips", []))
+            brief["exclude_ranges"] = sorted(excluded, key=lambda r: (r["start"], r["end"]))
         run = domain.create_workflow_run(WorkflowRun(
             project_id=project_id,
             source_asset_id=asset.id,
@@ -548,22 +690,57 @@ def create_app(config: CortexConfig | None = None):
                 raise HTTPException(status_code=400, detail=f"Artifact {key} não pertence ao processamento")
             resolved[key] = artifact
             artifacts[key] = artifact.id
-        identity_path = Path(resolved["identity_index"].path)
-        if not identity_path.is_file():
-            raise HTTPException(status_code=410, detail="Índice de identidade não está disponível")
-        identity_document = IdentityIndexDocument.model_validate_json(
-            identity_path.read_text(encoding="utf-8")
-        )
+        try:
+            source = domain.get_source_asset(run.source_asset_id)
+            analysis = domain.get_stage_artifact(run.artifacts.get("analysis", ""))
+        except (SourceAssetNotFoundError, StageArtifactNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail="Fonte ou análise do processamento ausente") from exc
+        if source.project_id != project_id or analysis.project_id != project_id or analysis.stage != "analysis":
+            raise HTTPException(status_code=400, detail="Fonte ou análise não pertence ao processamento")
+        resolved["analysis"] = analysis
+        document_specs = {
+            "scene_index": (SceneIndexDocument, ()),
+            "face_index": (FaceIndexDocument, ("scene_index",)),
+            "speaker_timeline": (SpeakerTimelineDocument, ("scene_index", "face_index", "analysis")),
+            "camera_timeline": (CameraTimelineDocument, ("scene_index", "face_index", "speaker_timeline")),
+            "visual_quality": (VisualQualityDocument, ("scene_index", "face_index")),
+            "identity_index": (IdentityIndexDocument, ("face_index", "camera_timeline")),
+        }
+        documents = {}
+        for key, (schema, dependencies) in document_specs.items():
+            artifact = resolved[key]
+            try:
+                document = schema.model_validate_json(Path(artifact.path).read_text(encoding="utf-8"))
+            except OSError as exc:
+                raise HTTPException(status_code=410, detail=f"Artifact {key} não está disponível") from exc
+            except (ValidationError, UnicodeError) as exc:
+                raise HTTPException(status_code=400, detail=f"Artifact {key} inválido") from exc
+            if (
+                document.project_id != project_id
+                or document.source_asset_id != source.id
+                or document.source_sha256 != source.sha256
+                or document.input_hash != artifact.input_hash
+            ):
+                raise HTTPException(status_code=400, detail=f"Artifact {key} não corresponde à fonte do processamento")
+            for dependency in dependencies:
+                upstream = resolved[dependency]
+                if getattr(document, f"{dependency}_artifact_id") != upstream.id:
+                    raise HTTPException(status_code=400, detail=f"Dependência {dependency} divergente em {key}")
+                hash_field = f"{dependency}_input_hash"
+                if hasattr(document, hash_field) and getattr(document, hash_field) != upstream.input_hash:
+                    raise HTTPException(status_code=400, detail=f"Hash de {dependency} divergente em {key}")
+            documents[key] = document
+        identity_document = documents["identity_index"]
         if not any(
-            item.identity_id == request.identity_id and item.status == "confirmed"
+            item.identity_id == request.interviewer_identity_id and item.status == "confirmed"
             for item in identity_document.identities
         ):
             raise HTTPException(status_code=400, detail="Escolha uma identidade confirmada")
         return domain.update_workflow_run(
             run.id,
-            subject_identity_id=request.identity_id,
+            interviewer_identity_id=request.interviewer_identity_id,
             artifacts=artifacts,
-            message="Identidade principal confirmada",
+            message="Entrevistador confirmado",
         )
 
     @app.post(f"{router_prefix}/projects/{{project_id}}/transcribe", status_code=201)
@@ -665,7 +842,8 @@ def create_app(config: CortexConfig | None = None):
         return jobs.create(JobCreate(
             type=JobType.SCENE_ANALYSIS,
             project_id=project_id,
-            payload={"source_asset_id": asset.id, "scene_threshold": request.scene_threshold},
+            payload={"source_asset_id": asset.id, "scene_threshold": request.scene_threshold,
+                     "source_ranges": [r.model_dump() for r in request.source_ranges] if request.source_ranges else None},
         ))
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/scenes/{{artifact_id}}")
@@ -1584,6 +1762,10 @@ def create_app(config: CortexConfig | None = None):
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
+    if settings.app.studio_dir is not None:
+        from cortex.studio import mount_studio
+
+        mount_studio(app, settings.app.studio_dir)
     return app
 
 

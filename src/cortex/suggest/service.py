@@ -7,8 +7,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 
 from cortex.config import CortexConfig
+from cortex.diarize.attribution import (
+    VOICE_ATTRIBUTION_VERSION,
+    ConfirmedVoice,
+    subject_share,
+    subject_share_for_ranges,
+)
 from cortex.domain.models import StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
 from cortex.paths import suggestions_dir
@@ -76,6 +83,14 @@ class SuggestionService:
     ) -> dict[str, Any]:
         if should_cancel():
             raise SuggestionJobCancelled()
+        voice = None
+        if "confirmed_voice" in brief:
+            try:
+                voice = ConfirmedVoice.model_validate(brief["confirmed_voice"])
+            except ValidationError as exc:
+                raise ValueError(
+                    "Referência de voz confirmada inválida; revise a voz e os turnos da diarização."
+                ) from exc
         transcript = json.loads(Path(transcript_artifact.path).read_text(encoding="utf-8"))
         analysis_context = None
         if analysis_artifact is not None:
@@ -106,6 +121,7 @@ class SuggestionService:
             ).hexdigest(),
             "provider": self._config.ai.model_dump(mode="json"),
             "request": request_payload,
+            **({"voice_attribution_version": VOICE_ATTRIBUTION_VERSION} if voice else {}),
         })
         cached = self._domain.find_cached_stage_artifact(
             project_id=transcript_artifact.project_id,
@@ -150,6 +166,60 @@ class SuggestionService:
             location = ".".join(str(part) for part in first.absolute_path) or "root"
             raise ValueError(f"resposta da IA inválida em {location}: {first.message}")
 
+        voice_validation = None
+        if voice is not None:
+            turns = [turn.model_dump() for turn in voice.turns]
+            fresh = []
+            metrics = []
+            for clip in generated.document["clips"]:
+                envelope_share = subject_share(
+                    turns, voice.speaker, clip["start_second"], clip["end_second"],
+                )
+                editorial_share = subject_share_for_ranges(
+                    turns, voice.speaker,
+                    ((item["source_start"], item["source_end"])
+                     for item in clip["approximate_edl"] if item["audio_mode"] != "room_tone"),
+                )
+                accepted = envelope_share >= 0.5 and editorial_share >= 0.5
+                metrics.append({
+                    "clip_rank": clip["rank"],
+                    "envelope_subject_share": envelope_share,
+                    "editorial_subject_share": editorial_share,
+                    "accepted": accepted,
+                })
+                if accepted:
+                    fresh.append(clip)
+            if not fresh:
+                envelope_failures = sum(item["envelope_subject_share"] < 0.5 for item in metrics)
+                editorial_failures = sum(item["editorial_subject_share"] < 0.5 for item in metrics)
+                raise ValueError(
+                    "Nenhum corte tem fala predominante da voz confirmada do Dayon "
+                    "no intervalo e na EDL editorial. "
+                    f"Abaixo de 50%: intervalo={envelope_failures}; EDL editorial={editorial_failures}. "
+                    "Revise a identificação e a direção editorial."
+                )
+            # These are suggestion checks. The deterministic final audio plan is separate.
+            voice_validation = {
+                "version": VOICE_ATTRIBUTION_VERSION,
+                "scope": "suggestion_envelope_and_editorial_source_union",
+                "speaker": voice.speaker,
+                "minimum_subject_share": 0.5,
+                "clips": metrics,
+            }
+            generated.document["clips"] = fresh
+        excluded = brief.get("exclude_ranges") or []
+        if excluded:
+            clips = generated.document["clips"]
+            fresh = [clip for clip in clips if not any(
+                min(clip["end_second"], old["end"]) > max(clip["start_second"], old["start"])
+                for old in excluded
+            )]
+            if not fresh:
+                raise ValueError("A seleção repetiu trechos já sugeridos. Nenhum corte novo foi salvo; ajuste a direção editorial.")
+            if len(fresh) != len(clips):
+                generated.document["selection_notes"] += " Trechos já sugeridos foram removidos."
+                generated.document["clips"] = fresh
+
         artifact_document = {
             "artifact_schema_version": SUGGESTION_ARTIFACT_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -162,6 +232,7 @@ class SuggestionService:
                 "schema_id": schema.get("$id"),
             },
             "selection": generated.document,
+            **({"voice_validation": voice_validation} if voice_validation is not None else {}),
         }
         out_dir = suggestions_dir(self._config, transcript_artifact.project_id)
         out_dir.mkdir(parents=True, exist_ok=True)

@@ -23,6 +23,7 @@ from cortex.analyze.speaker_schemas import (
     SpeakerTimelineDocument,
     TrackScore,
 )
+from cortex.analyze.scope import intersect_chunks
 from cortex.config import CortexConfig
 from cortex.domain.models import SourceAsset, StageArtifact
 from cortex.domain.store import DomainStore
@@ -319,6 +320,7 @@ class SpeakerTimelineService:
             }
 
         chunks = _coalesced_vad_chunks(analysis, padding=padding, duration=duration)
+        chunks = intersect_chunks(chunks, scene_index.source_ranges)
         scene_starts = [scene.start for scene in scene_index.scenes]
         vad_starts = [interval.start for interval in analysis.vad_intervals]
         vad_ends = [interval.end for interval in analysis.vad_intervals]

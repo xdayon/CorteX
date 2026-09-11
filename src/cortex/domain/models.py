@@ -110,7 +110,8 @@ class WorkflowRun(BaseModel):
     brief: dict[str, Any] = Field(default_factory=dict)
     active_job_id: str | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
-    subject_identity_id: str | None = None
+    subject_identity_id: str | None = None  # Read compatibility; never infer an interviewer.
+    interviewer_identity_id: str | None = None
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

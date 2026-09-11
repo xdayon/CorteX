@@ -21,6 +21,8 @@ export type OverlayPayload = Record<string, unknown> & {
     enabled: boolean;
     fontFamily: string;
     fontSize: number;
+    fontWeight?: 400 | 900;
+    uppercase?: boolean;
     outline: boolean;
     shadow: boolean;
     karaoke: boolean;

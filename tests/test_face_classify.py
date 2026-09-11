@@ -131,3 +131,19 @@ def test_aggregate_scene_summaries_empty_scene_is_none() -> None:
     summaries = aggregate_scene_summaries([], scenes)
     assert summaries[0]["dominant_shot_type"] == SHOT_NONE
     assert summaries[0]["sample_count"] == 0
+
+
+def test_tracks_do_not_collapse_when_other_cameras_bridge_positions():
+    from cortex.analyze.face_classify import assign_scene_tracks
+    frames = [{"time": 0, "faces": [{"x": .12, "width": .1}, {"x": .72, "width": .1}]}]
+    frames += [{"time": i + 1, "faces": [{"x": .2 + i * .05, "width": .1}]} for i in range(10)]
+    assign_scene_tracks(frames, [{"index": 0, "start": 0, "end": 1},
+                                {"index": 1, "start": 1, "end": 12}])
+    assert [face["track_id"] for face in frames[0]["faces"]] == ["person_left", "person_right"]
+
+
+def test_ambiguous_simultaneous_faces_never_share_a_track():
+    from cortex.analyze.face_classify import assign_scene_tracks
+    frames = [{"time": 0, "faces": [{"x": .4, "width": .1}, {"x": .41, "width": .1}]}]
+    assign_scene_tracks(frames, [{"index": 0, "start": 0, "end": 1}])
+    assert [face["track_id"] for face in frames[0]["faces"]] == [None, None]

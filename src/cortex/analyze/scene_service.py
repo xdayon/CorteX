@@ -21,6 +21,7 @@ from cortex.analyze.scene_schemas import (
     SceneIndexEngineInfo,
     SceneSegment,
 )
+from cortex.analyze.scope import SourceRange, normalize_ranges
 from cortex.config import CortexConfig
 from cortex.domain.models import SourceAsset, StageArtifact
 from cortex.domain.store import DomainStore
@@ -74,6 +75,7 @@ class SceneIndexService:
         *,
         source_asset: SourceAsset,
         threshold: float | None,
+        source_ranges: list[dict] | None = None,
         progress_cb: Callable[[float, str], None],
         should_cancel: Callable[[], bool],
     ) -> dict:
@@ -100,6 +102,10 @@ class SceneIndexService:
             "threshold": requested_threshold,
             "filter": "scdet",
         }
+        ranges = normalize_ranges([SourceRange.model_validate(r) for r in source_ranges or []], duration)
+        if ranges:
+            hash_payload["source_ranges"] = [r.model_dump() for r in ranges]
+            hash_payload["scope_version"] = 1
         input_hash = hashlib.sha256(
             json.dumps(hash_payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -121,22 +127,33 @@ class SceneIndexService:
         out_dir = scenes_dir(self._config, source_asset.project_id)
         out_dir.mkdir(parents=True, exist_ok=True)
         log_path = out_dir / f"scene-index-{input_hash[:16]}.ffmpeg.log"
-        stderr_text = _run_scdet(
-            scdet_command(self._config.render.ffmpeg, source_path, requested_threshold),
-            log_path, should_cancel,
-        )
-
+        if ranges:
+            cuts, scenes = [], []
+            for position, region in enumerate(ranges):
+                if should_cancel():
+                    raise SceneIndexJobCancelled()
+                command = scdet_command(self._config.render.ffmpeg, source_path, requested_threshold)
+                input_index = command.index("-i")
+                command[input_index:input_index] = ["-ss", f"{region.start:.6f}", "-t", f"{region.end-region.start:.6f}"]
+                stderr_text = _run_scdet(command, log_path.with_suffix(f".{position}.log"), should_cancel)
+                local_cuts = parse_scene_cuts(stderr_text)
+                cuts.extend(SceneCut(time=round(t+region.start, 6), score=score) for t, score in local_cuts
+                            if 0 < t < region.end-region.start)
+                for scene in build_scenes(local_cuts, region.end-region.start):
+                    scenes.append(SceneSegment(index=len(scenes), start=round(scene["start"]+region.start,6), end=round(scene["end"]+region.start,6)))
+                progress_cb(20+50*(position+1)/len(ranges), f"Câmeras: trecho {position+1}/{len(ranges)}")
+        else:
+            stderr_text = _run_scdet(scdet_command(self._config.render.ffmpeg, source_path, requested_threshold), log_path, should_cancel)
+            raw_cuts = parse_scene_cuts(stderr_text)
+            cuts = [SceneCut(time=t, score=s) for t, s in raw_cuts]
+            scenes = [SceneSegment(**scene) for scene in build_scenes(raw_cuts, duration)]
         if should_cancel():
             raise SceneIndexJobCancelled()
-        progress_cb(70.0, "Consolidando cortes de cena")
-        raw_cuts = parse_scene_cuts(stderr_text)
-        cuts = [SceneCut(time=t, score=s) for t, s in raw_cuts]
-        scenes = [SceneSegment(**scene) for scene in build_scenes(raw_cuts, duration)]
 
         document = SceneIndexDocument(
             project_id=source_asset.project_id, source_asset_id=source_asset.id,
             source_sha256=source_asset.sha256, input_hash=input_hash,
-            duration_seconds=round(duration, 4), cuts=cuts, scenes=scenes, cut_count=len(cuts),
+            duration_seconds=round(duration, 4), source_ranges=ranges, cuts=cuts, scenes=scenes, cut_count=len(cuts),
             engine=SceneIndexEngineInfo(
                 ffmpeg_path=str(self._config.render.ffmpeg), ffmpeg_version=effective_ffmpeg_version,
                 filter="scdet", threshold_requested=requested_threshold,

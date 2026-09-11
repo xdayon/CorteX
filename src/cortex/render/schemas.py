@@ -6,8 +6,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from cortex.render.technical_quality import RenderTechnicalQualityReport
+from cortex.render.auto_framing import AutoFramingSpan, SceneFramingOverride
 
-RENDER_SCHEMA_VERSION = 13
+RENDER_SCHEMA_VERSION = 14
 RENDER_SETTINGS_SCHEMA_VERSION = 1
 OVERLAY_SCHEMA_VERSION = 2
 
@@ -111,11 +112,14 @@ class RenderFramingSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
-    mode: Literal["vertical_crop", "blurred_background", "face_static_crop"] = "vertical_crop"
+    mode: Literal["vertical_crop", "blurred_background", "face_static_crop", "speaker_auto"] = "vertical_crop"
     punch_in: RenderPunchInSettings = Field(default_factory=RenderPunchInSettings)
+    scene_overrides: list[SceneFramingOverride] = Field(default_factory=list, max_length=500)
 
     @model_validator(mode="after")
     def _validate_punch_in_anchor(self) -> "RenderFramingSettings":
+        if len({item.scene_index for item in self.scene_overrides}) != len(self.scene_overrides):
+            raise ValueError("scene_overrides não aceita cenas duplicadas")
         if self.punch_in.anchor == "face" and self.mode != "face_static_crop":
             raise ValueError(
                 "punch_in.anchor 'face' exige framing.mode 'face_static_crop'"
@@ -123,11 +127,29 @@ class RenderFramingSettings(BaseModel):
         return self
 
 
+class CaptionCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    word_index: int = Field(ge=0)
+    original: str = Field(max_length=200)
+    text: str = Field(max_length=200)
+
+
 class RenderCaptionSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    corrections: list[CaptionCorrection] = Field(default_factory=list, max_length=2000)
+
+    @field_validator("corrections")
+    @classmethod
+    def unique_corrections(cls, values):
+        if len({v.word_index for v in values}) != len(values):
+            raise ValueError("palavra corrigida mais de uma vez")
+        return values
+
 
     enabled: bool
     font_family: str = Field(min_length=1, max_length=80, pattern=r"^[\w .-]+$")
+    font_weight: Literal[400, 900] = 900
+    uppercase: bool = True
     font_size: int = Field(ge=12, le=120)
     words_per_cue: int = Field(ge=1, le=12)
     position_y: float = Field(default=0.78, ge=0.1, le=0.9)
@@ -192,7 +214,10 @@ class RenderSettings(BaseModel):
 
 class RenderCaptionSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    corrections: list[CaptionCorrection] | None = Field(default=None, max_length=2000)
 
+    font_weight: Literal[400, 900] | None = None
+    uppercase: bool | None = None
     enabled: bool | None = None
     font_family: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"^[\w .-]+$")
     font_size: int | None = Field(default=None, ge=12, le=120)
@@ -243,11 +268,12 @@ class RenderTemplateSettingsPatch(BaseModel):
 class RenderFramingSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["vertical_crop", "blurred_background", "face_static_crop"] | None = None
+    mode: Literal["vertical_crop", "blurred_background", "face_static_crop", "speaker_auto"] | None = None
     # Whole-object override, matching how captions.animation / headline.animation
     # already behave in this patch model: no partial-field patch for nested
     # settings, the incoming object fully replaces punch_in when present.
     punch_in: RenderPunchInSettings | None = None
+    scene_overrides: list[SceneFramingOverride] | None = Field(default=None, max_length=500)
 
 
 class RenderSettingsPatch(BaseModel):
@@ -448,6 +474,8 @@ class RenderDocument(BaseModel):
     identity_index_artifact_id: str | None = None
     target_identity_id: str | None = None
     static_face_crops: list[dict[str, object]] = Field(default_factory=list)
+    auto_framing: list[AutoFramingSpan] = Field(default_factory=list)
+    auto_framing_inputs: dict[str, str] = Field(default_factory=dict)
     sources: list[RenderSourceInfo] = Field(default_factory=list)
     input_hash: str
     output_path: str

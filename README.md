@@ -1,157 +1,108 @@
 # CorteX
 
-Editor local, GPU-first e retomavel da HiTechX para transformar episodios de
-podcast em cortes profissionais para Reels e TikTok.
+Editor pessoal Dayon News/HiTechX para transformar podcasts do YouTube ou arquivos
+locais em cortes para Reels/TikTok, usando o notebook e sua GPU.
 
-> Estado: MVP funcional para ingestao, transcricao, analise, selecao, EDL e
-> exportacao persistida de cortes. O Studio produz MP4/SRT, preview/download e
-> presets por projeto. Ainda nao e um release de producao: faltam validacao E2E
-> com episodios reais, benchmark GPU/NVENC, retomada de fila e os gates listados
-> no roadmap.
+**Estado:** MVP com artefatos reais e testes. Ainda faltam lote de exportação
+independente da aba, confirmação de voz no plano final e avaliação ampla com
+podcasts reais. [Roadmap](docs/ROADMAP.md) · [Revisão completa](docs/REVIEW_DAYON_NEWS.md).
 
-## Produto
+## Usar
 
-O fluxo do CorteX e deliberadamente explicito:
+1. Abrir a biblioteca, adicionar o link ou arquivo e preparar o episódio.
+2. Para focar em Dayon, separar vozes e confirmar sua amostra antes de gerar
+   sugestões; [diarização opcional](docs/DIARIZATION.md).
+3. Processar com Codex CLI, revisar sugestões e escolher os cortes.
+4. Ajustar legendas, texto da headline por corte e enquadramento; gerar prévia
+   curta real e exportar MP4/SRT. Resultados e mídia permanecem locais.
 
-1. selecione um arquivo local ou link do YouTube;
-2. configure e clique em **Iniciar transcricao**;
-3. defina tema, duracoes e quantidade de sugestoes;
-4. revise transcript, waveform, narrativa, headline e plano de camera;
-5. configure legenda, headline, ritmo e output;
-6. clique em **Iniciar renderizacao** e acompanhe a fila.
+Selecionar fonte/configuração não inicia processamento. O workflow persiste até
+revisão. Ajustes, seleção, headlines e correções têm autosave por execução nesse
+navegador; não são sincronizados entre navegadores. Jobs enviados sobrevivem à
+aba, mas **mantenha a aba aberta para agendar o lote inteiro**.
 
-Selecionar um arquivo nunca inicia a transcricao. Alterar um preset nunca inicia
-o render.
+## Edição disponível
 
-## Estrutura atual
+- Fonte única do YouTube, biblioteca e galeria dos renders persistidos.
+- Transcrição por palavra e seleção Codex com prompt PT-BR/saída validada.
+- Correção textual por corte preservando áudio/timestamps; tamanho, altura,
+  fonte/peso, cores, outline, sombra, karaoke/pop e SRT.
+- Headline manual por corte, sugestão IA quando vazia e botão de restaurar sugestão.
+- Quadro inteiro com **Gaussian blur** por padrão, sem exigir análise facial.
+- Automático opcional, limitado aos cortes selecionados + 3 s de margem; correção
+  por cena esquerda/direita/ambos e zoom discreto. Em dúvida preserva quadro inteiro.
+- Reutilizar reações é opcional, requer entrevistador confirmado e usa só vídeo.
+- EDL e motores de pausas, J/L-cut, punch-in e presets; a UI não expõe todos os
+  controles avançados da API. Não existem câmeras ISO além do master recebido.
+- Prévia curta (~10 s) e QA técnico do MP4. Preview tipográfico não demonstra
+  enquadramento/headline finais; confira o vídeo renderizado.
 
-```text
-apps/web/             Studio React/TypeScript da HiTechX
-src/cortex/           configuracao, contratos, jobs, telemetria e API
-config/cortex.yaml    defaults do runtime, GPU-first e sem fallback silencioso
-presets/neat90.yaml   preset autocontido de conteudo, visual e output
-prompts/              prompt editorial PT-BR e JSON Schema da resposta
-docs/                 arquitetura, motor de edicao e roadmap
-mods/                  implementacao legada usada como referencia de migracao
-tests/                 testes da fundacao e do motor legado validado
-```
+## Instalação
 
-`mods/`, `reference/` e `apply.sh` nao sao mais a arquitetura alvo. Permanecem
-temporariamente para portar os ativos testados sem perder o baseline.
-
-## Backend
-
-Requer Python 3.11 a 3.14. Python 3.12 e o alvo recomendado para compatibilidade
-com CUDA e bibliotecas de ML.
+Python 3.11–3.14 (3.12 recomendado para instalar a stack principal), Node instalado,
+FFmpeg/ffprobe e Codex CLI autenticado. A máquina atual tem GTX 1060 Max-Q 6 GB:
+transcrição CUDA `int8`, encode H.264 NVENC. Visão/diarização usam CPU.
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/pip install -e '.[dev,transcription,youtube]'
-.venv/bin/cortex-api
+.venv/bin/pip install -e '.[dev,transcription,analysis,youtube]'
+(cd apps/web && npm ci && npm run build)
+(cd apps/remotion && npm ci && npm run build)
 ```
 
-A API local fica em `http://127.0.0.1:8787`:
+Configuração em `config/cortex.yaml` e overrides `CORTEX__SECAO__CHAVE`.
+`render.remotion_browser` deve apontar para um `chrome-headless-shell` executável;
+o renderer não baixa browser nem troca silenciosamente para libass.
+O processo não carrega `.env` sozinho; o serviço systemd o carrega.
+Nunca versionar tokens, login Codex ou mídia.
 
-- `GET /api/v1/health`
-- `GET /api/v1/hardware`
-- `POST /api/v1/jobs`
-- `GET /api/v1/jobs`
-- `GET /api/v1/jobs/{id}/events` (SSE)
-- `POST /api/v1/jobs/{id}/cancel`
-- `POST /api/v1/projects/{id}/renders`
-- `GET /api/v1/projects/{id}/renders/{artifact_id}`
-- `GET /api/v1/projects/{id}/renders/{artifact_id}/media`
-- `POST /api/v1/projects/{id}/analyze`
-- `GET /api/v1/projects/{id}/analysis/{artifact_id}`
-- `GET /api/v1/projects/{id}/transcripts/{artifact_id}`
+## Abrir sem terminal
 
-O worker local processa ingestao YouTube, transcricao faster-whisper, analise
-Silero/waveform/loudness, selecao editorial via Codex CLI, planejamento de EDL e
-render FFmpeg multi-segmento. O caminho padrao usa
-a assinatura ChatGPT configurada
-no `codex`, sem exigir API key. Nao existe fallback editorial: falhas do Codex
-ficam explicitas para retentativa. Limites dos planos continuam valendo.
-O render persiste MP4 e manifesto com streams/duracao/loudness validados, gera um
-overlay VP9 alpha cacheavel via Remotion para headline e karaoke palavra por palavra,
-compoe o overlay no master FFmpeg e publica sidecar SRT. Node, Remotion, hash do
-overlay e configuracoes efetivas ficam registrados no manifesto.
-As configuracoes suportadas do Studio sao persistidas no job/manifesto, e o gate
-visual inicial reprova trechos pretos ou congelados acima dos thresholds configurados.
-
-Detalhes e diagnostico: [Providers de IA](docs/AI_PROVIDERS.md).
-
-## Frontend
+Instalar uma vez o serviço de usuário e o atalho do menu de aplicativos:
 
 ```bash
-cd apps/web
-npm install
-npm run dev
+.venv/bin/python scripts/install_local_service.py --install
 ```
 
-Instale tambem o compositor com as versoes fixadas no lockfile:
+Clique **CorteX** no menu: o atalho inicia o serviço, aguarda a API e abre o
+navegador. O serviço também inicia no login. Endereço padrão:
+[Studio local](http://127.0.0.1:8787). Requer notebook ligado e acordado.
 
 ```bash
-cd apps/remotion
-npm install
-npm run build
+systemctl --user status cortex.service
+systemctl --user restart cortex.service
+systemctl --user disable --now cortex.service
 ```
 
-`render.remotion_browser` deve apontar explicitamente para um
-`chrome-headless-shell` executavel. O job nao baixa navegador nem retorna
-silenciosamente ao renderer legado.
+Após atualizar código, compilar Web/Remotion e reiniciar o serviço. Arquivos em
+`data/` não são backupados pelo GitHub. Para endereço privado próprio, a proposta
+é **Tunnel + Access com processamento local**; nenhum deploy foi realizado.
+[Operação e Cloudflare](docs/LOCAL_AND_CLOUDFLARE.md).
 
-Depois da primeira instalacao, backend e frontend podem ser iniciados juntos:
+## Desenvolvimento e verificação
 
-```bash
-./scripts/dev.sh
-```
-
-Abra `http://127.0.0.1:5173`. A documentacao interativa da API fica em
-`http://127.0.0.1:8787/docs`.
-
-O Vite encaminha `/api` para `127.0.0.1:8787`. O Studio possui seis etapas,
-preview limpo/TikTok/Reels, editor de legenda/headline e Compute Deck. Enquanto a
-API nao esta ativa, a UI deixa isso visivel como modo local; dados de exemplo nao
-devem ser interpretados como telemetria real.
-
-## Validacao
+Pare o serviço antes de iniciar outro worker: `systemctl --user stop cortex.service`.
+`./scripts/dev.sh` inicia Vite em 5173, API em 8787 e worker. A interface usa a API
+real via `/api`; [OpenAPI local](http://127.0.0.1:8787/docs).
 
 ```bash
 .venv/bin/pytest -q
-.venv/bin/python -m compileall -q src/cortex
-cd apps/web && npm run build
-cd apps/remotion && npm run build
-```
-
-O backend padrao pula apenas os testes que exigem browser real. No host, execute
-a mesma suite com Remotion habilitado explicitamente:
-
-```bash
-CORTEX_RUN_REMOTION_E2E=1 .venv/bin/pytest -q
-```
-
-Os testes cobrem configuracao, jobs, protecao de pausas, waveform/VAD, fronteiras,
-J/L-cut, reaction reuse single-source, punch-in, camera planning, render FFmpeg,
-overlay alpha Remotion, karaoke, cache e quality gate audiovisual. A matriz E2E
-CPU/GPU completa do Gate 9 continua separada da suite automatizada.
-
-## GPU
-
-O default solicita faster-whisper `large-v3-turbo` em CUDA `int8`, decode NVDEC e
-encode `h264_nvenc`. `allow_cpu_fallback` e `false`: uma falha de GPU deve aparecer
-no job, nao virar processamento em CPU silenciosamente.
-
-A existencia de um encoder na listagem do FFmpeg nao garante que o driver esta
-funcional. O CorteX deve registrar sempre engine solicitada e engine efetiva.
-
-Para testar driver e um encode H.264 NVENC real de um segundo:
-
-```bash
+(cd apps/web && npm test && npm run build)
+(cd apps/remotion && npm run build)
+.venv/bin/ruff check src/cortex scripts tests
+git diff --check
 ./scripts/check_gpu.sh
 ```
 
-## Documentacao
+No host com browser: `CORTEX_RUN_REMOTION_E2E=1 .venv/bin/pytest -q` habilita os
+três testes Remotion normalmente pulados. GPU smoke não comprova episódio E2E.
+[Resultados desta revisão](docs/evidence/2026-09-10-architecture-review.md).
 
-- [Arquitetura](docs/ARCHITECTURE.md)
-- [Motor de edicao](docs/EDITING_ENGINE.md)
-- [Roadmap](docs/ROADMAP.md)
+## Para agentes
+
+Leia [AGENTS](AGENTS.md), [handoff curto](docs/HANDOFF_FABLE_5.md) e o gate do
+[ROADMAP](docs/ROADMAP.md). O [mapa da arquitetura](docs/ARCHITECTURE.md) indica
+módulos e testes. Históricos ficam em `docs/history/`, fora da leitura inicial.
+Codex editorial usa exclusivamente `gpt-5.5`, medium, pelo CLI/login ChatGPT;
+[provenance e contrato](docs/AI_PROVIDERS.md). Isso exige rede e limites da conta,
+mas não exige API key. Não restaurar frontend PodCLI ou importar `mods/`.

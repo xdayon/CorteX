@@ -120,3 +120,19 @@ def render_srt(cues: list[CaptionCue]) -> str:
         for index, cue in enumerate(cues, start=1)
     ]
     return "\n\n".join(blocks) + ("\n" if blocks else "")
+
+
+def corrected_transcript(transcript: TranscriptDocument, corrections) -> TranscriptDocument:
+    """Apply caption-only word edits without mutating source text or timestamps."""
+    if not corrections:
+        return transcript
+    result = transcript.model_copy(deep=True)
+    words = [w for segment in result.segments for w in segment.words]
+    seen = set()
+    for correction in corrections:
+        index = correction.word_index
+        if index in seen or index >= len(words) or words[index].word != correction.original:
+            raise ValueError("Correção não corresponde à transcrição original; reabra o editor")
+        seen.add(index)
+        words[index].word = re.sub(r"\s+", " ", correction.text).strip()
+    return result

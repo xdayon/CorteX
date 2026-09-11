@@ -78,6 +78,8 @@ export const parsePayload = (raw, browserFallback) => {
     durationSeconds,
     browserExecutable: string(executable, 'browserExecutable', 4096),
     caption: {
+      fontWeight: raw.caption.fontWeight === 400 ? 400 : raw.caption.fontWeight === 900 || raw.caption.fontWeight === undefined ? 900 : fail("caption.fontWeight", "400 or 900"),
+      uppercase: raw.caption.uppercase === undefined ? true : boolean(raw.caption.uppercase, "caption.uppercase"),
       enabled: boolean(raw.caption.enabled, 'caption.enabled'),
       fontFamily: string(raw.caption.fontFamily, 'caption.fontFamily', 200),
       fontSize: number(raw.caption.fontSize, 'caption.fontSize', 8, 320),

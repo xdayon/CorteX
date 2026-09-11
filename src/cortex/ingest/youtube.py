@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
+from importlib.util import find_spec
 from typing import Any, Callable, Protocol
 
 
@@ -19,6 +21,11 @@ class YtDlpDownloader:
     def extract_info(self, url: str, *, download: bool, options: dict[str, Any]) -> dict[str, Any]:
         import yt_dlp
 
+        if not shutil.which("node"):
+            raise YoutubeDownloadError("Download do YouTube requer Node.js no PATH do worker")
+        if find_spec("yt_dlp_ejs") is None:
+            raise YoutubeDownloadError("Dependência do YouTube ausente: instale o extra youtube do CorteX (yt-dlp[default])")
+
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=download)
         return info
@@ -35,7 +42,11 @@ def build_ydl_options(
         "outtmpl": str(dest_dir / "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
-        "no_warnings": True,
+        "noprogress": True,
+        "no_warnings": False,
+        "js_runtimes": {"node": {"path": shutil.which("node") or "node"}},
+        "socket_timeout": 30,
+        "retries": 3,
         "merge_output_format": "mp4",
     }
     if progress_hook is not None:
@@ -47,7 +58,8 @@ def find_cached_download(dest_dir: Path, video_id: str) -> Path | None:
     if not dest_dir.exists():
         return None
     for match in sorted(dest_dir.glob(f"{video_id}.*")):
-        if match.is_file() and match.stat().st_size > 0 and not match.name.endswith(".part"):
+        if (match.name in {f"{video_id}.mp4", f"{video_id}.mkv", f"{video_id}.webm"}
+                and match.is_file() and match.stat().st_size > 0):
             return match
     return None
 
