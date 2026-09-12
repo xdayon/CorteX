@@ -23,7 +23,7 @@ em `.venv-diarization`. Não é reconhecimento facial nem clonagem de voz.
    à fonte e ao artefato de diarização daquele episódio.
 
 A inferência é local, mas o primeiro download exige rede/autorização do modelo.
-O status de readiness atual confirma executável/token, não mede precisão nem
+O status de readiness confirma executável, pacotes instalados e token; não mede precisão nem
 prova que os pesos estejam acessíveis. Em 2026-09-11, a amostra de 90s do host
 produziu 6 turnos/2 vozes em 84,54s CPU. Não comprova acurácia nem desempenho em
 podcast longo. O job usa CPU explicitamente e falhas não viram identificação
@@ -33,6 +33,14 @@ Pyannote 4.0.6 é chamado pelo batch explícito de um arquivo, pois `__call__`
 retorna gerador nessa versão. Hooks convertem contadores NumPy para JSON nativo.
 O resultado persistido libera as amostras na UI; é necessário ouvi-las e marcar
 “Esta voz é minha”. A referência não é inferida pelo nome “Dayon” no briefing.
+
+Preservar o caminho `.venv-diarization/bin/python` ao criar subprocessos. Não usar
+`Path.resolve()` nesse executável: o symlink aponta para o Python base e resolve
+fora do ambiente virtual, perdendo os pacotes. O gate de integração
+`tests/test_diarization_e2e.py` cobre POST do botão → worker → artefato → amostras
+→ confirmação em banco isolado → cache. Execução local opt-in com
+`CORTEX_RUN_DIARIZATION_E2E=1` e `CORTEX_DIARIZATION_TEST_AUDIO` apontando para uma
+amostra curta; o processo também precisa receber a credencial local.
 
 A seleção exige maioria temporal de Dayon no envelope e na união dos trechos
 editoriais, tratando overlap conservadoramente. `voice_validation` registra as

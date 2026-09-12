@@ -31,7 +31,7 @@ export function VoiceSelector({entry, disabled}: {entry:EpisodeEntry;disabled:bo
       if(typeof id!=="string") throw new Error("Resultado de voz indisponível; reabra o episódio.");
       setCreatedArtifact(id);setTurns((await api.episodeVoices(entry.id,id)).turns);
       setMessage("✓ Vozes separadas. Ouça as amostras e confirme a sua voz.");
-    } catch(reason) {if(!controller.signal.aborted) setError(String(reason));}
+    } catch(reason) {if(!controller.signal.aborted) {setMessage("Separação de vozes não concluída.");setError(String(reason));}}
     finally {if(!controller.signal.aborted) setWorking(false);}
   }
   async function load() {

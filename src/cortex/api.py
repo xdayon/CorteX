@@ -356,7 +356,7 @@ def create_app(config: CortexConfig | None = None):
                 raise ValueError("Baixe o episódio primeiro")
             from cortex.diarize.service import readiness
             state = readiness()
-            if not state["runtime_installed"] or not state["token_configured"]:
+            if not state["ready"]:
                 raise ValueError(" ".join(state.get("missing", [])) or "Diarização indisponível; confira a configuração de vozes.")
             active = next((j for j in detail["jobs"] if j["type"] == "diarization" and j["status"] in {"running", "queued"}), None)
             if active:

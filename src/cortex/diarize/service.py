@@ -39,7 +39,25 @@ class DiarizationDocument(BaseModel):
 
 
 def runtime_path():
-    return Path(os.environ.get("CORTEX_DIARIZATION_PYTHON", ".venv-diarization/bin/python")).resolve()
+    # A venv's Python is normally a symlink. Resolving its target bypasses
+    # pyvenv.cfg and runs the base interpreter without the venv's packages.
+    return Path(os.environ.get("CORTEX_DIARIZATION_PYTHON", ".venv-diarization/bin/python")).expanduser().absolute()
+
+
+def runtime_versions(runtime: Path) -> str:
+    try:
+        return subprocess.run([
+            str(runtime), "-c",
+            "from importlib.metadata import version; print(version('pyannote.audio'), version('torch'))",
+        ], capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("A verificação do ambiente de voz excedeu 10s. Confira o Python configurado e tente novamente.") from exc
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            "O Python configurado não consegue carregar as dependências de voz. "
+            "Use .venv-diarization/bin/python em CORTEX_DIARIZATION_PYTHON "
+            "ou repare o ambiente com scripts/setup_diarization.sh."
+        ) from exc
 
 
 def readiness():
@@ -50,15 +68,21 @@ def readiness():
         saved_token = token_file.is_file() and bool(token_file.read_text().strip())
     except OSError:
         saved_token = False
-    runtime = runtime_path().is_file()
+    path = runtime_path()
+    runtime = path.is_file()
     token = bool(os.environ.get("HF_TOKEN")) or saved_token
     missing = []
     if not runtime:
         missing.append("Instale o ambiente de vozes em CPU com scripts/setup_diarization.sh.")
+    else:
+        try:
+            runtime_versions(path)
+        except ValueError as exc:
+            missing.append(str(exc))
     if not token:
         missing.append("Falta o acesso Hugging Face: aceite as condições do modelo community-1 e configure HF_TOKEN no .env local; depois reinicie o serviço CorteX.")
     return {"runtime_installed":runtime, "token_configured":token, "device":"cpu",
-            "ready":runtime and token, "missing":missing,
+            "ready":not missing, "missing":missing,
             "model_url":"https://huggingface.co/pyannote/speaker-diarization-community-1"}
 
 
@@ -69,7 +93,7 @@ def run_diarization(config, domain, source, speakers, progress_cb, should_cancel
         raise ValueError("Instale o ambiente CPU: scripts/setup_diarization.sh")
     # Include the isolated runtime installation and runner bytes in the deterministic cache key.
     runner = Path(__file__).with_name("runner.py")
-    versions = subprocess.run([str(runtime), "-c", "from importlib.metadata import version; print(version('pyannote.audio'), version('torch'))"], capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+    versions = runtime_versions(runtime)
     key = hashlib.sha256(json.dumps({"source":source.sha256,"speakers":speakers,"device":"cpu","versions":versions,"runner":hashlib.sha256(runner.read_bytes()).hexdigest()},sort_keys=True).encode()).hexdigest()
     cached = domain.find_cached_stage_artifact(project_id=source.project_id, stage="diarization", input_hash=key, schema_version=1)
     if cached:

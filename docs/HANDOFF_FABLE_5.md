@@ -52,7 +52,8 @@ H.264 NVENC e CTranslate2 CUDA com `int8`, `int8_float32`, `float32`.
 Não solicitar float16 nem AV1 NVENC. Encode NVENC não prova decode NVDEC.
 Amostra real de diarização: 90s → 6 turnos/2 vozes em 84,54s CPU; não comprova
 acurácia nem atribui Dayon. Token local habilitado; UI pede confirmação humana.
-Adapter 4.0.6 corrigido para batch gerador e contadores NumPy. Episódio inteiro e
+Adapter 4.0.6 corrigido para batch gerador, contadores NumPy e Python do venv
+(não resolver symlink). Gate API/worker/cache em `tests/test_diarization_e2e.py`. Episódio inteiro e
 qualidade editorial continuam exigindo benchmark específico; confira
 [evidência](evidence/2026-09-10-architecture-review.md).
 

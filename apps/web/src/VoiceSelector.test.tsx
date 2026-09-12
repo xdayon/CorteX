@@ -120,3 +120,18 @@ test("completed separation loads persisted samples and allows human confirmation
   expect(api.selectEpisodeVoice).toHaveBeenCalledWith(entry.id,'new-voices','SPEAKER_01');
   expect(screen.getByRole('button',{name:'Dayon confirmado'})).toBeTruthy();
 });
+
+test("a failed voice job clears the running message and permits retry", async () => {
+  vi.mocked(api.diarizationStatus).mockResolvedValue(ready);
+  vi.mocked(api.diarizeEpisode).mockResolvedValue({id:'voice-job'} as Awaited<ReturnType<typeof api.diarizeEpisode>>);
+  vi.mocked(api.watchJob).mockImplementationOnce(async (_id,update) => {
+    update?.({id:'voice-job',status:'running',message:'Em execução'} as Awaited<ReturnType<typeof api.watchJob>>);
+    throw new Error('Ambiente de voz inválido');
+  });
+  openSelector();await settle();
+  fireEvent.click(screen.getByRole('button',{name:'Separar vozes em CPU'}));await settle();
+  expect(screen.queryByText('Em execução')).toBeNull();
+  expect(screen.getByRole('status').textContent).toBe('Separação de vozes não concluída.');
+  expect(screen.getByRole('alert').textContent).toContain('Ambiente de voz inválido');
+  expect((screen.getByRole('button',{name:'Separar vozes em CPU'}) as HTMLButtonElement).disabled).toBe(false);
+});
