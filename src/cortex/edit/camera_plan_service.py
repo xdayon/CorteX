@@ -33,7 +33,7 @@ from cortex.edit.diversity_policy import (
 from cortex.edit.schemas import EditPlanDocument
 from cortex.paths import camera_plans_dir
 
-CAMERA_PLAN_ALGORITHM_VERSION = "4.0.0"
+CAMERA_PLAN_ALGORITHM_VERSION = "4.1.0"
 
 REACTION_BLOCKER_ACOUSTIC_IDENTITY_UNAVAILABLE = "acoustic_speaker_identity_unavailable"
 REACTION_BLOCKER_LISTENING_POSTURE_UNAVAILABLE = "listening_posture_unavailable"
@@ -67,6 +67,37 @@ def _interval_gap_us(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
     if b_end <= a_start:
         return a_start - b_end
     return 0
+
+
+def _validate_complete_coverage(
+    edit_plan: EditPlanDocument,
+    shots: list[CameraEditShot],
+) -> None:
+    """Reject camera plans that cannot cover every editorial audio instant."""
+    shots_by_segment: dict[int, list[CameraEditShot]] = {}
+    for shot in shots:
+        shots_by_segment.setdefault(shot.edit_segment_order, []).append(shot)
+
+    for segment in edit_plan.segments:
+        expected_start_us = round(segment.start * 1_000_000)
+        expected_end_us = round(segment.end * 1_000_000)
+        cursor_us = expected_start_us
+        segment_shots = sorted(
+            shots_by_segment.get(segment.timeline_order, []),
+            key=lambda shot: (shot.audio_source_start_us, shot.audio_source_end_us),
+        )
+        for shot in segment_shots:
+            if shot.audio_source_start_us != cursor_us:
+                raise CameraEditPlanPreconditionError(
+                    "camera_timeline não cobre integralmente os segmentos da EDL; "
+                    f"refaça a análise de câmeras para o segmento {segment.timeline_order}"
+                )
+            cursor_us = shot.audio_source_end_us
+        if cursor_us != expected_end_us:
+            raise CameraEditPlanPreconditionError(
+                "camera_timeline não cobre integralmente os segmentos da EDL; "
+                f"refaça a análise de câmeras para o segmento {segment.timeline_order}"
+            )
 
 
 def _reaction_policy_blockers(
@@ -373,8 +404,7 @@ class CameraEditPlanService:
                 f"Planejando cameras do segmento {segment.timeline_order}",
             )
 
-        if not shots and edit_plan.segments:
-            raise CameraEditPlanPreconditionError("camera_timeline não cobre os segmentos da EDL")
+        _validate_complete_coverage(edit_plan, shots)
 
         seconds_by_identity, _ = _accumulate_seconds(shots)
         total_duration_seconds = total_duration_us / 1_000_000

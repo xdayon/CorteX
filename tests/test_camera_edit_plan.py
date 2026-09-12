@@ -309,20 +309,75 @@ def test_camera_plan_persists_linked_shots_filters_quality_and_caches(tmp_path: 
     assert len(domain.list_stage_artifacts(project.id, "camera_edit_plan")) == 1
 
 
-def _widen_edit_plan_timeline(edit: StageArtifact, end_seconds: float) -> None:
+def test_camera_plan_rejects_partial_coverage_before_persisting(tmp_path: Path) -> None:
+    config, domain, project, edit, camera, identity, quality = _planner_fixture(tmp_path)
+    camera_payload = json.loads(Path(camera.path).read_text(encoding="utf-8"))
+    tail_scene = camera_payload["scenes"][-1]
+    tail_scene["start_us"] = 2_900_000
+    camera_payload["scenes"] = [tail_scene]
+    Path(camera.path).write_text(json.dumps(camera_payload), encoding="utf-8")
+
+    with pytest.raises(CameraEditPlanPreconditionError, match="não cobre integralmente"):
+        CameraEditPlanService(config, domain).run(
+            edit_plan_artifact=edit, camera_timeline_artifact=camera,
+            identity_index_artifact=identity, visual_quality_artifact=quality,
+            progress_cb=lambda *_args: None, should_cancel=lambda: False,
+        )
+
+    assert domain.list_stage_artifacts(project.id, "camera_edit_plan") == []
+
+
+def _extend_planner_timeline(
+    edit: StageArtifact,
+    camera: StageArtifact,
+    quality: StageArtifact,
+    end_seconds: float,
+) -> None:
     payload = json.loads(Path(edit.path).read_text(encoding="utf-8"))
     payload["segments"][0]["end"] = end_seconds
     payload["clip_end"] = end_seconds
     payload["timeline_duration_seconds"] = end_seconds
     Path(edit.path).write_text(json.dumps(payload), encoding="utf-8")
 
+    end_us = round(end_seconds * 1_000_000)
+    camera_payload = json.loads(Path(camera.path).read_text(encoding="utf-8"))
+    last_camera = camera_payload["scenes"][-1]
+    camera_payload["scenes"].append({
+        **last_camera,
+        "scene_index": last_camera["scene_index"] + 1,
+        "start_us": last_camera["end_us"],
+        "end_us": end_us,
+        "layout_id": "extended-context",
+        "role": "wide",
+        "shot_type": "wide",
+        "visible_track_ids": [],
+        "dominant_speaker_track_id": None,
+        "speaker_alignment": "unavailable",
+        "speech_coverage": 0.0,
+    })
+    camera_payload["duration_us"] = end_us
+    Path(camera.path).write_text(json.dumps(camera_payload), encoding="utf-8")
+
+    quality_payload = json.loads(Path(quality.path).read_text(encoding="utf-8"))
+    last_quality = quality_payload["scenes"][-1]
+    quality_payload["scenes"].append({
+        **last_quality,
+        "scene_index": last_quality["scene_index"] + 1,
+        "start_us": last_quality["end_us"],
+        "end_us": end_us,
+        "blurred_share": 0.0,
+        "usable": True,
+        "issues": [],
+    })
+    quality_payload["duration_us"] = end_us
+    Path(quality.path).write_text(json.dumps(quality_payload), encoding="utf-8")
+
 
 def test_camera_plan_reuses_safe_single_master_reaction_with_primary_audio(tmp_path: Path) -> None:
     config, domain, project, edit, camera, identity, quality = _planner_fixture(tmp_path)
-    # Widen the editorial timeline so the 1s reaction stays within the 20%
-    # maximum_reaction_share policy (the camera timeline itself still only
-    # covers 0-3s, so no additional shots are produced).
-    _widen_edit_plan_timeline(edit, 6.0)
+    # Extend the complete timeline so the 1s reaction stays within the 20%
+    # maximum_reaction_share policy.
+    _extend_planner_timeline(edit, camera, quality, 6.0)
     reactions = _reaction_candidates(tmp_path, domain, project, camera, identity, quality)
     result = CameraEditPlanService(config, domain).run(
         edit_plan_artifact=edit, camera_timeline_artifact=camera,
@@ -347,7 +402,7 @@ def test_camera_plan_reuses_safe_single_master_reaction_with_primary_audio(tmp_p
 
 def test_camera_plan_rejects_low_confidence_reaction_candidate(tmp_path: Path) -> None:
     config, domain, project, edit, camera, identity, quality = _planner_fixture(tmp_path)
-    _widen_edit_plan_timeline(edit, 6.0)
+    _extend_planner_timeline(edit, camera, quality, 6.0)
     reactions = _reaction_candidates(tmp_path, domain, project, camera, identity, quality)
     payload = json.loads(Path(reactions.path).read_text(encoding="utf-8"))
     payload["candidates"][0]["confidence"] = 0.4
@@ -489,7 +544,7 @@ def test_camera_plan_diversity_policy_version_invalidates_cache(tmp_path: Path, 
 
 def test_camera_plan_deterministic_for_same_inputs(tmp_path: Path) -> None:
     config, domain, project, edit, camera, identity, quality = _planner_fixture(tmp_path)
-    _widen_edit_plan_timeline(edit, 6.0)
+    _extend_planner_timeline(edit, camera, quality, 6.0)
     reactions = _reaction_candidates(tmp_path, domain, project, camera, identity, quality)
 
     first = CameraEditPlanService(config, domain).run(
