@@ -54,6 +54,7 @@ async function openExport(saved = ready, automatic = true) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({font:"",measureText(text:string){return {width:text.length*30};}} as unknown as CanvasRenderingContext2D);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   localStorage.clear();
   vi.mocked(api.episodes).mockResolvedValue([]);
@@ -185,8 +186,8 @@ test("camera failures remain visible when full frame render is explicitly select
   fireEvent.click(screen.getByRole("button", { name: "Reaproveitar reações de outro instante" }));
   fireEvent.click(screen.getByRole("button", { name: "Renderizar 1 corte" }));
   await settle();
-  expect(screen.getByRole("status", { name: "Avisos de câmera" }).textContent).toContain("Render continuará sem reações: reaction indisponível");
-  expect(screen.getByRole("status", { name: "Avisos de câmera" }).textContent).toContain("seguirá sem plano de câmeras: camera indisponível");
+  expect(screen.getByRole("status", { name: "Avisos da exportação" }).textContent).toContain("Render continuará sem reações: reaction indisponível");
+  expect(screen.getByRole("status", { name: "Avisos da exportação" }).textContent).toContain("seguirá sem plano de câmeras: camera indisponível");
   expect(api.startRender).toHaveBeenCalledWith("project", "edl", expect.objectContaining({
     headline: expect.objectContaining({ text: "Headline real" }),
   }), undefined);
@@ -196,7 +197,7 @@ test("camera failures remain visible when full frame render is explicitly select
 test("unavailable optional artifacts do not prevent restoring suggestions", async () => {
   vi.mocked(api.identityIndex).mockRejectedValueOnce(new Error("Arquivo ausente"));
   await openExport(visualRun);
-  expect(screen.getByRole("status", { name: "Avisos de câmera" }).textContent).toContain("Arquivo ausente");
+  expect(screen.getByRole("status", { name: "Avisos da exportação" }).textContent).toContain("Arquivo ausente");
   expect(screen.getByRole("button", { name: "Renderizar 1 corte" })).toBeTruthy();
 });
 
@@ -245,7 +246,7 @@ test("only reviewed selections render, with the chosen caption and headline sett
   fireEvent.click(screen.getByRole("button", { name: "Mostrar headline" }));
   fireEvent.click(screen.getByRole("button", { name: "Renderizar 1 corte" }));
   await settle();
-  expect(api.startEditPlan).toHaveBeenCalledExactlyOnceWith("project", "transcript", "analysis", 60, 100, "balanced");
+  expect(api.startEditPlan).toHaveBeenCalledExactlyOnceWith("project", "transcript", "analysis", 60, 100, "balanced", 120);
   expect(api.startRender).toHaveBeenCalledWith("project", "edl", expect.objectContaining({
     captions: expect.objectContaining({ font_size: 64, text_color: "#FFCC00" }),
     headline: expect.objectContaining({ enabled: false }),
@@ -285,7 +286,7 @@ test("context fallback decisions from the persisted render are visible", async (
   ] } } as Awaited<ReturnType<typeof api.renderArtifact>>);
   fireEvent.click(screen.getByRole("button", { name: "Renderizar 1 corte" }));
   await settle();
-  expect(screen.getByRole("status", { name: "Avisos de câmera" }).textContent).toContain("1 planos mantiveram o quadro inteiro");
+  expect(screen.getByRole("status", { name: "Avisos da exportação" }).textContent).toContain("1 planos mantiveram o quadro inteiro");
 });
 
 
@@ -358,7 +359,7 @@ test("real preview limits rendering to ten seconds and keeps final exports separ
   await openExport(ready, false);
   fireEvent.click(screen.getByRole("button", {name:"Gerar prévia curta (~10 s)"}));
   await settle();
-  expect(api.startEditPlan).toHaveBeenCalledExactlyOnceWith("project","transcript","analysis",0,10,"balanced");
+  expect(api.startEditPlan).toHaveBeenCalledExactlyOnceWith("project","transcript","analysis",0,10,"balanced", 120);
   expect(screen.getByText("Prévia · Uma ideia")).toBeTruthy();
   expect(screen.queryByRole("link",{name:"Baixar MP4"})).toBeNull();
 });
@@ -535,8 +536,8 @@ test("export details show server frame progress and camera messages stay in expo
   expect(details.textContent).toContain('456');
   await act(async () => pending.resolve(job('render',{render_artifact_id:'mp4'})));
   fireEvent.click(screen.getByRole('button', {name:/2Escolher cortes/}));
-  expect(screen.queryByRole('status',{name:'Avisos de câmera'})).toBeNull();
-  expect(screen.queryByRole('region',{name:'Progresso da exportação'})).toBeNull();
+  expect(screen.queryByRole('status',{name:'Avisos da exportação'})).toBeNull();
+  expect(screen.queryByRole('region',{name:'Progresso do processamento'})).toBeNull();
 });
 
 test("single-layout identity message distinguishes detected faces from confirmed people", async () => {
@@ -545,4 +546,24 @@ test("single-layout identity message distinguishes detected faces from confirmed
   fireEvent.click(screen.getByText('Reações e câmeras · opcional'));
   expect(screen.getByText(/Foram encontrados rostos, mas os trechos analisados têm apenas um ângulo/)).toBeTruthy();
   expect(screen.queryByRole('button', {name:/Selecionar entrevistador/})).toBeNull();
+});
+
+test("manual camera analysis finishes at 100 percent with an explicit continue message", async () => {
+  await openExport(ready, false);
+  fireEvent.click(screen.getByRole("button", {name:"Analisar pessoas e câmeras"}));
+  await settle();
+  expect(screen.getByText("✓ Análise de câmeras concluída. Você pode continuar.")).toBeTruthy();
+  expect(screen.getByRole("progressbar", {name:"Lote de cortes"}).getAttribute("value")).toBe("100");
+  expect((screen.getByRole("button", {name:"Renderizar 1 corte"}) as HTMLButtonElement).disabled).toBe(false);
+  expect(api.startRender).not.toHaveBeenCalled();
+});
+
+test("an old overlong selection exposes its safe shortened ending", async () => {
+  await openExport(ready, false);
+  vi.mocked(api.watchJob).mockResolvedValueOnce(job('plan', {
+    edit_plan_artifact_id:'edl',duration_limit_applied:true,timeline_duration_seconds:95.83,
+  }));
+  fireEvent.click(screen.getByRole('button',{name:'Renderizar 1 corte'}));await settle();
+  expect(screen.getByRole('status',{name:'Avisos da exportação'}).textContent).toContain('95.8s');
+  expect(screen.getByRole('status',{name:'Avisos da exportação'}).textContent).toContain('limite de 120s');
 });

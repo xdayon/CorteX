@@ -130,7 +130,7 @@ def test_filtergraph_blurred_background_zooms_fitted_foreground_without_invalid_
     )
 
     assert "scale=1080:1920:force_original_aspect_ratio=decrease" in filtergraph
-    assert "scale=trunc(iw*1.15/2)*2:trunc(ih*1.15/2)*2" in filtergraph
+    assert "crop=trunc(iw/1.15/2)*2:trunc(ih/1.15/2)*2" in filtergraph
     assert "crop=1080:1920" not in filtergraph
 
 

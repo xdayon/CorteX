@@ -43,7 +43,24 @@ def runtime_path():
 
 
 def readiness():
-    return {"runtime_installed":runtime_path().is_file(), "token_configured":bool(os.environ.get("HF_TOKEN")), "device":"cpu"}
+    # Standard Hugging Face login is also usable by the isolated runner.
+    home = Path(os.environ.get("HF_HOME", str(Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))) + "/huggingface"))
+    token_file = Path(os.environ.get("HF_TOKEN_PATH", str(home / "token")))
+    try:
+        saved_token = token_file.is_file() and bool(token_file.read_text().strip())
+    except OSError:
+        saved_token = False
+    runtime = runtime_path().is_file()
+    token = bool(os.environ.get("HF_TOKEN")) or saved_token
+    missing = []
+    if not runtime:
+        missing.append("Instale o ambiente de vozes em CPU com scripts/setup_diarization.sh.")
+    if not token:
+        missing.append("Falta o acesso Hugging Face: aceite as condições do modelo community-1 e configure HF_TOKEN no .env local; depois reinicie o serviço CorteX.")
+    return {"runtime_installed":runtime, "token_configured":token, "device":"cpu",
+            "ready":runtime and token, "missing":missing,
+            "model_url":"https://huggingface.co/pyannote/speaker-diarization-community-1"}
+
 
 
 def run_diarization(config, domain, source, speakers, progress_cb, should_cancel):

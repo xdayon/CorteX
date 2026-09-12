@@ -6,6 +6,26 @@ import time
 from pathlib import Path
 
 
+def single_file_prediction(pipeline, file, **kwargs):
+    # pyannote.audio 4.0.6 implements __call__ as a generator even for one
+    # file. Its explicit batch API yields the prediction, while a direct
+    # single-file call leaves it in StopIteration.value.
+    predictions = list(pipeline([file], **kwargs))
+    if len(predictions) != 1:
+        raise ValueError("Expected exactly one diarization prediction")
+    return predictions[0][1]
+
+
+def write_progress(path, step, total, completed):
+    target = Path(path)
+    tmp = target.with_suffix(".tmp")
+    # Pyannote hooks include NumPy integer scalars; JSON needs native ints.
+    tmp.write_text(json.dumps({"step": str(step),
+                               "total": int(total) if total is not None else None,
+                               "completed": int(completed) if completed is not None else None}))
+    tmp.replace(target)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("audio")
@@ -30,11 +50,8 @@ def main():
         waveform = torch.from_numpy(np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2").astype("float32") / 32768).unsqueeze(0)
     def hook(step_name, step_artifact, file=None, total=None, completed=None):
         del step_artifact, file
-        target = Path(args.progress)
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"step":str(step_name), "total":total, "completed":completed}))
-        tmp.replace(target)
-    output = pipeline({"waveform":waveform,"sample_rate":16000}, hook=hook, **({"num_speakers":args.speakers} if args.speakers else {}))
+        write_progress(args.progress, step_name, total, completed)
+    output = single_file_prediction(pipeline, {"waveform":waveform,"sample_rate":16000,"uri":"episode"}, hook=hook, **({"num_speakers":args.speakers} if args.speakers else {}))
     turns = [{"start":turn.start,"end":turn.end,"speaker":speaker} for turn, speaker in output.speaker_diarization]
     document = {"schema_version":1,"engine":"pyannote-community-1","engine_version":version("pyannote.audio"),"requested_device":"cpu","effective_device":"cpu","elapsed_seconds":time.monotonic()-started,"turns":turns}
     target = Path(args.output)

@@ -175,3 +175,7 @@ input[type=range]::-moz-range-thumb { width:15px; height:15px; border:2px solid 
 
 .export-preview textarea { color:var(--text); background:var(--surface-2); border:1px solid var(--line); font:inherit; font-size:12px; }
 .headline-editor { scroll-margin-top:96px; }
+
+.preview-video-window {position:absolute;overflow:hidden;}
+
+.caption-canvas [data-cortex-caption] {outline:1px dashed #ffffff60;}

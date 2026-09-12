@@ -114,6 +114,7 @@ class SuggestionService:
         prompt_sha256 = hashlib.sha256(prompt_template.encode()).hexdigest()
         input_hash = _sha256_json({
             "artifact_version": SUGGESTION_ARTIFACT_VERSION,
+            "duration_validation_version": 1,
             "transcript_sha256": transcript_artifact.audio_sha256,
             "prompt_sha256": prompt_sha256,
             "schema_sha256": hashlib.sha256(
@@ -165,6 +166,29 @@ class SuggestionService:
             first = errors[0]
             location = ".".join(str(part) for part in first.absolute_path) or "root"
             raise ValueError(f"resposta da IA inválida em {location}: {first.message}")
+
+        duration_validation = None
+        maximum = brief.get("maximum_seconds")
+        if maximum is not None:
+            ceiling = float(maximum)
+            if not 0 < ceiling < float("inf"):
+                raise ValueError("maximum_seconds deve ser positivo e finito")
+            clips = generated.document["clips"]
+            # The current planner consumes the envelope, not approximate_edl.
+            # Reject a long envelope even when the model estimates a short edit.
+            accepted = [clip for clip in clips if
+                        clip["end_second"] - clip["start_second"] <= ceiling
+                        and clip["estimated_duration"] <= ceiling]
+            duration_validation = {"version": 1, "maximum_seconds": ceiling,
+                                   "rejected_count": len(clips) - len(accepted)}
+            if not accepted:
+                raise ValueError(f"Nenhum corte respeitou o máximo de {ceiling:g}s. "
+                                 "Gere outra seleção; nenhum corte acima do limite foi salvo.")
+            if len(accepted) != len(clips):
+                generated.document["selection_notes"] += (
+                    f" {len(clips)-len(accepted)} sugestões acima de {ceiling:g}s foram removidas."
+                )
+            generated.document["clips"] = accepted
 
         voice_validation = None
         if voice is not None:
@@ -221,6 +245,7 @@ class SuggestionService:
                 generated.document["clips"] = fresh
 
         artifact_document = {
+            "duration_validation": duration_validation,
             "artifact_schema_version": SUGGESTION_ARTIFACT_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "input_hash": input_hash,

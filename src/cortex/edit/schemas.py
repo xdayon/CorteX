@@ -137,9 +137,20 @@ class EditPlanDocument(BaseModel):
     profile: str
     segments: list[EditSegment]
     timeline_duration_seconds: float = Field(ge=0)
+    maximum_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     diagnostics: EditPlanDiagnostics
     quality: EditQualityReport
     jl_settings: JlSettings = Field(default_factory=JlSettings)
+
+    @model_validator(mode="after")
+    def _check_duration_ceiling(self) -> "EditPlanDocument":
+        if self.maximum_seconds is not None:
+            actual = sum(segment.video_end - segment.video_start for segment in self.segments)
+            actual -= sum(segment.transition.duration for segment in self.segments[:-1]
+                          if segment.transition is not None)
+            if max(actual, self.timeline_duration_seconds) > self.maximum_seconds + 1e-6:
+                raise ValueError("duração final do plano excede maximum_seconds")
+        return self
 
     @model_validator(mode="after")
     def _check_av_coverage_invariant(self) -> "EditPlanDocument":

@@ -163,6 +163,8 @@ export default function App() {
   const [jobHistory, setJobHistory] = useState<JobActivity[]>([]);
   const [renderProgress, setRenderProgress] = useState(0);
   const [rendered, setRendered] = useState<Array<{ title: string; url: string; subtitles: string }>>([]);
+  const [processingKind, setProcessingKind] = useState<"visual" | "export">("visual");
+  const [visualComplete, setVisualComplete] = useState(false);
   const [visualBusy, setVisualBusy] = useState(false);
   const [visualProgress, setVisualProgress] = useState(0);
   const [visualMessage, setVisualMessage] = useState("");
@@ -213,6 +215,7 @@ export default function App() {
     setError(null); setWarnings([]); setUploadProgress(0); setRenderProgress(0);
     setSettings(defaultRenderSettings); setIdentityIndex(null); setVisualArtifacts(null);
     setInterviewerIdentityId(""); setReuseReactions(false); setVisualProgress(0); setVisualMessage(""); setCameraScenes([]);
+    setVisualComplete(false); setProcessingKind("visual");
   }
 
   function resetEpisode() {
@@ -353,9 +356,11 @@ export default function App() {
     } finally { if (!signal.aborted) setBusy(false); }
   }
 
-  async function prepareCameraDynamics() {
+  async function prepareCameraDynamics(forExport = false) {
     if (!run || visualBusy || busy || !episode.current) return;
     const signal = episode.current.signal;
+    if (!forExport) setProcessingKind("visual");
+    setVisualComplete(false); setVisualProgress(0);
     setVisualBusy(true); setError(null); setVisualMessage("Detectando mudanças de câmera");
     try {
       async function finish(job: ApiJob, label: string, key: string) {
@@ -386,6 +391,7 @@ export default function App() {
       }
       if (identityId !== visualArtifacts?.identity) setInterviewerIdentityId("");
       setVisualMessage("Enquadramento pronto. Identificar o entrevistador é opcional para reutilizar reações.");
+      setVisualComplete(true); setVisualProgress(100);
       return prepared;
     } catch (reason) {
       if (!signal.aborted) setWarnings((items) => [...items, `A dinâmica de câmera não ficou pronta, mas os cortes normais continuam disponíveis. ${errorMessage(reason)}`]);
@@ -411,10 +417,10 @@ export default function App() {
     const signal = episode.current.signal;
     const clips = preview ? (focusedClip ? [focusedClip] : []) : selection.clips.filter((clip) => selectedKeys.includes(clipKey(clip)));
     if (!clips.length) { setError("Selecione pelo menos um corte"); return; }
-    setBusy(true); setJobHistory([]); setCurrentJob(null); setError(null); if (!preview) setRendered([]); else setPreviewVideo(null); setRenderProgress(0);
+    setBusy(true); setProcessingKind("export"); setJobHistory([]); setCurrentJob(null); setError(null); if (!preview) setRendered([]); else setPreviewVideo(null); setRenderProgress(0);
     try {
       const visual = settings.framing.mode === "speaker_auto"
-        ? await prepareCameraDynamics() : visualArtifacts;
+        ? await prepareCameraDynamics(true) : visualArtifacts;
       signal.throwIfAborted();
       if (settings.framing.mode === "speaker_auto" && !visual) {
         throw new Error("A análise de câmeras não terminou. Tente novamente ou escolha Quadro inteiro com fundo desfocado.");
@@ -440,12 +446,16 @@ export default function App() {
         const clip = clips[index];
         const planJob = await api.startEditPlan(
           run.project_id, run.artifacts.transcript, run.artifacts.analysis,
-          clip.start_second, preview ? Math.min(clip.end_second,clip.start_second+10) : clip.end_second, clip.pacing,
+          clip.start_second, preview ? Math.min(clip.end_second,clip.start_second+10) : clip.end_second, clip.pacing, run.brief.maximum_seconds,
         );
         const planDone = await completeJob(planJob, signal, (job) => {
           if (!signal.aborted) setRenderProgress(((index + (job.progress || 0) / 200) / clips.length) * 100);
         });
         const planId = resultArtifact(planDone, "edit_plan_artifact_id");
+        if (!preview && planDone.result?.duration_limit_applied) {
+          const seconds = planDone.result.timeline_duration_seconds;
+          setWarnings(items => [...items, `“${clip.title}”: o final foi antecipado${typeof seconds === "number" ? ` para ${seconds.toFixed(1)}s` : ""} para respeitar o limite de ${run.brief.maximum_seconds}s sem cortar uma palavra. Confira o fechamento na prévia.`]);
+        }
         let cameraPlanId: string | undefined;
         if (visual && (settings.framing.mode === "speaker_auto" || reuseReactions)) {
           try {
@@ -539,8 +549,8 @@ export default function App() {
       />}
       {screen === "export" && run && <CameraDynamicsPanel projectId={run.project_id} artifactId={visualArtifacts?.identity} identityIndex={identityIndex} interviewerIdentityId={interviewerIdentityId} busy={visualBusy || busy} message={visualMessage} onPrepare={() => void prepareCameraDynamics()} onSelect={(identityId) => void selectInterviewer(identityId)}/>}
 </details>
-</fieldset><aside className="export-preview"><LivePreview settings={{...settings,headline:{...settings.headline,text:focusedClip ? headlines[clipKey(focusedClip)]?.trim() || focusedClip.headline || focusedClip.title : ""}}} image={focusedClip ? api.sourcePreviewUrl(run.project_id,run.source_asset_id,focusedClip.start_second+1) : undefined}/></aside></div>{(busy || currentJob) && <JobProgress job={currentJob} history={jobHistory} progress={visualBusy ? visualProgress : renderProgress} label={busy ? visualBusy ? visualMessage : currentJob?.message || "Preparando exportação" : "Último processamento"} busy={busy || visualBusy}/>}<div className="clip-preview-actions"><div className="export-actionbar"><button className="btn primary simple-primary" disabled={busy || visualBusy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button><button className="btn secondary" disabled={busy || visualBusy || !focusedClip} onClick={()=>void renderSelected(true)}>Gerar prévia curta (~10 s)</button></div><p>Duração aproximada para respeitar o fechamento da fala. Usa legenda corrigida, enquadramento e áudio da exportação. Mudanças nos ajustes exigem nova prévia.</p>{previewVideo && <div><h3>Prévia · {previewVideo.title}</h3><video controls src={previewVideo.url}/></div>}</div>{rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}</section>}
-      {screen === "export" && warnings.length > 0 && <aside className="simple-warnings" role="status" aria-label="Avisos de câmera"><b>Avisos de câmera</b>{warnings.map((warning, index) => <p key={index}>{warning}</p>)}</aside>}
+</fieldset><aside className="export-preview"><LivePreview settings={{...settings,headline:{...settings.headline,text:focusedClip ? headlines[clipKey(focusedClip)]?.trim() || focusedClip.headline || focusedClip.title : ""}}} image={focusedClip ? api.sourcePreviewUrl(run.project_id,run.source_asset_id,focusedClip.start_second+1) : undefined}/></aside></div>{(busy || currentJob) && <JobProgress job={currentJob} history={jobHistory} progress={processingKind === "visual" || visualBusy ? visualProgress : renderProgress} completed={processingKind === "visual" ? visualComplete : renderProgress === 100} label={processingKind === "visual" ? visualComplete ? "Análise de câmeras concluída. Você pode continuar." : visualMessage : busy ? currentJob?.message || "Preparando exportação" : renderProgress === 100 ? "Exportação concluída" : "Exportação interrompida"} busy={busy || visualBusy}/>}<div className="clip-preview-actions"><div className="export-actionbar"><button className="btn primary simple-primary" disabled={busy || visualBusy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button><button className="btn secondary" disabled={busy || visualBusy || !focusedClip} onClick={()=>void renderSelected(true)}>Gerar prévia curta (~10 s)</button></div><p>Duração aproximada para respeitar o fechamento da fala. Usa legenda corrigida, enquadramento e áudio da exportação. Mudanças nos ajustes exigem nova prévia.</p>{previewVideo && <div><h3>Prévia · {previewVideo.title}</h3><video controls src={previewVideo.url}/></div>}</div>{rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}</section>}
+      {screen === "export" && warnings.length > 0 && <aside className="simple-warnings" role="status" aria-label="Avisos da exportação"><b>Avisos da exportação</b>{warnings.map((warning, index) => <p key={index}>{warning}</p>)}</aside>}
       {draftError && <p role="alert">{draftError}</p>}
       {error && <div className="simple-error" role="alert"><b>Não deu certo ainda</b><p>{error}</p><button onClick={() => setError(null)}>Fechar</button></div>}
     </main>

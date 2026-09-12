@@ -87,3 +87,11 @@ confirmado, preserve exatamente o nome fornecido em brief.primary_subject,
 inclusive “Dayon”; não o substitua por uma variante da transcrição como “Dayan”.
 Isso não confirma identidade vocal: mantenha a incerteza de atribuição quando
 faltar evidência. Evidências citadas devem continuar fiéis à transcrição.
+
+## Duração máxima obrigatória
+
+`brief.maximum_seconds` é um teto: tanto `end_second - start_second` como
+`estimated_duration` devem respeitá-lo. O editor atual resolve cortes dentro
+dessa janela; não conte com a remoção futura de trechos de `approximate_edl`
+para justificar uma janela maior. Escolha começo e conclusão completos dentro
+do limite. Retorne menos cortes quando faltar material adequado.

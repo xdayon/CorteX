@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from cortex.domain.models import StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
 from cortex.edit.boundary import energy_track_from_analysis, snap_segments_to_scene_cuts
 from cortex.edit.planner import (
+    limit_timeline_duration,
     plan_safe_segments,
     protect_segment_boundaries,
     resolve_jl_cuts,
@@ -86,11 +88,19 @@ class EditPlanService:
         scene_index_artifact: StageArtifact | None = None,
         jl_cut: bool | None = None,
         max_jl_offset_seconds: float | None = None,
+        maximum_seconds: float | None = None,
     ) -> dict:
         if should_cancel():
             raise EditPlanJobCancelled()
         if end <= start:
             raise EditPlanPreconditionError("end deve ser maior que start")
+        start, end = float(start), float(end)
+        if maximum_seconds is not None and (
+            not math.isfinite(maximum_seconds) or maximum_seconds <= 0
+        ):
+            raise EditPlanPreconditionError("maximum_seconds deve ser positivo e finito")
+        if maximum_seconds is not None:
+            maximum_seconds = float(maximum_seconds)
         if analysis_artifact.stage != "analysis":
             raise EditPlanPreconditionError("artifact informado não é um AnalysisArtifact")
         if transcript_artifact.project_id != analysis_artifact.project_id:
@@ -178,6 +188,9 @@ class EditPlanService:
                 "requested_by": requested_by,
             },
         }
+        if maximum_seconds is not None:
+            hash_payload["maximum_seconds"] = maximum_seconds
+            hash_payload["duration_limit_version"] = 1
         # Absent a scene_index, the hash payload — and thus the cache key —
         # is identical to before this gate: EDLs stay byte-for-byte the same
         # when scene snapping does not participate.
@@ -197,7 +210,9 @@ class EditPlanService:
         )
         if cached is not None:
             progress_cb(100.0, "Plano de edição em cache reutilizado")
-            return {"cached": True, "edit_plan_artifact_id": cached.id, "edit_plan_path": cached.path, "schema_version": cached.schema_version}
+            return {"cached": True, "edit_plan_artifact_id": cached.id, "edit_plan_path": cached.path, "schema_version": cached.schema_version,
+                    "duration_limit_applied": cached.metadata.get("duration_limit_applied", False),
+                    "timeline_duration_seconds": cached.metadata.get("timeline_duration_seconds")}
 
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -240,6 +255,17 @@ class EditPlanService:
             quality = {**quality, "issues": [*quality["issues"], *scene_issues]}
 
         jl_counts = {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 0}
+        duration_issues = []
+        if maximum_seconds is not None:
+            try:
+                segments, duration_issues = limit_timeline_duration(
+                    segments, words, maximum_seconds, resolved_profile, analysis.vad_intervals,
+                )
+            except ValueError as exc:
+                raise EditPlanPreconditionError(str(exc)) from exc
+            quality = {**quality, "issues": [*quality["issues"], *duration_issues]}
+            if duration_issues:
+                diagnostics = {**diagnostics, "cuts": max(0, len(segments) - 1)}
         if effective_jl_enabled and not quality["degraded"]:
             if should_cancel():
                 raise EditPlanJobCancelled()
@@ -288,6 +314,7 @@ class EditPlanService:
             scene_index_artifact_id=scene_index_artifact.id if scene_index_artifact is not None else None,
             input_hash=input_hash, clip_start=round(start, 4), clip_end=round(end, 4),
             profile=resolved_profile.name,
+            maximum_seconds=maximum_seconds,
             segments=[_segment_to_schema(segment) for segment in segments],
             timeline_duration_seconds=round(
                 timeline_duration(segments, resolved_profile.crossfade), 4
@@ -328,7 +355,11 @@ class EditPlanService:
                 "requested_jl": jl_cut,
                 "effective_jl": effective_jl_enabled,
                 "effective_max_jl_offset_seconds": round(effective_max_jl_offset, 4),
+                "maximum_seconds": maximum_seconds,
+                "duration_limit_applied": bool(duration_issues),
+                "timeline_duration_seconds": document.timeline_duration_seconds,
             },
         ))
         progress_cb(100.0, "Plano de edição concluído")
-        return {"cached": False, "edit_plan_artifact_id": artifact.id, "edit_plan_path": artifact.path, "schema_version": artifact.schema_version}
+        return {"cached": False, "edit_plan_artifact_id": artifact.id, "edit_plan_path": artifact.path, "schema_version": artifact.schema_version,
+                "duration_limit_applied": bool(duration_issues), "timeline_duration_seconds": document.timeline_duration_seconds}

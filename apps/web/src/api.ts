@@ -222,6 +222,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  diarizationStatus: () => request<{ready:boolean;runtime_installed:boolean;token_configured:boolean;device:string;missing:string[];model_url:string}>("/api/v1/diarization-status"),
   diarizeEpisode: (id:string) => request<ApiJob>(`/api/v1/episodes/${id}/diarization`, {method:"POST"}),
   episodeVoices: (id:string, artifact:string) => request<{turns:Array<{start:number;end:number;speaker:string}>}>(`/api/v1/episodes/${id}/diarization/${artifact}`),
   selectEpisodeVoice: (id:string, artifact_id:string, speaker:string) => request<EpisodeEntry>(`/api/v1/episodes/${id}/voice`,{method:"PUT",body:JSON.stringify({artifact_id,speaker})}),
@@ -265,10 +266,10 @@ export const api = {
   transcript: (projectId: string, artifactId: string, signal?: AbortSignal) =>
     request<{document:{segments:Array<{words:TranscriptWord[]}>}}>(`/api/v1/projects/${projectId}/transcripts/${artifactId}`, {signal}),
 
-  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string) =>
+  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string, maximum_seconds?: number) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/edit-plans`, {
       method: "POST",
-      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, start, end, profile }),
+      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, start, end, profile, maximum_seconds }),
     }),
 
   startSceneIndex: (projectId: string, sourceAssetId: string, sourceRanges?: Array<{start:number;end:number}>) =>

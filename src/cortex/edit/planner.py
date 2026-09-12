@@ -283,3 +283,62 @@ def timeline_duration(segments: list[dict], default_crossfade: float = 0.0) -> f
         transition = segment.get("transition") or {}
         overlap += max(0.0, float(transition.get("duration", default_crossfade) or 0.0))
     return max(0.0, total - overlap)
+
+
+def limit_timeline_duration(
+    segments: list[dict], words: list[TranscriptWord], maximum_seconds: float,
+    profile: EditingProfile, vad_intervals: list[VadInterval] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Keep a prefix within the ceiling, ending outside padded word/VAD spans.
+
+    This runs after scene/boundary repairs and before J/L offsets. It never
+    relies on the model's estimated duration, nor on the source envelope length
+    when silence removal has already made the actual timeline short enough.
+    """
+    if not math.isfinite(maximum_seconds) or maximum_seconds <= 0:
+        raise ValueError("maximum_seconds deve ser positivo e finito")
+    if timeline_duration(segments) <= maximum_seconds:
+        return segments, []
+    forbidden = _forbidden_zones(words, vad_intervals)
+    kept: list[dict] = []
+    for original in segments:
+        segment = dict(original)
+        if timeline_duration([*kept, segment]) <= maximum_seconds:
+            kept.append(segment)
+            continue
+        start = float(segment["start"])
+        # Include the incoming transition's overlap in the remaining budget.
+        prefix = timeline_duration([*kept, {"start": start, "end": start}])
+        ceiling = min(float(segment["end"]), start + maximum_seconds - prefix)
+        candidates = [ceiling]
+        candidates.extend(word.end + profile.post_roll for word in words
+                          if start < word.end <= ceiling)
+        candidates.extend(interval.end + profile.post_roll for interval in vad_intervals or []
+                          if start < interval.end <= ceiling)
+        safe = [math.floor(value * 10000) / 10000 for value in candidates
+                if start + .5 <= value <= ceiling]
+        safe = [value for value in safe if not any(left < value < right for left, right in forbidden)]
+        if safe:
+            segment["end"] = max(safe)
+            if "video_end" in segment:
+                segment["video_end"] = segment["end"]
+            if "audio_end" in segment:
+                segment["audio_end"] = segment["end"]
+            kept.append(segment)
+        break
+    if not kept:
+        raise ValueError(
+            f"Não há final de fala seguro dentro de {maximum_seconds:g}s. "
+            "Escolha um trecho menor ou gere outra sugestão; nenhuma palavra foi truncada."
+        )
+    kept[-1].pop("transition", None)
+    for index, segment in enumerate(kept):
+        segment["timeline_order"] = index
+    if timeline_duration(kept) > maximum_seconds + 1e-6:
+        raise ValueError("plano excedeu maximum_seconds após limitar a duração")
+    return kept, [{
+        "severity": "warning", "code": "maximum_duration_trimmed",
+        "segment": len(kept) - 1, "boundary": "out",
+        "snapped_from": float(segments[-1]["end"]), "snapped_to": float(kept[-1]["end"]),
+        "delta_ms": round((float(kept[-1]["end"]) - float(segments[-1]["end"])) * 1000, 3),
+    }]

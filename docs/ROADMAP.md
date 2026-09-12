@@ -27,6 +27,11 @@ Gates anteriores estão em [history](history/ROADMAP-before-2026-09-10.md).
 - [x] Posição vertical do vídeo sobre Gaussian blur, separada da posição da legenda.
 - [x] Progresso real de frames Remotion e tempo codificado FFmpeg; detalhes das tarefas.
 - [x] Automático preserva planos abertos/duplos; diagnóstico explícito de identidade incerta.
+- [x] Legenda em até duas linhas e área fixa compartilhada; zoom preserva janela do vídeo.
+- [x] Teto de duração validado na seleção e na EDL; conclusão visual mostra 100%.
+- [x] Habilitação de voz explícita na UI; adapter CPU validado em amostra real de 90s.
+
+Regressões e limites: [export-corrections](evidence/2026-09-11-export-corrections.md).
 
 ## P0 — confiabilidade antes de mais efeitos
 
@@ -59,6 +64,10 @@ Nenhuma associação automática entre vozes de episódios diferentes.
 
 ## P1 — custo previsível e revisão profissional
 
+- [ ] Medir e reduzir composição tipográfica: overlays restritos às regiões úteis,
+  estados estáticos reutilizados e paridade de animação/QA. Lote real anterior:
+  ~129min entre criação dos renders e persistência de overlays; não atribuir todo
+  esse tempo ao encode NVENC nem confundir identificação de voz com visão.
 - [ ] Decoder compartilhado por janela para faces/qualidade/speaker, frames reduzidos.
 - [ ] Cache por janelas reutilizáveis; acrescentar corte reaproveita a cobertura existente.
 - [ ] Limitar amostras de identidade, eliminar materialização O(n²) e permitir cancelamento.

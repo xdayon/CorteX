@@ -12,6 +12,10 @@ em `.venv-diarization`. Não é reconhecimento facial nem clonagem de voz.
    comandos manuais precisam receber a variável. Nunca colocar o token em Git,
    argumentos do processo, screenshots ou logs. `CORTEX_DIARIZATION_PYTHON` permite
    apontar explicitamente para outro ambiente preparado.
+   Depois de alterar `.env`, executar `systemctl --user restart cortex.service`
+   quando não houver tarefa em andamento. A UI oferece rechecagem e mostra
+   separadamente ambiente instalado e credencial disponível. Login salvo padrão
+   do Hugging Face também é aceito; token não é exibido nem enviado ao navegador.
 4. Na biblioteca, baixar episódio, indicar quantidade de participantes quando
    conhecida, separar vozes, ouvir amostras e confirmar a voz de Dayon.
 5. Iniciar uma nova seleção editorial depois da confirmação. Sugestões anteriores
@@ -20,9 +24,15 @@ em `.venv-diarization`. Não é reconhecimento facial nem clonagem de voz.
 
 A inferência é local, mas o primeiro download exige rede/autorização do modelo.
 O status de readiness atual confirma executável/token, não mede precisão nem
-prova que os pesos estejam acessíveis. Não foi validado desempenho em podcast
-longo nesta revisão. O job usa CPU explicitamente e falhas não viram identificação
+prova que os pesos estejam acessíveis. Em 2026-09-11, a amostra de 90s do host
+produziu 6 turnos/2 vozes em 84,54s CPU. Não comprova acurácia nem desempenho em
+podcast longo. O job usa CPU explicitamente e falhas não viram identificação
 visual silenciosa. Detalhes de timeout/model revision/erros ainda estão no roadmap.
+
+Pyannote 4.0.6 é chamado pelo batch explícito de um arquivo, pois `__call__`
+retorna gerador nessa versão. Hooks convertem contadores NumPy para JSON nativo.
+O resultado persistido libera as amostras na UI; é necessário ouvi-las e marcar
+“Esta voz é minha”. A referência não é inferida pelo nome “Dayon” no briefing.
 
 A seleção exige maioria temporal de Dayon no envelope e na união dos trechos
 editoriais, tratando overlap conservadoramente. `voice_validation` registra as

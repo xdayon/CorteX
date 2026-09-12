@@ -148,6 +148,7 @@ class EditPlanRequest(BaseModel):
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     profile: str = "auto"
+    maximum_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     # None = use config.edit.jl_cut_enabled_default (currently False; the
     # renderer honors J/L offsets since Gate 4 Session H, but the feature
     # stays opt-in — pass True explicitly to request it for this plan).
@@ -356,7 +357,7 @@ def create_app(config: CortexConfig | None = None):
             from cortex.diarize.service import readiness
             state = readiness()
             if not state["runtime_installed"] or not state["token_configured"]:
-                raise ValueError("Configure o ambiente CPU e HF_TOKEN conforme docs/DIARIZATION.md")
+                raise ValueError(" ".join(state.get("missing", [])) or "Diarização indisponível; confira a configuração de vozes.")
             active = next((j for j in detail["jobs"] if j["type"] == "diarization" and j["status"] in {"running", "queued"}), None)
             if active:
                 return jobs.get(active["id"])
@@ -1460,6 +1461,7 @@ def create_app(config: CortexConfig | None = None):
                 "start": request.start,
                 "end": request.end,
                 "profile": request.profile,
+                "maximum_seconds": request.maximum_seconds,
                 "jl_cut": request.jl_cut,
                 "max_jl_offset_seconds": request.max_jl_offset_seconds,
             },

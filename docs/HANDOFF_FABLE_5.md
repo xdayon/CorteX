@@ -36,6 +36,10 @@ modelo editorial são configurações independentes.
   EDL e inclui J/L-cut/reaction. Janela única ainda inclui gaps internos.
 - Pyannote community-1 CPU opcional em `.venv-diarization`; voz confirmada na
   biblioteca participa da seleção. Voz/rosto ainda não têm identidade unificada.
+- Legenda medida em até duas linhas com área fixa; zoom mantém a janela do vídeo.
+  Teto do brief validado na seleção e na EDL; finais antecipados ficam explícitos.
+  Conclusão visual mantém 100%. Evidência e regressões em
+  [export-corrections](evidence/2026-09-11-export-corrections.md).
 - Validação de voz no envelope + união da EDL editorial; **planner ainda não
   consome approximate_edl e não revalida predominância no áudio final**.
 - Build Studio servido pela API no loopback, serviço Linux e atalho instaláveis.
@@ -46,12 +50,17 @@ modelo editorial são configurações independentes.
 Dell G7, GTX 1060 Max-Q 6 GB/Pascal. Smoke host em 2026-09-10 confirmou
 H.264 NVENC e CTranslate2 CUDA com `int8`, `int8_float32`, `float32`.
 Não solicitar float16 nem AV1 NVENC. Encode NVENC não prova decode NVDEC.
-Episódio longo, diarização real e qualidade editorial continuam exigindo benchmark
-específico; confira [evidência](evidence/2026-09-10-architecture-review.md).
+Amostra real de diarização: 90s → 6 turnos/2 vozes em 84,54s CPU; não comprova
+acurácia nem atribui Dayon. Token local habilitado; UI pede confirmação humana.
+Adapter 4.0.6 corrigido para batch gerador e contadores NumPy. Episódio inteiro e
+qualidade editorial continuam exigindo benchmark específico; confira
+[evidência](evidence/2026-09-10-architecture-review.md).
 
 ## Próximo gate
 
 Os ajustes de UX estão em [evidência](evidence/2026-09-11-studio-experience.md).
+Trabalhar diretamente na `main`, conforme pedido do usuário. Branches anteriores
+devem permanecer integradas; não restaurar versões antigas de frontend/pipeline.
 Executar P0 do [ROADMAP](ROADMAP.md): export batch + revisão persistidos no
 servidor, retomada independente do navegador e transição de workflow idempotente.
 Separar extração de módulos de mudança de comportamento. Antes de editar, leia

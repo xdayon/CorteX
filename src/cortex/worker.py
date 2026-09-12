@@ -778,6 +778,7 @@ def run_edit_plan_job(
             start=float(start),
             end=float(end),
             profile=job.payload.get("profile"),
+            maximum_seconds=job.payload.get("maximum_seconds"),
             progress_cb=progress_cb,
             should_cancel=should_cancel,
             scene_index_artifact=scene_index_artifact,

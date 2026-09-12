@@ -550,13 +550,12 @@ def _filtergraph(
             background = f"[{label_name}_bg]"
             foreground = f"[{label_name}_fg]"
             if punch is not None:
-                # The fitted foreground does not fill both canvas dimensions
-                # for landscape sources. Zoom that fitted image itself and let
-                # the centered overlay clip only dimensions that exceed canvas.
+                # Crop the source inside the fitted video window. Zoom must not
+                # expand that window into the caption area selected in preview.
                 foreground_chain = (
-                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                    f"scale=trunc(iw*{punch.effective_scale}/2)*2:"
-                    f"trunc(ih*{punch.effective_scale}/2)*2,setsar=1"
+                    f"crop=trunc(iw/{punch.effective_scale}/2)*2:"
+                    f"trunc(ih/{punch.effective_scale}/2)*2,"
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,setsar=1"
                 )
             else:
                 foreground_chain = (
@@ -1496,6 +1495,7 @@ class RenderService:
             "overlay_input_hash": overlay_artifact.input_hash if overlay_artifact else None,
             "overlay_sha256": overlay_manifest.output_sha256 if overlay_manifest else None,
             "safe_zone_version": SAFE_ZONES_VERSION,
+            "composition_version": 2,
             "safe_zone_canvas": canvas_key,
             "technical_quality_version": TECHNICAL_QUALITY_VERSION,
         }
