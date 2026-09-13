@@ -7,7 +7,7 @@ import { FramingReview } from "./FramingReview";
 import type { CameraScene } from "./api";
 import { restoreEditorDraft, type EditorDraft, type VisualArtifacts } from "./editorDraft";
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from "react";
-import { api, type ApiJob, type IdentityIndexDocument, type RenderSettings, type SuggestedClip, type SuggestionSelection, type WorkflowRun } from "./api";
+import { api, type ApiJob, type ExportBatch, type IdentityIndexDocument, type RenderSettings, type SuggestedClip, type SuggestionSelection, type WorkflowRun } from "./api";
 
 type IconName = "check" | "chevron" | "link" | "play" | "spark" | "upload" | "user";
 
@@ -173,8 +173,22 @@ export default function App() {
   const [interviewerIdentityId, setInterviewerIdentityId] = useState("");
   const [reuseReactions, setReuseReactions] = useState(false);
   const [visualArtifacts, setVisualArtifacts] = useState<VisualArtifacts | null>(null);
+  const [, setRevisionId] = useState("");
+  const [activeBatch, setActiveBatch] = useState<ExportBatch | null>(null);
 
   useEffect(() => { setPreviewVideo(null); }, [settings, captionEdits, headlines, focusedKey]);
+
+  useEffect(() => {
+    if (busy || !run || !activeBatch || !["queued","running"].includes(activeBatch.status)) return;
+    const timer = window.setTimeout(() => {
+      void api.exportBatch(run.project_id,activeBatch.id).then(batch=>{
+        setActiveBatch(batch);
+        const finished = batch.items.filter(item=>["succeeded","failed","cancelled"].includes(item.status)).length;
+        setRenderProgress((finished/batch.items.length)*100);
+      }).catch(reason=>setWarnings(items=>[...items,`Não foi possível atualizar o lote: ${errorMessage(reason)}`]));
+    },1200);
+    return () => window.clearTimeout(timer);
+  },[busy,run,activeBatch]);
 
   useEffect(() => {
     if (!run || !selection || draftRunKey !== `${run.project_id}:${run.id}`) return;
@@ -184,6 +198,23 @@ export default function App() {
       setDraftError("");
     } catch { setDraftError("Não foi possível salvar os ajustes neste navegador. Libere espaço antes de fechar a página."); }
   }, [run, selection, draftRunKey, settings, selectedKeys, captionEdits, headlines, focusedKey, rendered, reuseReactions, visualArtifacts]);
+
+  useEffect(() => {
+    if (!run || !selection || draftRunKey !== `${run.project_id}:${run.id}`) return;
+    if (!selectedKeys.length || !run.artifacts.suggestion) return;
+    const timer = window.setTimeout(() => {
+      const selected = selection.clips.filter(clip => selectedKeys.includes(clipKey(clip)))
+        .map(clip => ({...clip,key:clipKey(clip)}));
+      void api.saveRevision(run.project_id,run.id,{
+        selection_artifact_id:run.artifacts.suggestion,selected_clips:selected,
+        render_settings:settings,caption_edits:captionEdits,headlines,
+        visual_artifacts:visualArtifacts || {},interviewer_identity_id:interviewerIdentityId || undefined,
+        reuse_reactions:reuseReactions,
+      }).then(saved => { if (saved) { setRevisionId(saved.id); setDraftError(""); } })
+        .catch(reason => setDraftError(`Ajustes salvos neste navegador, mas não no servidor: ${errorMessage(reason)}`));
+    },500);
+    return () => window.clearTimeout(timer);
+  }, [run, selection, draftRunKey, settings, selectedKeys, captionEdits, headlines, reuseReactions, visualArtifacts, interviewerIdentityId]);
 
   function trackJob(job: ApiJob) {
     setCurrentJob(job);
@@ -215,7 +246,7 @@ export default function App() {
     setError(null); setWarnings([]); setUploadProgress(0); setRenderProgress(0);
     setSettings(defaultRenderSettings); setIdentityIndex(null); setVisualArtifacts(null);
     setInterviewerIdentityId(""); setReuseReactions(false); setVisualProgress(0); setVisualMessage(""); setCameraScenes([]);
-    setVisualComplete(false); setProcessingKind("visual");
+    setVisualComplete(false); setProcessingKind("visual"); setRevisionId(""); setActiveBatch(null);
   }
 
   function resetEpisode() {
@@ -245,7 +276,7 @@ export default function App() {
     setRun(next);
     if (next.status === "failed") throw new Error(next.error || "O processamento falhou");
     if (next.status === "cancelled") throw new Error("O processamento foi cancelado");
-    if (next.status !== "ready_for_review") return;
+    if (!["ready_for_review","rendering","complete"].includes(next.status)) return;
     const artifactId = next.artifacts.suggestion;
     if (!artifactId) throw new Error("Processamento terminou sem sugestões persistidas");
     const envelope = await api.suggestion(next.project_id, artifactId);
@@ -258,6 +289,32 @@ export default function App() {
     setHeadlines(draft.headlines); setFocusedKey(draft.focusedKey); setRendered(draft.rendered);
     setReuseReactions(draft.reuseReactions);
 
+    let serverVisual = draft.visualArtifacts;
+    try {
+      const saved = await api.latestRevision(next.project_id,next.id);
+      signal.throwIfAborted();
+      const validKeys = new Set(result.clips.map(clipKey));
+      const savedKeys = saved.selected_clips.map(clip=>clip.key).filter(key=>validKeys.has(key));
+      setRevisionId(saved.id); setSettings(saved.render_settings); setSelectedKeys(savedKeys);
+      setCaptionEdits(saved.caption_edits); setHeadlines(saved.headlines);
+      setReuseReactions(saved.reuse_reactions);
+      setInterviewerIdentityId(saved.interviewer_identity_id || next.interviewer_identity_id || "");
+      serverVisual = Object.keys(saved.visual_artifacts).length ? saved.visual_artifacts as VisualArtifacts : serverVisual;
+    } catch { /* primeira revisão: mantém o draft local compatível */ }
+
+    try {
+      const batches = await api.exportBatches(next.project_id,next.id);
+      signal.throwIfAborted();
+      const latest = batches[0];
+      if (latest) {
+        setActiveBatch(latest);
+        const outputs = latest.items.filter(item=>item.status==="succeeded"&&item.render_artifact_id);
+        setRendered(outputs.map(item=>({title:item.title,
+          url:api.renderMediaUrl(next.project_id,item.render_artifact_id!),
+          subtitles:api.renderSubtitlesUrl(next.project_id,item.render_artifact_id!)})));
+      }
+    } catch { /* lote ainda inexistente */ }
+
     setScreen("review");
     const persistedVisual = {
       scene: next.artifacts.scene_index,
@@ -267,7 +324,7 @@ export default function App() {
       quality: next.artifacts.visual_quality,
       identity: next.artifacts.identity_index,
     };
-    const visual = Object.values(persistedVisual).every(Boolean) ? persistedVisual : draft.visualArtifacts;
+    const visual = Object.values(persistedVisual).every(Boolean) ? persistedVisual : serverVisual;
     if (visual) {
       try {
         const identities = await api.identityIndex(next.project_id, visual.identity);
@@ -428,6 +485,40 @@ export default function App() {
       if (reuseReactions && visual && visual.identity !== visualArtifacts?.identity) {
         throw new Error("A análise de pessoas foi atualizada. Confirme o entrevistador antes de reaproveitar reações.");
       }
+      if (!preview) {
+        const selected = clips.map(clip => ({...clip,key:clipKey(clip)}));
+        const revision = await api.saveRevision(run.project_id,run.id,{
+          selection_artifact_id:run.artifacts.suggestion,selected_clips:selected,
+          render_settings:settings,caption_edits:captionEdits,headlines,
+          visual_artifacts:visual || {},interviewer_identity_id:interviewerIdentityId || undefined,
+          reuse_reactions:reuseReactions,
+        });
+        if (revision) {
+          setRevisionId(revision.id);
+          let batch = await api.createExportBatch(
+            run.project_id,run.id,revision.id,`${run.id}:${crypto.randomUUID()}`,
+          );
+          setActiveBatch(batch);
+          while (["queued","running"].includes(batch.status)) {
+            const finished = batch.items.filter(item => ["succeeded","failed","cancelled"].includes(item.status)).length;
+            setRenderProgress((finished / batch.items.length) * 100);
+            await waitForPoll(signal);
+            batch = await api.exportBatch(run.project_id,batch.id,signal);
+            setActiveBatch(batch);
+          }
+          const completed = batch.items.filter(item => item.status === "succeeded" && item.render_artifact_id);
+          setRendered(completed.map(item => ({
+            title:item.title,url:api.renderMediaUrl(run.project_id,item.render_artifact_id!),
+            subtitles:api.renderSubtitlesUrl(run.project_id,item.render_artifact_id!),
+          })));
+          const failures = batch.items.filter(item => item.status === "failed");
+          if (failures.length) setWarnings(items => [...items,...failures.map(item => `“${item.title}”: ${item.error || "falha na exportação"}`)]);
+          if (!completed.length) throw new Error(batch.error || "Nenhum corte foi exportado");
+          setRenderProgress(100);
+          return;
+        }
+      }
+
       let reactionArtifactId: string | undefined;
       if (visual && interviewerIdentityId && reuseReactions) {
         try {
@@ -438,7 +529,7 @@ export default function App() {
           reactionArtifactId = resultArtifact(await completeJob(reactionJob, signal), "reaction_candidate_artifact_id");
         } catch (reason) {
           signal.throwIfAborted();
-          setWarnings((items) => [...items, `Render continuará sem reações: ${errorMessage(reason)}`]);
+          setWarnings(items=>[...items,`Render continuará sem reações: ${errorMessage(reason)}`]);
         }
       }
       for (let index = 0; index < clips.length; index += 1) {
@@ -520,7 +611,7 @@ export default function App() {
       }}/>}
       {screen === "new" && <section className="simple-page enter"><div className="simple-title"><span>01 · NOVO EPISÓDIO</span><h1>Do episódio aos cortes, em um clique.</h1><p>Envie o vídeo, escolha a duração e deixe o CorteX transcrever, analisar e encontrar os melhores momentos.</p></div><div className="simple-grid"><div className="simple-card source-card"><div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}><Icon name="upload"/> Arquivo</button><button className={sourceMode === "youtube" ? "active" : ""} onClick={() => setSourceMode("youtube")}><Icon name="link"/> YouTube</button></div>{sourceMode === "file" ? <label className={`dropzone ${file ? "has-file" : ""}`}><input type="file" accept="video/*,audio/*" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] || null)}/><Icon name={file ? "check" : "upload"} size={30}/><strong>{file?.name || "Solte o episódio aqui"}</strong><small>MP4, MOV, MKV, WebM, MP3 ou WAV</small></label> : <div className="simple-url"><Icon name="link"/><input value={youtube} onChange={(event) => setYoutube(event.target.value)} placeholder="https://youtube.com/watch?v=..."/></div>}</div><div className="simple-card settings-card"><h3>O que você quer receber</h3><Range label="Quantidade" value={count} min={1} max={25} onChange={setCount}/><Range label="Mínimo" value={minimum} min={15} max={180} suffix="s" onChange={(value) => { setMinimum(value); if (value > maximum) setMaximum(value); }}/><Range label="Máximo" value={maximum} min={15} max={180} suffix="s" onChange={(value) => { setMaximum(value); if (value < minimum) setMinimum(value); }}/><Field label="Protagonista dos cortes" hint="Orienta a IA; não reconhece a voz pelo nome"><input value={primarySubject} onChange={event => setPrimarySubject(event.target.value)}/></Field><p className="field-help">Para confirmar sua voz, use “Identificar a voz do Dayon” no episódio salvo na Biblioteca.</p><Toggle checked={newClipsOnly} onChange={setNewClipsOnly} label="Evitar trechos já sugeridos"/><Field label="Direção editorial" hint="Este pedido é enviado à IA para escolher os trechos"><textarea placeholder="Ex.: priorize minhas explicações sobre consciência; inclua a pergunta quando ajudar a entender; preserve o contexto e evite frases cortadas." value={instructions} onChange={(event) => setInstructions(event.target.value)}/></Field></div></div>{run && busy && <div className="simple-progress"><div><b>{run.message}</b><span>{Math.round(run.progress)}%</span></div><i><em style={{ width: `${run.progress}%` }}/></i><small>{uploadProgress > 0 && uploadProgress < 1 ? `Enviando · ${Math.round(uploadProgress * 100)}%` : "O processamento continua mesmo se você fechar esta tela."}</small></div>}<button className="btn primary simple-primary" disabled={busy || visualBusy || (sourceMode === "file" ? !file : !youtube)} onClick={() => void processEpisode()}><Icon name="spark"/> {busy ? "Processando episódio..." : "Processar episódio"}</button></section>}
       {screen === "review" && selection && run && <section className="simple-page enter"><div className="simple-title row"><div><span>02 · ESCOLHER CORTES</span><h1>{selection.clips.length} momentos encontrados.</h1><p>{selection.selection_notes}</p></div><button className="btn primary" disabled={!activeClips.length} onClick={() => setScreen("export")}>Editar {activeClips.length} selecionado{activeClips.length === 1 ? "" : "s"} <Icon name="chevron"/></button></div><div className="clip-grid">{selection.clips.map((clip) => { const key = clipKey(clip); const selected = selectedKeys.includes(key); return <article key={key} className={`simple-clip ${selected ? "selected" : ""}`} onClick={() => setSelectedKeys((items) => selected ? items.filter((item) => item !== key) : [...items, key])}><div className="clip-frame"><img src={api.sourcePreviewUrl(run.project_id, run.source_asset_id, clip.start_second + 1)} alt="Preview do corte"/><span>{timestamp(clip.estimated_duration)}</span><i>{selected ? <Icon name="check"/> : null}</i></div><div><span className="clip-rank">#{clip.rank} · {clip.primary_speaker}</span><h3>{clip.title}</h3><p>{clip.reasoning}</p><strong>{timestamp(clip.start_second)} — {timestamp(clip.end_second)}</strong></div></article>; })}</div></section>}
-      {screen === "export" && selection && run && <section className="simple-page enter"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Seu corte, do seu jeito.</h1><p>{activeClips.length} cortes selecionados · 1080 × 1920. Estilo aplicado ao lote; headline e correções de legenda são individuais.</p><p>Mantenha esta tela aberta para enviar todos os cortes à fila. Cada render enviado continua no servidor.</p></div><div className="export-layout"><fieldset disabled={busy || visualBusy} className="export-controls simple-card"><legend className="sr-only">Ajustes da exportação</legend><h3>Enquadramento</h3><Field label="Composição"><select value={settings.framing.mode} disabled={busy || visualBusy} onChange={(event) => setSettings((value) => ({ ...value, framing: { ...value.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } }))}><option value="speaker_auto">Automático por pessoa e câmera</option><option value="blurred_background">Quadro inteiro com fundo desfocado</option><option value="vertical_crop">Recorte central</option></select></Field><p>{settings.framing.mode === "blurred_background" ? "Mantém o vídeo inteiro sobre um fundo com Gaussian blur. Ideal para mostrar a mesa e todos os participantes." : settings.framing.mode === "speaker_auto" ? "Preserva cenas abertas e acompanha os closes existentes. Analisa somente os cortes selecionados com margem de 3 segundos e reutiliza o cache." : "Preenche a tela vertical pelo centro do vídeo. As laterais ficam fora do quadro."}</p>{settings.framing.mode === "blurred_background" && <Range label="Posição vertical do vídeo" value={Math.round((settings.framing.position_y ?? .5)*100)} min={0} max={100} suffix="%" onChange={value => setSettings(s => ({...s, framing:{...s.framing,position_y:value/100}}))}/>}<div className="toggles"><Toggle checked={settings.framing.punch_in.enabled} onChange={(enabled) => setSettings((value) => ({ ...value, framing: { ...value.framing, punch_in: { ...value.framing.punch_in, enabled } } }))} label="Zoom discreto alternado (1,15×)"/></div><p className="field-help">O zoom alterna uma ampliação fixa entre trechos separados por cortes de pausa. Não é um movimento contínuo; um trecho único pode ficar sem zoom. Planos abertos são preservados no automático.</p>{reuseReactions && <p>{interviewerIdentityId ? "Usa apenas candidatos validados do entrevistador, preservando o áudio da sua fala." : "Analise as pessoas e selecione o entrevistador abaixo para habilitar o reaproveitamento."}</p>}{focusedClip && <><Field label="Corte em revisão"><select disabled={busy || visualBusy} value={clipKey(focusedClip)} onChange={e=>{setFocusedKey(e.target.value);setPreviewVideo(null);}}>{activeClips.map(c=><option key={clipKey(c)} value={clipKey(c)}>{c.title}</option>)}</select></Field><TranscriptEditor projectId={run.project_id} artifactId={run.artifacts.transcript} clip={focusedClip} corrections={captionEdits[clipKey(focusedClip)] || []} disabled={busy || visualBusy} onChange={edits=>{
+      {screen === "export" && selection && run && <section className="simple-page enter"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Seu corte, do seu jeito.</h1><p>{activeClips.length} cortes selecionados · 1080 × 1920. Estilo aplicado ao lote; headline e correções de legenda são individuais.</p><p>Depois que o lote for enviado, o processamento continua no servidor mesmo se você fechar esta tela.</p></div><div className="export-layout"><fieldset disabled={busy || visualBusy} className="export-controls simple-card"><legend className="sr-only">Ajustes da exportação</legend><h3>Enquadramento</h3><Field label="Composição"><select value={settings.framing.mode} disabled={busy || visualBusy} onChange={(event) => setSettings((value) => ({ ...value, framing: { ...value.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } }))}><option value="speaker_auto">Automático por pessoa e câmera</option><option value="blurred_background">Quadro inteiro com fundo desfocado</option><option value="vertical_crop">Recorte central</option></select></Field><p>{settings.framing.mode === "blurred_background" ? "Mantém o vídeo inteiro sobre um fundo com Gaussian blur. Ideal para mostrar a mesa e todos os participantes." : settings.framing.mode === "speaker_auto" ? "Preserva cenas abertas e acompanha os closes existentes. Analisa somente os cortes selecionados com margem de 3 segundos e reutiliza o cache." : "Preenche a tela vertical pelo centro do vídeo. As laterais ficam fora do quadro."}</p>{settings.framing.mode === "blurred_background" && <Range label="Posição vertical do vídeo" value={Math.round((settings.framing.position_y ?? .5)*100)} min={0} max={100} suffix="%" onChange={value => setSettings(s => ({...s, framing:{...s.framing,position_y:value/100}}))}/>}<div className="toggles"><Toggle checked={settings.framing.punch_in.enabled} onChange={(enabled) => setSettings((value) => ({ ...value, framing: { ...value.framing, punch_in: { ...value.framing.punch_in, enabled } } }))} label="Zoom discreto alternado (1,15×)"/></div><p className="field-help">O zoom alterna uma ampliação fixa entre trechos separados por cortes de pausa. Não é um movimento contínuo; um trecho único pode ficar sem zoom. Planos abertos são preservados no automático.</p>{reuseReactions && <p>{interviewerIdentityId ? "Usa apenas candidatos validados do entrevistador, preservando o áudio da sua fala." : "Analise as pessoas e selecione o entrevistador abaixo para habilitar o reaproveitamento."}</p>}{focusedClip && <><Field label="Corte em revisão"><select disabled={busy || visualBusy} value={clipKey(focusedClip)} onChange={e=>{setFocusedKey(e.target.value);setPreviewVideo(null);}}>{activeClips.map(c=><option key={clipKey(c)} value={clipKey(c)}>{c.title}</option>)}</select></Field><TranscriptEditor projectId={run.project_id} artifactId={run.artifacts.transcript} clip={focusedClip} corrections={captionEdits[clipKey(focusedClip)] || []} disabled={busy || visualBusy} onChange={edits=>{
  const next={...captionEdits,[clipKey(focusedClip)]:edits}; setCaptionEdits(next); setPreviewVideo(null);
 }}/></>}      {screen === "export" && run && focusedClip && <section className="headline-editor">
         <h3>Headline deste corte</h3><Toggle checked={settings.headline.enabled} onChange={(enabled) => setSettings(value => ({...value, headline:{...value.headline,enabled}}))} label="Mostrar headline"/>
@@ -548,7 +639,7 @@ export default function App() {
         onChange={(scene_overrides) => setSettings((value) => ({ ...value, framing: { ...value.framing, scene_overrides } }))}
       />}
       {screen === "export" && run && <CameraDynamicsPanel projectId={run.project_id} artifactId={visualArtifacts?.identity} identityIndex={identityIndex} interviewerIdentityId={interviewerIdentityId} busy={visualBusy || busy} message={visualMessage} onPrepare={() => void prepareCameraDynamics()} onSelect={(identityId) => void selectInterviewer(identityId)}/>}
-</details>
+</details>{activeBatch && <div className="field-help"><p>Lote no servidor: {activeBatch.items.filter(item=>item.status==="succeeded").length}/{activeBatch.items.length} concluídos · {activeBatch.status}</p>{["queued","running"].includes(activeBatch.status)&&<button className="btn secondary" disabled={busy} onClick={()=>void api.cancelExportBatch(activeBatch.project_id,activeBatch.id).then(setActiveBatch).catch(reason=>setError(errorMessage(reason)))}>Cancelar lote</button>}{activeBatch.items.some(item=>item.status==="failed")&&<button className="btn secondary" disabled={busy} onClick={()=>void api.retryExportBatch(activeBatch.project_id,activeBatch.id).then(setActiveBatch).catch(reason=>setError(errorMessage(reason)))}>Repetir falhas</button>}</div>}
 </fieldset><aside className="export-preview"><LivePreview settings={{...settings,headline:{...settings.headline,text:focusedClip ? headlines[clipKey(focusedClip)]?.trim() || focusedClip.headline || focusedClip.title : ""}}} image={focusedClip ? api.sourcePreviewUrl(run.project_id,run.source_asset_id,focusedClip.start_second+1) : undefined}/></aside></div>{(busy || currentJob) && <JobProgress job={currentJob} history={jobHistory} progress={processingKind === "visual" || visualBusy ? visualProgress : renderProgress} completed={processingKind === "visual" ? visualComplete : renderProgress === 100} label={processingKind === "visual" ? visualComplete ? "Análise de câmeras concluída. Você pode continuar." : visualMessage : busy ? currentJob?.message || "Preparando exportação" : renderProgress === 100 ? "Exportação concluída" : "Exportação interrompida"} busy={busy || visualBusy}/>}<div className="clip-preview-actions"><div className="export-actionbar"><button className="btn primary simple-primary" disabled={busy || visualBusy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button><button className="btn secondary" disabled={busy || visualBusy || !focusedClip} onClick={()=>void renderSelected(true)}>Gerar prévia curta (~10 s)</button></div><p>Duração aproximada para respeitar o fechamento da fala. Usa legenda corrigida, enquadramento e áudio da exportação. Mudanças nos ajustes exigem nova prévia.</p>{previewVideo && <div><h3>Prévia · {previewVideo.title}</h3><video controls src={previewVideo.url}/></div>}</div>{rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}</section>}
       {screen === "export" && warnings.length > 0 && <aside className="simple-warnings" role="status" aria-label="Avisos da exportação"><b>Avisos da exportação</b>{warnings.map((warning, index) => <p key={index}>{warning}</p>)}</aside>}
       {draftError && <p role="alert">{draftError}</p>}

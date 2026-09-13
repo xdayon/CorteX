@@ -20,7 +20,13 @@ from cortex.analyze.speaker_schemas import SpeakerTimelineDocument
 from cortex.analyze.visual_quality_schemas import VisualQualityDocument
 from cortex.analyze.scope import SourceRange
 from cortex.config import CortexConfig, load_config
-from cortex.domain.models import RenderPreset, SourceAsset, SourceKind, WorkflowRun, WorkflowStatus
+from cortex.domain.models import (
+    RenderPreset,
+    SourceAsset,
+    SourceKind,
+    WorkflowRun,
+    WorkflowStatus,
+)
 from cortex.domain.store import (
     DomainStore,
     ProjectNotFoundError,
@@ -154,6 +160,8 @@ class EditPlanRequest(BaseModel):
     # stays opt-in — pass True explicitly to request it for this plan).
     jl_cut: bool | None = None
     max_jl_offset_seconds: float | None = Field(default=None, ge=0.0)
+    approximate_edl: list[dict[str, Any]] | None = Field(default=None, min_length=1, max_length=100)
+    confirmed_voice: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def clip_order(self) -> "EditPlanRequest":
@@ -300,6 +308,7 @@ def create_app(config: CortexConfig | None = None):
     domain = DomainStore(settings.paths.database)
     from cortex.library import EpisodeLibrary
     library = EpisodeLibrary(settings, domain)
+    library.reconcile()
     app = FastAPI(title=settings.app.name, version="0.1.0")
     app.state.config = settings
     app.state.jobs = jobs
@@ -314,8 +323,13 @@ def create_app(config: CortexConfig | None = None):
     router_prefix = settings.app.api_prefix.rstrip("/")
 
     @app.get(f"{router_prefix}/episodes")
-    def list_episodes(include_archived: bool = False):
-        return [library.detail(entry) for entry in library.entries(include_archived=include_archived)]
+    def list_episodes(
+        include_archived: bool = False,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ):
+        entries = library.entries(include_archived=include_archived)
+        return [library.detail(entry) for entry in entries[offset:offset + limit]]
 
     @app.post(f"{router_prefix}/episodes", status_code=201)
     def register_episode(request: EpisodeCreate):
@@ -650,7 +664,7 @@ def create_app(config: CortexConfig | None = None):
                         excluded.extend({"start": c["start_second"], "end": c["end_second"]}
                                         for c in document.get("selection", {}).get("clips", []))
             brief["exclude_ranges"] = sorted(excluded, key=lambda r: (r["start"], r["end"]))
-        run = domain.create_workflow_run(WorkflowRun(
+        run = WorkflowRun(
             project_id=project_id,
             source_asset_id=asset.id,
             status=WorkflowStatus.RUNNING,
@@ -658,13 +672,19 @@ def create_app(config: CortexConfig | None = None):
             progress=2,
             message="Transcrição na fila",
             brief=brief,
-        ))
-        job = jobs.create(JobCreate(
-            type=JobType.TRANSCRIPTION,
-            project_id=project_id,
-            payload={"source_asset_id": asset.id, "workflow_run_id": run.id, "overrides": {}},
-        ))
-        return domain.update_workflow_run(run.id, active_job_id=job.id)
+        )
+        with domain.transaction() as connection:
+            domain.create_workflow_run(run, connection=connection)
+            job = jobs.create(JobCreate(
+                type=JobType.TRANSCRIPTION,
+                project_id=project_id,
+                payload={"source_asset_id": asset.id, "workflow_run_id": run.id, "overrides": {}},
+                idempotency_key=f"workflow:{run.id}:transcription",
+            ), connection=connection)
+            run = domain.update_workflow_run(
+                run.id, connection=connection, active_job_id=job.id,
+            )
+        return run
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/runs")
     def list_workflow_runs(project_id: str):
@@ -1464,6 +1484,8 @@ def create_app(config: CortexConfig | None = None):
                 "maximum_seconds": request.maximum_seconds,
                 "jl_cut": request.jl_cut,
                 "max_jl_offset_seconds": request.max_jl_offset_seconds,
+                "approximate_edl": request.approximate_edl,
+                "confirmed_voice": request.confirmed_voice,
             },
         ))
 
@@ -1785,6 +1807,9 @@ def create_app(config: CortexConfig | None = None):
                 await asyncio.sleep(0.75)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
+
+    from cortex.review_api import create_review_router
+    app.include_router(create_review_router(router_prefix, domain, jobs))
 
     if settings.app.studio_dir is not None:
         from cortex.studio import mount_studio

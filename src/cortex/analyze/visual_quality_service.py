@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from bisect import bisect_left
+from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 
 from cortex.analyze.face_service import _extract_frame_rgb
+from cortex.analyze.frame_cache import FrameSampleCache
 from cortex.analyze.face_schemas import FaceIndexDocument, FrameFaces
 from cortex.analyze.scene_detect import ffmpeg_version
 from cortex.analyze.scene_schemas import SceneIndexDocument, SceneSegment
@@ -22,7 +25,7 @@ from cortex.analyze.visual_quality_schemas import (
 from cortex.config import CortexConfig
 from cortex.domain.models import SourceAsset, StageArtifact
 from cortex.domain.store import DomainStore
-from cortex.paths import visual_quality_dir
+from cortex.paths import cache_dir, visual_quality_dir
 
 VISUAL_QUALITY_ALGORITHM_VERSION = "1.0.0"
 FRAME_WIDTH = 640
@@ -56,11 +59,15 @@ def _scene_timestamps(scene: SceneSegment, sample_fps: float) -> list[float]:
 
 
 def _nearest_face_frame(
-    frames: list[FrameFaces], timestamp: float, max_distance: float
+    frames: list[FrameFaces], timestamp: float, max_distance: float,
+    times: list[float] | None = None,
 ) -> FrameFaces | None:
     if not frames:
         return None
-    nearest = min(frames, key=lambda frame: (abs(frame.time - timestamp), frame.time))
+    times = times or [frame.time for frame in frames]
+    position = bisect_left(times, timestamp)
+    candidates = frames[max(0, position - 1):min(len(frames), position + 1)]
+    nearest = min(candidates, key=lambda frame: (abs(frame.time - timestamp), frame.time))
     return nearest if abs(nearest.time - timestamp) <= max_distance else None
 
 
@@ -147,6 +154,14 @@ class VisualQualityService:
             4,
         )
         effective_ffmpeg_version = ffmpeg_version(self._config.render.ffmpeg)
+        frame_cache = FrameSampleCache(
+            directory=cache_dir(self._config, source_asset.project_id) / "frame-samples",
+            source_sha256=source_asset.sha256, width=FRAME_WIDTH,
+            decoder_version=effective_ffmpeg_version,
+            extractor=lambda timestamp: _extract_frame_rgb(
+                self._config.render.ffmpeg, source_path, timestamp,
+            ),
+        )
         hash_payload = {
             "algorithm": VISUAL_QUALITY_ALGORITHM_VERSION,
             "schema_version": VISUAL_QUALITY_SCHEMA_VERSION,
@@ -188,15 +203,18 @@ class VisualQualityService:
         quality_frames: list[VisualQualityFrame] = []
         previous_by_scene: dict[int, np.ndarray] = {}
         face_max_distance = max(0.05, 0.55 / faces.engine.sample_fps)
+        face_times = [frame.time for frame in faces.frames]
         for position, (scene, timestamp) in enumerate(timestamps):
             if should_cancel():
                 raise VisualQualityJobCancelled()
-            frame = _extract_frame_rgb(self._config.render.ffmpeg, source_path, timestamp)
+            frame, _frame_cached = frame_cache.get(timestamp)
             mean_luma, black_ratio, blur_score = frame_metrics(frame)
             previous = previous_by_scene.get(scene.index)
             delta = normalized_frame_delta(previous, frame) if previous is not None else None
             previous_by_scene[scene.index] = frame
-            face_frame = _nearest_face_frame(faces.frames, timestamp, face_max_distance)
+            face_frame = _nearest_face_frame(
+                faces.frames, timestamp, face_max_distance, face_times,
+            )
             edge_occlusion = None
             if face_frame is not None and face_frame.faces:
                 edge_occlusion = any(face_touches_edge(face, FACE_EDGE_MARGIN) for face in face_frame.faces)
@@ -217,10 +235,9 @@ class VisualQualityService:
                 f"Medindo qualidade visual em {timestamp:.2f}s",
             )
 
-        frames_by_scene = {
-            scene.index: [frame for frame in quality_frames if frame.scene_index == scene.index]
-            for scene in scenes.scenes
-        }
+        frames_by_scene: dict[int, list[VisualQualityFrame]] = defaultdict(list)
+        for frame in quality_frames:
+            frames_by_scene[frame.scene_index].append(frame)
         scene_quality = [_aggregate_scene(scene, frames_by_scene[scene.index]) for scene in scenes.scenes]
         document = VisualQualityDocument(
             project_id=source_asset.project_id,

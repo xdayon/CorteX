@@ -13,8 +13,8 @@ FFmpeg para mídia; Remotion para overlays; Codex CLI para narrativa.
 | --- | --- | --- |
 | Configuração e caminhos | `config.py`, `paths.py`, `config/cortex.yaml` | schemas Pydantic, testes de configuração |
 | Catálogo/estado | `library.py`, `domain/models.py`, `domain/store.py` | `test_episode_library.py`, `test_workflow_runs.py` |
-| Jobs e orquestração | `jobs.py`, `worker.py` | jobs, workflow_runs, cancelamento |
-| API/arquivos | `api.py`, `studio.py` | studio, media_previews, render_media_api |
+| Jobs e orquestração | `jobs.py`, `worker.py`, `export_batches.py` | jobs, workflow_runs, export_batches, cancelamento |
+| API/arquivos | `api.py`, `review_api.py`, `studio.py` | studio, export_batches, media_previews, render_media_api |
 | YouTube/upload/normalização | `ingest/` | ingest, ingest_transcribe_integration |
 | Transcrição | `transcribe/` | transcribe, cuda_env |
 | Diarização acústica | `diarize/` | speaker_attribution; benchmark real pendente |
@@ -40,14 +40,15 @@ ingest -> probe/normalize -> transcribe -> audio analysis -> suggest
 ```
 
 Diarização opcional antecede a seleção quando Dayon precisa ser identificado.
-WorkflowRun persiste até revisão. Cada job enviado existe no SQLite, mas a UI
-continua agendando o próximo corte do lote. Rascunhos visuais e seleção são
-salvos automaticamente no navegador por project/run; não são sincronizados no
-backend. O P0 do ROADMAP resolve essa fronteira.
+WorkflowRun persiste até revisão. `ClipRevision` versiona seleção e ajustes no
+SQLite; `ExportBatch` fotografa essa revisão e o worker agenda serialmente cada
+EDL/render em transações idempotentes. A UI observa e restaura esse estado, sem
+ser responsável por manter a fila viva. O draft local continua como fallback.
 
 Artefatos guardam schema, inputs/hashes, engine solicitada/efetiva e resultados.
-Retries determinísticos reaproveitam cache compatível. Os caches visuais ainda
-usam conjunto de intervalos; não representam um cache incremental por janela.
+Retries determinísticos reaproveitam cache compatível. Amostras visuais possuem
+cache incremental endereçado pelo hash da fonte, versão do FFmpeg, largura e
+timestamp; estágios ainda abrem seus próprios decoders quando faltam amostras.
 Proposta de LLM é JSON validado como dados, nunca shell executável.
 
 ## Quem decide o quê
@@ -61,9 +62,9 @@ Proposta de LLM é JSON validado como dados, nunca shell executável.
 - Remotion: overlay alpha de legenda/headline, cache próprio e browser explícito.
 - Humano: identidade/voz, cortes escolhidos, texto, framing, intenção e aprovação.
 
-**Limite atual:** `approximate_edl` da seleção não é consumida pelo planner, que
-resolve a montagem a partir do envelope. A validação de voz da sugestão não
-substitui o futuro gate de predominância no plano final.
+`approximate_edl` orienta as regiões semânticas, mas as fronteiras físicas ainda
+são resolvidas deterministicamente. A predominância da voz confirmada é
+revalidada sobre o plano de áudio final, após limite, J/L-cut e clamp da fonte.
 
 ## Câmeras e áudio
 
@@ -97,8 +98,9 @@ Cloudflare ainda é proposta: [local e Cloudflare](LOCAL_AND_CLOUDFLARE.md).
 
 ## Evolução sem reescrita
 
-Separar routers e handlers por domínio, mantendo contratos; extrair telas/hooks e
-pequeno pacote de visual compartilhado; fila e revisão server-side primeiro.
+Continuar a extração dos demais routers mantendo contratos; revisão/export já
+estão em `review_api.py` e a máquina de estados em `export_batches.py`. Extrair
+telas/hooks e pequeno pacote visual.
 Não introduzir Redis, banco remoto, segundo renderer ou framework por conveniência.
 A motivação de cada mudança e critérios estão em [revisão](REVIEW_DAYON_NEWS.md)
 e [ROADMAP](ROADMAP.md). Evidências históricas não provam paridade da versão atual.

@@ -38,6 +38,7 @@ from cortex.domain.models import SourceAsset, SourceKind, WorkflowStatus
 from cortex.domain.store import DomainStore
 from cortex.edit.camera_plan_service import CameraEditPlanJobCancelled, CameraEditPlanService
 from cortex.edit.service import EditPlanJobCancelled, EditPlanService
+from cortex.export_batches import advance_export_batch, reconcile_export_batches
 from cortex.ingest.ffprobe import FFprobeError, probe_media
 from cortex.ingest.youtube import YoutubeDownloadError, download_youtube_source
 from cortex.jobs import InvalidJobTransitionError, JobStore
@@ -784,6 +785,8 @@ def run_edit_plan_job(
             scene_index_artifact=scene_index_artifact,
             jl_cut=job.payload.get("jl_cut"),
             max_jl_offset_seconds=job.payload.get("max_jl_offset_seconds"),
+            approximate_edl=job.payload.get("approximate_edl"),
+            confirmed_voice=job.payload.get("confirmed_voice"),
         )
     except EditPlanJobCancelled:
         return
@@ -922,41 +925,39 @@ def _advance_workflow(job: Job, jobs: JobStore, domain: DomainStore) -> None:
     if job.type == JobType.TRANSCRIPTION:
         artifact_id = final.result["transcript_artifact_id"]
         artifacts["transcript"] = artifact_id
-        next_job = jobs.create(JobCreate(
-            type=JobType.ANALYSIS,
-            project_id=run.project_id,
-            payload={"transcript_artifact_id": artifact_id, "workflow_run_id": run.id},
-        ))
-        domain.update_workflow_run(
-            run.id,
-            stage="analyze",
-            progress=35,
-            message="Análise local na fila",
-            active_job_id=next_job.id,
-            artifacts=artifacts,
-        )
+        with domain.transaction() as connection:
+            next_job = jobs.create(JobCreate(
+                type=JobType.ANALYSIS,
+                project_id=run.project_id,
+                payload={"transcript_artifact_id": artifact_id, "workflow_run_id": run.id},
+                idempotency_key=f"workflow:{run.id}:analysis",
+            ), connection=connection)
+            domain.update_workflow_run(
+                run.id, connection=connection, stage="analyze", progress=35,
+                message="Análise local na fila", active_job_id=next_job.id,
+                artifacts=artifacts,
+            )
         return
     if job.type == JobType.ANALYSIS:
         artifact_id = final.result["analysis_artifact_id"]
         artifacts["analysis"] = artifact_id
-        next_job = jobs.create(JobCreate(
-            type=JobType.SUGGESTION,
-            project_id=run.project_id,
-            payload={
-                "transcript_artifact_id": artifacts["transcript"],
-                "analysis_artifact_id": artifact_id,
-                "brief": run.brief,
-                "workflow_run_id": run.id,
-            },
-        ))
-        domain.update_workflow_run(
-            run.id,
-            stage="suggest",
-            progress=70,
-            message="Codex selecionando os melhores cortes",
-            active_job_id=next_job.id,
-            artifacts=artifacts,
-        )
+        with domain.transaction() as connection:
+            next_job = jobs.create(JobCreate(
+                type=JobType.SUGGESTION,
+                project_id=run.project_id,
+                payload={
+                    "transcript_artifact_id": artifacts["transcript"],
+                    "analysis_artifact_id": artifact_id,
+                    "brief": run.brief,
+                    "workflow_run_id": run.id,
+                },
+                idempotency_key=f"workflow:{run.id}:suggestion",
+            ), connection=connection)
+            domain.update_workflow_run(
+                run.id, connection=connection, stage="suggest", progress=70,
+                message="Codex selecionando os melhores cortes", active_job_id=next_job.id,
+                artifacts=artifacts,
+            )
         return
     if job.type == JobType.SUGGESTION:
         artifacts["suggestion"] = final.result["suggestion_artifact_id"]
@@ -1001,7 +1002,8 @@ def process_next(
             jobs.update(job.id, JobUpdate(status=JobStatus.FAILED, error=_truncate(str(exc))))
         except InvalidJobTransitionError:
             pass
-    _advance_workflow(job, jobs, domain)
+    if not advance_export_batch(job, jobs, domain):
+        _advance_workflow(job, jobs, domain)
     return True
 
 
@@ -1017,6 +1019,7 @@ def run_worker(
     jobs = JobStore(config.paths.database)
     jobs.recover_abandoned_jobs()
     domain = DomainStore(config.paths.database)
+    reconcile_export_batches(jobs, domain)
     engine = FasterWhisperEngine()
     suggestion_provider = build_suggestion_provider(
         config.ai, cwd=Path(__file__).resolve().parents[2]

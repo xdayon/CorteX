@@ -26,7 +26,7 @@ from cortex.edit.planner import (
 from cortex.edit.profiles import PROFILES
 from cortex.edit.quality import validate_edit_plan
 from cortex.edit.schemas import EditPlanDocument
-from cortex.edit.service import EditPlanService
+from cortex.edit.service import EditPlanPreconditionError, EditPlanService
 from cortex.jobs import JobStore
 from cortex.schemas import JobStatus
 from cortex.transcribe.schemas import EngineInfo, TranscriptDocument, TranscriptSegment, TranscriptWord
@@ -330,7 +330,7 @@ def test_edit_plan_service_caches_by_input_hash(tmp_path: Path) -> None:
     assert first["cached"] is False
     assert progress == sorted(progress) and progress[-1] == 100.0
     document = EditPlanDocument.model_validate_json(Path(first["edit_plan_path"]).read_text())
-    assert document.schema_version == 2
+    assert document.schema_version == 3
     assert len(domain.list_stage_artifacts(transcript.project_id, "edit_plan")) == 1
 
     second = service.run(
@@ -383,7 +383,7 @@ def test_edit_plan_endpoint_creates_job_and_get_returns_document(tmp_path: Path)
     assert fetched.status_code == 200, fetched.text
     payload = fetched.json()
     assert payload["artifact"]["stage"] == "edit_plan"
-    assert payload["document"]["schema_version"] == 2
+    assert payload["document"]["schema_version"] == 3
     assert payload["document"]["quality"]["passed"] is True
 
 
@@ -510,7 +510,7 @@ def test_edit_plan_v2_matches_v1_behavior_when_jl_disabled(tmp_path: Path) -> No
     )
     document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
 
-    assert document.schema_version == 2
+    assert document.schema_version == 3
     assert document.jl_settings.enabled is False
     assert document.jl_settings.max_offset_seconds == 0.0
     assert document.diagnostics.j_cuts == 0
@@ -655,3 +655,58 @@ def test_resolve_jl_cuts_blocks_when_neighbor_segment_cannot_absorb_offset() -> 
     assert issues[0]["code"] == "jl_no_safe_boundary"
     assert resolved[0]["audio_end"] == resolved[0]["end"]
     assert resolved[1]["audio_start"] == resolved[1]["start"]
+
+
+def test_semantic_edl_drives_physical_plan_and_validates_final_voice(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = [
+        _word("primeiro", 0.5, 1.0), _word("bloco.", 1.1, 1.5),
+        _word("segundo", 6.5, 7.0), _word("bloco.", 7.1, 7.5),
+    ]
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 8.0)
+    result = EditPlanService(config, domain).run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0, end=8, profile="balanced",
+        approximate_edl=[
+            {"source_start": 0, "source_end": 2, "audio_mode": "source"},
+            {"source_start": 6, "source_end": 8, "audio_mode": "source"},
+        ],
+        confirmed_voice={
+            "speaker": "Dayon",
+            "turns": [
+                {"start": 0, "end": 3, "speaker": "Dayon"},
+                {"start": 6, "end": 8, "speaker": "Dayon"},
+            ],
+        },
+        progress_cb=lambda *_args: None, should_cancel=lambda: False,
+    )
+    document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
+    assert len(document.segments) == 2
+    assert document.segments[0].end < document.segments[1].start
+    assert document.voice_validation == {
+        "version": 1, "speaker": "Dayon", "subject_share": 1.0, "accepted": True,
+    }
+
+
+def test_final_plan_rejects_non_predominant_confirmed_voice(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = [_word("fala", 0.5, 1.0), _word("longa.", 1.1, 2.5)]
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 3.0)
+    with pytest.raises(EditPlanPreconditionError, match="Plano final rejeitado"):
+        EditPlanService(config, domain).run(
+            transcript_artifact=transcript, analysis_artifact=analysis,
+            start=0, end=3, profile="balanced",
+            approximate_edl=[{"source_start": 0, "source_end": 3, "audio_mode": "source"}],
+            confirmed_voice={
+                "speaker": "Dayon",
+                "turns": [
+                    {"start": 0, "end": 0.2, "speaker": "Dayon"},
+                    {"start": 0.2, "end": 3, "speaker": "Convidado"},
+                ],
+            },
+            progress_cb=lambda *_args: None, should_cancel=lambda: False,
+        )

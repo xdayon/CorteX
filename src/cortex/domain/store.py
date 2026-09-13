@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 from cortex.domain.models import (
+    ClipRevision,
+    ExportBatch,
+    ExportItem,
     Project,
     RenderPreset,
     SourceAsset,
@@ -43,6 +47,18 @@ class WorkflowRunNotFoundError(LookupError):
     pass
 
 
+class ClipRevisionNotFoundError(LookupError):
+    pass
+
+
+class ExportBatchNotFoundError(LookupError):
+    pass
+
+
+class ExportItemNotFoundError(LookupError):
+    pass
+
+
 class DomainStore:
     """Persists Project/SourceAsset/TranscriptArtifact/StageArtifact.
 
@@ -62,8 +78,28 @@ class DomainStore:
         connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
+    @contextmanager
+    def transaction(self):
+        """One write transaction shared by domain and queue operations."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
         with self._connect() as connection:
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS schema_migrations (
+                    id TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )"""
+            )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY,
@@ -76,6 +112,7 @@ class DomainStore:
                 """CREATE TABLE IF NOT EXISTS source_assets (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
+                    sha256 TEXT,
                     data TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )"""
@@ -94,10 +131,43 @@ class DomainStore:
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
                     stage TEXT NOT NULL,
+                    input_hash TEXT,
+                    schema_version INTEGER,
+                    path TEXT,
                     data TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )"""
             )
+            source_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(source_assets)")
+            }
+            if "sha256" not in source_columns:
+                connection.execute("ALTER TABLE source_assets ADD COLUMN sha256 TEXT")
+            stage_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(stage_artifacts)")
+            }
+            for name, kind in (
+                ("input_hash", "TEXT"), ("schema_version", "INTEGER"), ("path", "TEXT"),
+            ):
+                if name not in stage_columns:
+                    connection.execute(f"ALTER TABLE stage_artifacts ADD COLUMN {name} {kind}")
+            for row in connection.execute(
+                "SELECT id, data FROM source_assets WHERE sha256 IS NULL"
+            ).fetchall():
+                asset = SourceAsset.model_validate_json(row["data"])
+                connection.execute(
+                    "UPDATE source_assets SET sha256 = ? WHERE id = ?", (asset.sha256, asset.id),
+                )
+            for row in connection.execute(
+                "SELECT id, data FROM stage_artifacts "
+                "WHERE input_hash IS NULL OR schema_version IS NULL OR path IS NULL"
+            ).fetchall():
+                artifact = StageArtifact.model_validate_json(row["data"])
+                connection.execute(
+                    "UPDATE stage_artifacts SET input_hash = ?, schema_version = ?, path = ? "
+                    "WHERE id = ?",
+                    (artifact.input_hash, artifact.schema_version, artifact.path, artifact.id),
+                )
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS render_presets (
                     id TEXT PRIMARY KEY,
@@ -121,6 +191,44 @@ class DomainStore:
                 )"""
             )
             connection.execute(
+                """CREATE TABLE IF NOT EXISTS clip_revisions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    workflow_run_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(workflow_run_id, version)
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS export_batches (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    workflow_run_id TEXT NOT NULL,
+                    revision_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS export_items (
+                    id TEXT PRIMARY KEY,
+                    batch_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(batch_id, position)
+                )"""
+            )
+            connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_workflow_runs_project_created
                    ON workflow_runs (project_id, created_at DESC)"""
             )
@@ -128,6 +236,34 @@ class DomainStore:
                 """CREATE INDEX IF NOT EXISTS idx_render_presets_project_created
                    ON render_presets (project_id, created_at DESC)"""
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_revisions_run_version "
+                "ON clip_revisions(workflow_run_id, version DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_batches_run_created "
+                "ON export_batches(workflow_run_id, created_at DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_export_items_batch_position "
+                "ON export_items(batch_id, position)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_source_assets_project_sha "
+                "ON source_assets(project_id, sha256)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stage_artifact_cache "
+                "ON stage_artifacts(project_id, stage, input_hash, schema_version, created_at DESC)"
+            )
+            for migration_id in (
+                "2026-09-13-export-batches-v1",
+                "2026-09-13-indexed-artifact-cache-v1",
+            ):
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(id, applied_at) VALUES (?, ?)",
+                    (migration_id, utc_now().isoformat()),
+                )
 
     # -- Projects ---------------------------------------------------
 
@@ -163,8 +299,9 @@ class DomainStore:
         payload = json.dumps(asset.model_dump(mode="json"), ensure_ascii=False)
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO source_assets (id, project_id, data, created_at) VALUES (?, ?, ?, ?)",
-                (asset.id, asset.project_id, payload, asset.created_at.isoformat()),
+                "INSERT INTO source_assets (id, project_id, sha256, data, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (asset.id, asset.project_id, asset.sha256, payload, asset.created_at.isoformat()),
             )
         return asset
 
@@ -186,16 +323,22 @@ class DomainStore:
         return [SourceAsset.model_validate_json(row["data"]) for row in rows]
 
     def find_source_asset_by_sha256(self, project_id: str, sha256: str) -> SourceAsset | None:
-        for asset in self.list_source_assets(project_id):
-            if asset.sha256 == sha256:
-                return asset
-        return None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT data FROM source_assets WHERE project_id = ? AND sha256 = ? "
+                "ORDER BY created_at DESC LIMIT 1", (project_id, sha256),
+            ).fetchone()
+        return SourceAsset.model_validate_json(row["data"]) if row is not None else None
 
     # -- Workflow runs -------------------------------------------------
 
-    def create_workflow_run(self, run: WorkflowRun) -> WorkflowRun:
+    def create_workflow_run(
+        self, run: WorkflowRun, *, connection: sqlite3.Connection | None = None,
+    ) -> WorkflowRun:
         payload = json.dumps(run.model_dump(mode="json"), ensure_ascii=False)
-        with self._connect() as connection:
+        owns_connection = connection is None
+        connection = connection or self._connect()
+        try:
             connection.execute(
                 """INSERT INTO workflow_runs
                    (id, project_id, source_asset_id, status, data, created_at, updated_at)
@@ -210,6 +353,11 @@ class DomainStore:
                     run.updated_at.isoformat(),
                 ),
             )
+            if owns_connection:
+                connection.commit()
+        finally:
+            if owns_connection:
+                connection.close()
         return run
 
     def get_workflow_run(self, run_id: str) -> WorkflowRun:
@@ -230,19 +378,189 @@ class DomainStore:
             ).fetchall()
         return [WorkflowRun.model_validate_json(row["data"]) for row in rows]
 
-    def update_workflow_run(self, run_id: str, **changes: object) -> WorkflowRun:
-        current = self.get_workflow_run(run_id)
+    def update_workflow_run(
+        self, run_id: str, *, connection: sqlite3.Connection | None = None, **changes: object,
+    ) -> WorkflowRun:
+        if connection is None:
+            current = self.get_workflow_run(run_id)
+        else:
+            row = connection.execute(
+                "SELECT data FROM workflow_runs WHERE id = ?", (run_id,),
+            ).fetchone()
+            if row is None:
+                raise WorkflowRunNotFoundError(run_id)
+            current = WorkflowRun.model_validate_json(row["data"])
         changes["updated_at"] = utc_now()
         updated = WorkflowRun.model_validate({**current.model_dump(), **changes})
         payload = json.dumps(updated.model_dump(mode="json"), ensure_ascii=False)
-        with self._connect() as connection:
+        owns_connection = connection is None
+        connection = connection or self._connect()
+        try:
             cursor = connection.execute(
                 """UPDATE workflow_runs SET status = ?, data = ?, updated_at = ?
                    WHERE id = ?""",
                 (updated.status.value, payload, updated.updated_at.isoformat(), run_id),
             )
+            if owns_connection:
+                connection.commit()
+        finally:
+            if owns_connection:
+                connection.close()
         if cursor.rowcount != 1:
             raise WorkflowRunNotFoundError(run_id)
+        return updated
+
+    # -- Review revisions and durable export batches ------------------
+
+    def create_clip_revision(self, revision: ClipRevision) -> ClipRevision:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) AS version FROM clip_revisions "
+                "WHERE workflow_run_id = ?", (revision.workflow_run_id,),
+            ).fetchone()
+            revision = revision.model_copy(update={
+                "version": int(row["version"]) + 1,
+                "updated_at": utc_now(),
+            })
+            payload = json.dumps(revision.model_dump(mode="json"), ensure_ascii=False)
+            connection.execute(
+                """INSERT INTO clip_revisions
+                   (id, project_id, workflow_run_id, version, data, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (revision.id, revision.project_id, revision.workflow_run_id, revision.version,
+                 payload, revision.created_at.isoformat(), revision.updated_at.isoformat()),
+            )
+        return revision
+
+    def get_clip_revision(self, revision_id: str) -> ClipRevision:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT data FROM clip_revisions WHERE id = ?", (revision_id,),
+            ).fetchone()
+        if row is None:
+            raise ClipRevisionNotFoundError(revision_id)
+        return ClipRevision.model_validate_json(row["data"])
+
+    def latest_clip_revision(self, workflow_run_id: str) -> ClipRevision | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT data FROM clip_revisions WHERE workflow_run_id = ? "
+                "ORDER BY version DESC LIMIT 1", (workflow_run_id,),
+            ).fetchone()
+        return ClipRevision.model_validate_json(row["data"]) if row is not None else None
+
+    @staticmethod
+    def _save_export_batch(connection: sqlite3.Connection, batch: ExportBatch) -> None:
+        payload = json.dumps(batch.model_copy(update={"items": []}).model_dump(mode="json"),
+                             ensure_ascii=False)
+        connection.execute(
+            """INSERT INTO export_batches
+               (id, project_id, workflow_run_id, revision_id, idempotency_key, status,
+                data, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET status=excluded.status, data=excluded.data,
+                   updated_at=excluded.updated_at""",
+            (batch.id, batch.project_id, batch.workflow_run_id, batch.revision_id,
+             batch.idempotency_key, batch.status.value, payload,
+             batch.created_at.isoformat(), batch.updated_at.isoformat()),
+        )
+
+    @staticmethod
+    def _save_export_item(connection: sqlite3.Connection, item: ExportItem) -> None:
+        payload = json.dumps(item.model_dump(mode="json"), ensure_ascii=False)
+        connection.execute(
+            """INSERT INTO export_items
+               (id, batch_id, project_id, position, status, data, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET status=excluded.status, data=excluded.data,
+                   updated_at=excluded.updated_at""",
+            (item.id, item.batch_id, item.project_id, item.position, item.status.value,
+             payload, item.created_at.isoformat(), item.updated_at.isoformat()),
+        )
+
+    def create_export_batch(
+        self, batch: ExportBatch, *, connection: sqlite3.Connection,
+    ) -> ExportBatch:
+        row = connection.execute(
+            "SELECT id FROM export_batches WHERE idempotency_key = ?",
+            (batch.idempotency_key,),
+        ).fetchone()
+        if row is not None:
+            return self.get_export_batch(row["id"], connection=connection)
+        self._save_export_batch(connection, batch)
+        for item in batch.items:
+            self._save_export_item(connection, item)
+        return batch
+
+    def get_export_item(
+        self, item_id: str, *, connection: sqlite3.Connection | None = None,
+    ) -> ExportItem:
+        owns_connection = connection is None
+        connection = connection or self._connect()
+        try:
+            row = connection.execute(
+                "SELECT data FROM export_items WHERE id = ?", (item_id,),
+            ).fetchone()
+        finally:
+            if owns_connection:
+                connection.close()
+        if row is None:
+            raise ExportItemNotFoundError(item_id)
+        return ExportItem.model_validate_json(row["data"])
+
+    def get_export_batch(
+        self, batch_id: str, *, connection: sqlite3.Connection | None = None,
+    ) -> ExportBatch:
+        owns_connection = connection is None
+        connection = connection or self._connect()
+        try:
+            row = connection.execute(
+                "SELECT data FROM export_batches WHERE id = ?", (batch_id,),
+            ).fetchone()
+            if row is None:
+                raise ExportBatchNotFoundError(batch_id)
+            item_rows = connection.execute(
+                "SELECT data FROM export_items WHERE batch_id = ? ORDER BY position",
+                (batch_id,),
+            ).fetchall()
+        finally:
+            if owns_connection:
+                connection.close()
+        batch = ExportBatch.model_validate_json(row["data"])
+        return batch.model_copy(update={
+            "items": [ExportItem.model_validate_json(item["data"]) for item in item_rows],
+        })
+
+    def list_export_batches(self, workflow_run_id: str) -> list[ExportBatch]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM export_batches WHERE workflow_run_id = ? "
+                "ORDER BY created_at DESC", (workflow_run_id,),
+            ).fetchall()
+        return [self.get_export_batch(row["id"]) for row in rows]
+
+    def list_incomplete_export_batches(self) -> list[ExportBatch]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM export_batches WHERE status IN ('queued', 'running') "
+                "ORDER BY created_at"
+            ).fetchall()
+        return [self.get_export_batch(row["id"]) for row in rows]
+
+    def update_export_batch(
+        self, batch_id: str, *, connection: sqlite3.Connection, **changes: object,
+    ) -> ExportBatch:
+        current = self.get_export_batch(batch_id, connection=connection)
+        updated = current.model_copy(update={**changes, "updated_at": utc_now()})
+        self._save_export_batch(connection, updated)
+        return updated
+
+    def update_export_item(
+        self, item_id: str, *, connection: sqlite3.Connection, **changes: object,
+    ) -> ExportItem:
+        current = self.get_export_item(item_id, connection=connection)
+        updated = current.model_copy(update={**changes, "updated_at": utc_now()})
+        self._save_export_item(connection, updated)
         return updated
 
     # -- Transcript artifacts -----------------------------------------
@@ -309,8 +627,11 @@ class DomainStore:
         payload = json.dumps(artifact.model_dump(mode="json"), ensure_ascii=False)
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO stage_artifacts (id, project_id, stage, data, created_at) VALUES (?, ?, ?, ?, ?)",
-                (artifact.id, artifact.project_id, artifact.stage, payload, artifact.created_at.isoformat()),
+                """INSERT INTO stage_artifacts
+                   (id, project_id, stage, input_hash, schema_version, path, data, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (artifact.id, artifact.project_id, artifact.stage, artifact.input_hash,
+                 artifact.schema_version, artifact.path, payload, artifact.created_at.isoformat()),
             )
         return artifact
 
@@ -341,12 +662,16 @@ class DomainStore:
     def find_cached_stage_artifact(
         self, *, project_id: str, stage: str, input_hash: str, schema_version: int
     ) -> StageArtifact | None:
-        for artifact in self.list_stage_artifacts(project_id, stage):
-            if (
-                artifact.input_hash == input_hash
-                and artifact.schema_version == schema_version
-                and Path(artifact.path).exists()
-            ):
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT data FROM stage_artifacts
+                   WHERE project_id = ? AND stage = ? AND input_hash = ?
+                     AND schema_version = ? ORDER BY created_at DESC""",
+                (project_id, stage, input_hash, schema_version),
+            ).fetchall()
+        for row in rows:
+            artifact = StageArtifact.model_validate_json(row["data"])
+            if Path(artifact.path).exists():
                 return artifact
         return None
 

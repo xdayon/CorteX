@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-EDIT_PLAN_SCHEMA_VERSION = 2
+EDIT_PLAN_SCHEMA_VERSION = 3
 
 # Floating point tolerance used when comparing the audio/video coverage
 # invariant below (seconds).
@@ -141,6 +141,7 @@ class EditPlanDocument(BaseModel):
     diagnostics: EditPlanDiagnostics
     quality: EditQualityReport
     jl_settings: JlSettings = Field(default_factory=JlSettings)
+    voice_validation: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _check_duration_ceiling(self) -> "EditPlanDocument":

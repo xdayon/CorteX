@@ -65,6 +65,7 @@ def serialized(method):
 class EpisodeLibrary:
     def __init__(self, config: CortexConfig, domain: DomainStore):
         self.config, self.domain = config, domain
+        self._last_reconcile_signature: tuple | None = None
         with self.connect() as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS episode_library (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
 
@@ -175,9 +176,21 @@ class EpisodeLibrary:
                     self.get(key)
                 except ValueError:
                     self.save(Episode(id=key, title=project.name, project_ids=[project.id]))
+        self._last_reconcile_signature = self._catalog_signature()
 
-    def entries(self, *, include_archived: bool = False):
-        self.reconcile()
+    def _catalog_signature(self) -> tuple:
+        with self.connect() as connection:
+            project = connection.execute(
+                "SELECT COUNT(*), COALESCE(MAX(updated_at), '') FROM projects"
+            ).fetchone()
+            sources = connection.execute(
+                "SELECT COUNT(*), COALESCE(MAX(created_at), '') FROM source_assets"
+            ).fetchone()
+        return (*project, *sources)
+
+    def entries(self, *, include_archived: bool = False, reconcile: bool = True):
+        if reconcile and self._catalog_signature() != self._last_reconcile_signature:
+            self.reconcile()
         entries = self._stored_entries()
         if include_archived:
             return entries

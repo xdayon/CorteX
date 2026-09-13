@@ -54,6 +54,8 @@ async function openExport(saved = ready, automatic = true) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.saveRevision).mockReset();
+  vi.mocked(api.createExportBatch).mockReset();
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({font:"",measureText(text:string){return {width:text.length*30};}} as unknown as CanvasRenderingContext2D);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   localStorage.clear();
@@ -362,6 +364,28 @@ test("real preview limits rendering to ten seconds and keeps final exports separ
   expect(api.startEditPlan).toHaveBeenCalledExactlyOnceWith("project","transcript","analysis",0,10,"balanced", 120);
   expect(screen.getByText("Prévia · Uma ideia")).toBeTruthy();
   expect(screen.queryByRole("link",{name:"Baixar MP4"})).toBeNull();
+});
+
+test("final export submits one durable server batch instead of chaining browser jobs", async () => {
+  vi.mocked(api.saveRevision).mockResolvedValue({
+    id:"revision",project_id:"project",workflow_run_id:"run",version:1,
+    selection_artifact_id:"suggestion",selected_clips:[{...suggestion.document.selection.clips[0],key:"rank:1"}],
+    render_settings:{} as never,caption_edits:{},headlines:{},visual_artifacts:{},
+    reuse_reactions:false,
+  });
+  vi.mocked(api.createExportBatch).mockResolvedValue({
+    id:"batch",project_id:"project",workflow_run_id:"run",revision_id:"revision",
+    status:"succeeded",items:[{
+      id:"item",position:0,clip_key:"rank:1",title:"Uma ideia",status:"succeeded",
+      render_artifact_id:"rendered",
+    }],
+  });
+  await openExport(ready, false);
+  fireEvent.click(screen.getByRole("button", {name:"Renderizar 1 corte"}));
+  await settle();
+  expect(api.createExportBatch).toHaveBeenCalledTimes(1);
+  expect(api.startEditPlan).not.toHaveBeenCalled();
+  expect(screen.getByRole("link", {name:"Baixar MP4"})).toBeTruthy();
 });
 
 test("automatic analysis sends only the selected clip ranges with context", async () => {

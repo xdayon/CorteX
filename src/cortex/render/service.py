@@ -1174,6 +1174,8 @@ class RenderService:
         render_settings_override: RenderSettingsPatch | None = None,
         export_directory: str | None = None,
     ) -> dict:
+        total_started = time.monotonic()
+        timings: dict[str, float] = {}
         if edit_plan_artifact.stage != "edit_plan":
             raise RenderPreconditionError("artifact informado não é um EditPlanArtifact")
         plan_path = Path(edit_plan_artifact.path)
@@ -1446,6 +1448,7 @@ class RenderService:
         overlay_manifest: RemotionOverlayManifest | None = None
         if overlay_enabled:
             progress_cb(10.0, "Gerando overlay tipográfico com Remotion")
+            overlay_started = time.monotonic()
             try:
                 overlay_artifact, overlay_manifest, _overlay_cached = RemotionOverlayService(
                     self._config, self._domain
@@ -1462,6 +1465,7 @@ class RenderService:
                 raise RenderJobCancelled() from exc
             except RemotionOverlayError as exc:
                 raise RenderExecutionError(str(exc)) from exc
+            timings["overlay_seconds"] = round(time.monotonic() - overlay_started, 4)
         input_start, input_end = _source_input_window(plan, camera_plan, auto_framing)
         input_payload = {
             "schema_version": RENDER_SCHEMA_VERSION,
@@ -1597,11 +1601,14 @@ class RenderService:
         progress_cb(25.0, f"Renderizando com {requested_encoder}")
         log_path = output_dir / f"render-{input_hash[:16]}.ffmpeg.log"
         try:
+            encode_started = time.monotonic()
             _run_ffmpeg(
                 command, log_path, should_cancel,
                 duration_seconds_value=plan.timeline_duration_seconds,
                 progress_cb=lambda percent, message: progress_cb(25.0 + percent * 0.59, message),
             )
+            timings["encode_seconds"] = round(time.monotonic() - encode_started, 4)
+            quality_started = time.monotonic()
             progress_cb(85.0, "Validando streams, duração e loudness")
             rendered_probe = probe_media(self._config.render.ffprobe, temporary_path)
             actual_duration = duration_seconds(rendered_probe)
@@ -2040,7 +2047,12 @@ class RenderService:
                           "output_path": str(output_path),
                           "overlay_artifact_id": (
                               overlay_artifact.id if overlay_artifact else None
-                          )},
+                          ),
+                          "timings": {
+                              **timings,
+                              "quality_seconds": round(time.monotonic() - quality_started, 4),
+                              "total_seconds": round(time.monotonic() - total_started, 4),
+                          }},
             ))
         finally:
             temporary_path.unlink(missing_ok=True)
@@ -2059,4 +2071,5 @@ class RenderService:
             )
         return {"cached": False, "render_artifact_id": artifact.id,
                 "render_path": str(output_path), "schema_version": artifact.schema_version,
-                "publish_ready": publication.publish_ready, **exports}
+                "publish_ready": publication.publish_ready,
+                "timings": artifact.metadata.get("timings", {}), **exports}

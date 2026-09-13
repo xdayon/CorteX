@@ -29,6 +29,7 @@ from cortex.analyze.face_recognition import (
     extract_embedding,
     load_recognition_session,
 )
+from cortex.analyze.frame_cache import FrameSampleCache
 from cortex.analyze.face_schemas import (
     FACE_INDEX_SCHEMA_VERSION,
     FaceDetection,
@@ -44,7 +45,7 @@ from cortex.config import CortexConfig
 from cortex.domain.models import SourceAsset, StageArtifact
 from cortex.domain.store import DomainStore
 from cortex.ingest.ffprobe import duration_seconds, probe_media
-from cortex.paths import faces_dir
+from cortex.paths import cache_dir, faces_dir
 
 FACE_ALGORITHM_VERSION = "3.0.0"
 FRAME_EXTRACTION_WIDTH = 640
@@ -164,6 +165,14 @@ class FaceIndexService:
             else round(self._config.analysis.face_sample_fps, 4)
         )
         effective_ffmpeg_version = ffmpeg_version(self._config.render.ffmpeg)
+        frame_cache = FrameSampleCache(
+            directory=cache_dir(self._config, source_asset.project_id) / "frame-samples",
+            source_sha256=source_asset.sha256, width=FRAME_EXTRACTION_WIDTH,
+            decoder_version=effective_ffmpeg_version,
+            extractor=lambda timestamp: _extract_frame_rgb(
+                self._config.render.ffmpeg, source_path, timestamp,
+            ),
+        )
 
         hash_payload = {
             "algorithm": FACE_ALGORITHM_VERSION,
@@ -211,7 +220,7 @@ class FaceIndexService:
         for position, timestamp in enumerate(timestamps):
             if should_cancel():
                 raise FaceIndexJobCancelled()
-            frame = _extract_frame_rgb(self._config.render.ffmpeg, source_path, timestamp)
+            frame, _frame_cached = frame_cache.get(timestamp)
             faces = detect_faces(session, frame)
             for face_data in faces:
                 face_model = FaceDetection.model_validate(face_data)

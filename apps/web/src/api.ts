@@ -112,6 +112,31 @@ export type SuggestedClip = {
   reasoning: string;
   warnings: string[];
   scores: ClipScores;
+  approximate_edl?: Array<Record<string, unknown>>;
+};
+
+export type ClipRevision = {
+  id: string; project_id: string; workflow_run_id: string; version: number;
+  selection_artifact_id: string;
+  selected_clips: Array<SuggestedClip & {key: string}>;
+  render_settings: RenderSettings;
+  caption_edits: Record<string, CaptionCorrection[]>;
+  headlines: Record<string, string>;
+  visual_artifacts: Record<string, string>;
+  interviewer_identity_id?: string | null;
+  reuse_reactions: boolean;
+};
+
+export type ExportItem = {
+  id: string; position: number; clip_key: string; title: string;
+  status: "queued"|"planning"|"camera_planning"|"rendering"|"succeeded"|"failed"|"cancelled";
+  active_job_id?: string | null; render_artifact_id?: string | null; error?: string | null;
+};
+
+export type ExportBatch = {
+  id: string; project_id: string; workflow_run_id: string; revision_id: string;
+  status: "queued"|"running"|"succeeded"|"partial"|"failed"|"cancelled";
+  active_job_id?: string | null; error?: string | null; items: ExportItem[];
 };
 
 export type SuggestionProvenance = {
@@ -241,6 +266,39 @@ export const api = {
 
   workflowRun: (projectId: string, runId: string, signal?: AbortSignal) =>
     request<WorkflowRun>(`/api/v1/projects/${projectId}/runs/${runId}`, { signal }),
+
+  saveRevision: (projectId: string, runId: string, body: {
+    selection_artifact_id: string;
+    selected_clips: Array<SuggestedClip & {key:string}>;
+    render_settings: RenderSettings;
+    caption_edits: Record<string, CaptionCorrection[]>;
+    headlines: Record<string,string>;
+    visual_artifacts: Record<string,string>;
+    interviewer_identity_id?: string;
+    reuse_reactions: boolean;
+  }) => request<ClipRevision>(`/api/v1/projects/${projectId}/runs/${runId}/revisions`, {
+    method:"POST", body:JSON.stringify(body),
+  }),
+
+  latestRevision: (projectId:string, runId:string) =>
+    request<ClipRevision>(`/api/v1/projects/${projectId}/runs/${runId}/revision`),
+
+  createExportBatch: (projectId:string, runId:string, revisionId:string, idempotencyKey:string) =>
+    request<ExportBatch>(`/api/v1/projects/${projectId}/runs/${runId}/export-batches`, {
+      method:"POST", body:JSON.stringify({revision_id:revisionId,idempotency_key:idempotencyKey}),
+    }),
+
+  exportBatches: (projectId:string, runId:string) =>
+    request<ExportBatch[]>(`/api/v1/projects/${projectId}/runs/${runId}/export-batches`),
+
+  exportBatch: (projectId:string, batchId:string, signal?:AbortSignal) =>
+    request<ExportBatch>(`/api/v1/projects/${projectId}/export-batches/${batchId}`, {signal}),
+
+  cancelExportBatch: (projectId:string,batchId:string) =>
+    request<ExportBatch>(`/api/v1/projects/${projectId}/export-batches/${batchId}/cancel`,{method:"POST"}),
+
+  retryExportBatch: (projectId:string,batchId:string) =>
+    request<ExportBatch>(`/api/v1/projects/${projectId}/export-batches/${batchId}/retry`,{method:"POST"}),
 
   selectWorkflowIdentity: (projectId: string, runId: string, identityId: string, artifacts: {
     scene: string; face: string; speaker: string; camera: string; quality: string; identity: string;

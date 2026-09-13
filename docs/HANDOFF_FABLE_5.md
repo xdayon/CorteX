@@ -1,6 +1,6 @@
 # CorteX — estado atual para agentes
 
-Atualizado em 2026-09-11. Este arquivo substitui o handoff histórico de 1.648
+Atualizado em 2026-09-13. Este arquivo substitui o handoff histórico de 1.648
 linhas, preservado em [history](history/HANDOFF_FABLE_5-before-2026-09-10.md).
 O histórico não é uma fila de instruções. Não relê-lo inteiro por padrão.
 
@@ -19,15 +19,16 @@ modelo editorial são configurações independentes.
   Oito links Dayon cadastrados no host; entradas antigas arquivadas, mídia preservada.
 - Ingestão YouTube/upload, WAV/transcript e
   análise de áudio cacheados, seleção Codex validada por schema, jobs SQLite.
-- Workflow encadeia transcrição/análise/sugestão até revisão; exportação ainda
-  agenda cada próximo corte no navegador. **Lote durável não está concluído.**
+- Workflow encadeia transcrição/análise/sugestão até revisão. `ClipRevision` e
+  `ExportBatch` persistem a edição; um POST idempotente mantém o lote no worker,
+  com retomada, cancelamento e retry de falhas independentes do navegador.
 - Prévia curta real, MP4/SRT/manifests, QA técnico, captions compartilhadas com
   Remotion, correções por palavra, karaoke/pop, headline manual por corte.
 - Jornada em três etapas com Biblioteca separada, prévia lateral, headline/legenda
   compartilhadas com export, posição vertical do vídeo e detalhes de tarefas reais.
   Remotion reporta frames; FFmpeg reporta tempo codificado, ambos com IO limitado.
-- Draft versionado com autosave no navegador e restauração isolada por run.
-  Isso não é persistência de edição no backend ou sincronização entre navegadores.
+- Revisões têm autosave versionado no servidor e restauração por run; draft no
+  navegador permanece como fallback para indisponibilidade temporária da API.
 - Quadro inteiro com Gaussian blur é default. Automático visual é opcional e
   analisa apenas intervalos escolhidos + margem. Correção por cena e zoom estático;
   cenas abertas/duplas são preservadas (auto v1.2). Reação de outro instante exige
@@ -40,8 +41,14 @@ modelo editorial são configurações independentes.
   Teto do brief validado na seleção e na EDL; finais antecipados ficam explícitos.
   Conclusão visual mantém 100%. Evidência e regressões em
   [export-corrections](evidence/2026-09-11-export-corrections.md).
-- Validação de voz no envelope + união da EDL editorial; **planner ainda não
-  consome approximate_edl e não revalida predominância no áudio final**.
+- Planner consome `approximate_edl`, resolve fronteiras físicas deterministicamente
+  e revalida predominância da voz após limite, J/L-cut e clamp físico final.
+- Cache visual incremental reaproveita amostras por fonte/FFmpeg/largura/timestamp;
+  identidade usa busca indexada, amostragem limitada e cancelamento cooperativo.
+- `uv.lock`, telemetria de duração de jobs/render e manutenção segura de backup,
+  restauração e cache foram acrescentados. Tunnel/Access não foi implementado.
+- Endpoints de revisão/export estão em `review_api.py`; transições duráveis de
+  lote estão em `export_batches.py`, fora do API/worker monolíticos.
 - Build Studio servido pela API no loopback, serviço Linux e atalho instaláveis.
   Não existe deploy Cloudflare; arquitetura escolhida: local + Tunnel/Access.
 
@@ -62,9 +69,9 @@ qualidade editorial continuam exigindo benchmark específico; confira
 Os ajustes de UX estão em [evidência](evidence/2026-09-11-studio-experience.md).
 Trabalhar diretamente na `main`, conforme pedido do usuário. Branches anteriores
 devem permanecer integradas; não restaurar versões antigas de frontend/pipeline.
-Executar P0 do [ROADMAP](ROADMAP.md): export batch + revisão persistidos no
-servidor, retomada independente do navegador e transição de workflow idempotente.
-Separar extração de módulos de mudança de comportamento. Antes de editar, leia
+O próximo gate aberto é medir o P1 do [ROADMAP](ROADMAP.md): benchmark comparável
+de decoder/cache/overlay e, só com evidência, consolidar decoder compartilhado.
+Também seguem abertos corpus real de voz e extração gradual de routers/UI. Antes de editar, leia
 `AGENTS.md`, este arquivo e somente o contrato do gate escolhido. O mapa está em
 [ARCHITECTURE](ARCHITECTURE.md); justificativas em [REVIEW_DAYON_NEWS](REVIEW_DAYON_NEWS.md).
 

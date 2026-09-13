@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from bisect import bisect_right
 from collections.abc import Callable
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from cortex.paths import identities_dir
 
 IDENTITY_ALGORITHM_VERSION = "1.0.0"
 AMBIGUITY_MARGIN = 0.08
+MAX_CLUSTER_REPRESENTATIVES = 12
 
 
 class IdentityIndexJobCancelled(RuntimeError):
@@ -32,20 +34,44 @@ class IdentityIndexPreconditionError(ValueError):
     pass
 
 
-def _camera_scene_at(scenes: list[CameraScene], time_us: int) -> CameraScene | None:
-    return next((scene for scene in scenes if scene.start_us <= time_us < scene.end_us), None)
+def _camera_scene_at(
+    scenes: list[CameraScene], time_us: int, starts: list[int] | None = None,
+) -> CameraScene | None:
+    if not scenes:
+        return None
+    starts = starts or [scene.start_us for scene in scenes]
+    index = bisect_right(starts, time_us) - 1
+    if index < 0:
+        return None
+    scene = scenes[index]
+    return scene if scene.start_us <= time_us < scene.end_us else None
+
+
+def _representatives(members: list[dict]) -> list[dict]:
+    if len(members) <= MAX_CLUSTER_REPRESENTATIVES:
+        return members
+    last = len(members) - 1
+    indices = sorted({round(position * last / (MAX_CLUSTER_REPRESENTATIVES - 1))
+                      for position in range(MAX_CLUSTER_REPRESENTATIVES)})
+    return [members[index] for index in indices]
 
 
 def _minimum_similarity(embedding: list[float], members: list[dict]) -> float:
-    return min(cosine_similarity(embedding, member["embedding"]) for member in members)
+    return min(
+        cosine_similarity(embedding, member["embedding"])
+        for member in _representatives(members)
+    )
 
 
 def cluster_identity_observations(
-    observations: list[dict], *, threshold: float, ambiguity_margin: float
+    observations: list[dict], *, threshold: float, ambiguity_margin: float,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[list[dict]]:
     """Complete-link clustering; ambiguous matches remain isolated."""
     clusters: list[list[dict]] = []
-    for observation in observations:
+    for position, observation in enumerate(observations):
+        if position % 32 == 0 and should_cancel is not None and should_cancel():
+            raise IdentityIndexJobCancelled()
         candidates = sorted(
             (
                 (_minimum_similarity(observation["embedding"], cluster), index)
@@ -140,9 +166,10 @@ class IdentityIndexService:
 
         raw_observations: list[dict] = []
         unresolved_count = 0
+        camera_starts = [scene.start_us for scene in cameras.scenes]
         for frame_index, frame in enumerate(faces.frames):
             time_us = round(frame.time * 1_000_000)
-            camera_scene = _camera_scene_at(cameras.scenes, time_us)
+            camera_scene = _camera_scene_at(cameras.scenes, time_us, camera_starts)
             for face_index, face in enumerate(frame.faces):
                 if face.embedding is None or face.track_id is None or camera_scene is None:
                     unresolved_count += 1
@@ -165,6 +192,7 @@ class IdentityIndexService:
             raw_observations,
             threshold=engine.cosine_match_threshold,
             ambiguity_margin=AMBIGUITY_MARGIN,
+            should_cancel=should_cancel,
         )
 
         identities: list[IdentityEntity] = []
@@ -179,10 +207,11 @@ class IdentityIndexService:
                 status = "confirmed"
             else:
                 status = "single_layout"
+            representatives = _representatives(cluster)
             pair_scores = [
-                cosine_similarity(cluster[left]["embedding"], cluster[right]["embedding"])
-                for left in range(len(cluster))
-                for right in range(left + 1, len(cluster))
+                cosine_similarity(representatives[left]["embedding"], representatives[right]["embedding"])
+                for left in range(len(representatives))
+                for right in range(left + 1, len(representatives))
             ]
             evidence = ["sface_cosine_complete_link", f"layouts:{len(layout_ids)}"]
             if status == "confirmed":

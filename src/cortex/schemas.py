@@ -57,6 +57,7 @@ class JobCreate(BaseModel):
     type: JobType
     project_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=240)
 
     @model_validator(mode="after")
     def reject_legacy_pipeline(self) -> "JobCreate":
@@ -76,9 +77,13 @@ class Job(BaseModel):
     message: str = "Aguardando execução"
     project_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
     worker_pid: int | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    elapsed_seconds: float | None = Field(default=None, ge=0)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

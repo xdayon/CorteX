@@ -3,9 +3,9 @@
 Editor pessoal Dayon News/HiTechX para transformar podcasts do YouTube ou arquivos
 locais em cortes para Reels/TikTok, usando o notebook e sua GPU.
 
-**Estado:** MVP com artefatos reais e testes. Ainda faltam lote de exportação
-independente da aba, confirmação de voz no plano final e avaliação ampla com
-podcasts reais. [Roadmap](docs/ROADMAP.md) · [Revisão completa](docs/REVIEW_DAYON_NEWS.md).
+**Estado:** MVP com artefatos reais, revisão e lote de exportação persistidos no
+servidor. Ainda falta avaliação editorial ampla com podcasts reais.
+[Roadmap](docs/ROADMAP.md) · [Revisão completa](docs/REVIEW_DAYON_NEWS.md).
 
 ## Usar
 
@@ -17,9 +17,9 @@ podcasts reais. [Roadmap](docs/ROADMAP.md) · [Revisão completa](docs/REVIEW_DA
    curta real e exportar MP4/SRT. Resultados e mídia permanecem locais.
 
 Selecionar fonte/configuração não inicia processamento. O workflow persiste até
-revisão. Ajustes, seleção, headlines e correções têm autosave por execução nesse
-navegador; não são sincronizados entre navegadores. Jobs enviados sobrevivem à
-aba, mas **mantenha a aba aberta para agendar o lote inteiro**.
+revisão. Ajustes, seleção, headlines e correções têm autosave versionado no
+servidor, além do fallback local do navegador. Um único envio agenda o lote
+inteiro; fechar a aba não interrompe os próximos cortes.
 
 ## Edição disponível
 
@@ -50,6 +50,9 @@ python3.12 -m venv .venv
 (cd apps/remotion && npm ci && npm run build)
 ```
 
+O lock reproduzível do backend é `uv.lock`; com `uv` instalado, valide sem
+alterar o ambiente com `uv sync --locked --dry-run`.
+
 Configuração em `config/cortex.yaml` e overrides `CORTEX__SECAO__CHAVE`.
 `render.remotion_browser` deve apontar para um `chrome-headless-shell` executável;
 o renderer não baixa browser nem troca silenciosamente para libass.
@@ -75,8 +78,17 @@ systemctl --user disable --now cortex.service
 ```
 
 Após atualizar código, compilar Web/Remotion e reiniciar o serviço. Arquivos em
-`data/` não são backupados pelo GitHub. Para endereço privado próprio, a proposta
-é **Tunnel + Access com processamento local**; nenhum deploy foi realizado.
+`data/` não são backupados pelo GitHub. Backup, restauração segura e retenção do
+cache têm prévia explícita:
+
+```bash
+.venv/bin/python scripts/maintain_data.py backup --output /caminho/cortex.tar.gz
+.venv/bin/python scripts/maintain_data.py restore --archive /caminho/cortex.tar.gz --target /destino
+.venv/bin/python scripts/maintain_data.py prune-cache --max-age-days 30
+```
+
+Restauração e remoção só são aplicadas com `--apply`. Tunnel/Access permanece
+fora da implementação atual.
 [Operação e Cloudflare](docs/LOCAL_AND_CLOUDFLARE.md).
 
 ## Desenvolvimento e verificação

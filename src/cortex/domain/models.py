@@ -115,3 +115,82 @@ class WorkflowRun(BaseModel):
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ClipRevision(BaseModel):
+    """Server-side snapshot of the human review state for one workflow run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    project_id: str
+    workflow_run_id: str
+    version: int = Field(default=1, ge=1)
+    selection_artifact_id: str
+    selected_clips: list[dict[str, Any]] = Field(min_length=1, max_length=25)
+    render_settings: dict[str, Any]
+    caption_edits: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    headlines: dict[str, str] = Field(default_factory=dict)
+    visual_artifacts: dict[str, str] = Field(default_factory=dict)
+    interviewer_identity_id: str | None = None
+    reuse_reactions: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ExportStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ExportItemStatus(StrEnum):
+    QUEUED = "queued"
+    PLANNING = "planning"
+    CAMERA_PLANNING = "camera_planning"
+    RENDERING = "rendering"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ExportItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    batch_id: str
+    project_id: str
+    position: int = Field(ge=0)
+    clip_key: str
+    title: str
+    clip: dict[str, Any]
+    render_settings: dict[str, Any]
+    status: ExportItemStatus = ExportItemStatus.QUEUED
+    active_job_id: str | None = None
+    edit_plan_artifact_id: str | None = None
+    camera_edit_plan_artifact_id: str | None = None
+    render_artifact_id: str | None = None
+    attempt: int = Field(default=1, ge=1)
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ExportBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    project_id: str
+    workflow_run_id: str
+    revision_id: str
+    idempotency_key: str = Field(min_length=1, max_length=240)
+    status: ExportStatus = ExportStatus.QUEUED
+    active_job_id: str | None = None
+    reaction_candidate_artifact_id: str | None = None
+    error: str | None = None
+    items: list[ExportItem] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)

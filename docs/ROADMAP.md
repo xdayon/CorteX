@@ -1,6 +1,6 @@
 # CorteX — contrato de entrega
 
-Atualizado em 2026-09-11. Objetivo: editor pessoal confiável para Dayon News,
+Atualizado em 2026-09-13. Objetivo: editor pessoal confiável para Dayon News,
 master único, processamento local, revisão humana e publicação manual.
 Gates anteriores estão em [history](history/ROADMAP-before-2026-09-10.md).
 
@@ -37,12 +37,12 @@ Regressões e limites: [export-corrections](evidence/2026-09-11-export-correctio
 
 ### 1. Edição e export batch no servidor
 
-- [ ] `ClipRevision` salva seleção, headline, correções, framing e settings no SQLite.
-- [ ] `ExportBatch`/itens com snapshot de revisão, estado e resultados persistidos.
-- [ ] Um POST idempotente agenda o lote completo; worker serial cria EDL/render.
-- [ ] UI apenas observa; GET restaura estado em outro navegador.
-- [ ] Job seguinte + avanço de workflow na mesma transação ou reconciliados por chave.
-- [ ] Cancelar item/lote, repetir somente falhas e preservar outputs concluídos.
+- [x] `ClipRevision` salva seleção, headline, correções, framing e settings no SQLite.
+- [x] `ExportBatch`/itens com snapshot de revisão, estado e resultados persistidos.
+- [x] Um POST idempotente agenda o lote completo; worker serial cria EDL/render.
+- [x] UI apenas observa; GET restaura estado em outro navegador.
+- [x] Job seguinte + avanço de workflow na mesma transação ou reconciliados por chave.
+- [x] Cancelar item/lote, repetir somente falhas e preservar outputs concluídos.
 
 Aceite: enviar três cortes, fechar a aba no primeiro, comprovar os três artefatos;
 reiniciar worker durante o segundo sem duplicar resultados nem perder seleção.
@@ -55,8 +55,8 @@ com interrupção entre job e avanço; um teste host de render curto por lote.
 - [ ] Modelo/pesos com revisão fixa no hash; timeout configurável e erro limitado útil.
 - [ ] Transcript atribuído por palavra com unknown/overlap explícitos; correção manual.
 - [ ] Confirmar vínculo voz ↔ rosto por episódio, sem inferir falante pelo rosto visível.
-- [ ] Integrar intenção de `approximate_edl` ao planner com fronteiras determinísticas.
-- [ ] Revalidar predominância no plano de áudio final; mostrar motivo quando insuficiente.
+- [x] Integrar intenção de `approximate_edl` ao planner com fronteiras determinísticas.
+- [x] Revalidar predominância no plano de áudio final; mostrar motivo quando insuficiente.
 
 Aceite: corpus com Dayon, convidado e entrevistador; revisar atribuição manualmente;
 montagem em que envelope favorece Dayon mas EDL não favorece deve ser rejeitada.
@@ -69,13 +69,13 @@ Nenhuma associação automática entre vozes de episódios diferentes.
   ~129min entre criação dos renders e persistência de overlays; não atribuir todo
   esse tempo ao encode NVENC nem confundir identificação de voz com visão.
 - [ ] Decoder compartilhado por janela para faces/qualidade/speaker, frames reduzidos.
-- [ ] Cache por janelas reutilizáveis; acrescentar corte reaproveita a cobertura existente.
-- [ ] Limitar amostras de identidade, eliminar materialização O(n²) e permitir cancelamento.
+- [x] Cache incremental de amostras; acrescentar corte reaproveita timestamps já decodificados.
+- [x] Limitar amostras de identidade, eliminar materialização O(n²) e permitir cancelamento.
 - [ ] Timeout/cancelamento para todas as leituras de decoder e subprocessos de QA.
 - [ ] Medir retenção de VRAM do Whisper; descarregar antes de render se o benefício for real.
 - [x] Preview rápido usando fonte real e headline; manter prévia final fiel opcional.
 - [ ] Paginar galeria e acrescentar filtros por tema e indicador de QA (capa/canal/busca já disponíveis).
-- [ ] Catálogo resumido sem reconciliar todos os projetos/manifests a cada polling.
+- [x] Catálogo resumido sem reconciliar todos os projetos/manifests a cada polling.
 - [ ] Exportar presets Dayon News; ajustes por corte e globais com alcance evidente.
 
 Aceite de desempenho: mesmo trecho no começo e no fim de um episódio, mediana de
@@ -87,8 +87,8 @@ Não afirmar speedup sem benchmark comparável persistido.
 
 - [ ] Extrair routers de API por domínio preservando contratos; handlers de worker separados.
 - [ ] Extrair telas/hooks UI e pacote visual compartilhado, com paridade de preview/export.
-- [ ] Lock backend reproduzível + matriz Python, sem atualização simultânea da stack CUDA.
-- [ ] Backup/restauração de SQLite e artefatos; retenção de cache com prévia do que será removido.
+- [x] Lock backend reproduzível (`uv.lock`), sem atualização simultânea da stack CUDA.
+- [x] Backup/restauração de SQLite e artefatos; retenção de cache com prévia do que será removido.
 - [ ] Tunnel/Access após definir hostname/identidade; autenticação cobre API/mídia/SSE.
 - [ ] E2E de acesso autorizado/negado, expiração, reconexão e upload/Range no proxy.
 

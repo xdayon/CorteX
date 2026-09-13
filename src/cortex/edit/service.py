@@ -11,6 +11,7 @@ from cortex.analyze.scene_schemas import SceneIndexDocument
 from cortex.config import CortexConfig
 from cortex.domain.models import StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
+from cortex.diarize.attribution import ConfirmedVoice, subject_share_for_ranges
 from cortex.edit.boundary import energy_track_from_analysis, snap_segments_to_scene_cuts
 from cortex.edit.planner import (
     limit_timeline_duration,
@@ -89,6 +90,8 @@ class EditPlanService:
         jl_cut: bool | None = None,
         max_jl_offset_seconds: float | None = None,
         maximum_seconds: float | None = None,
+        approximate_edl: list[dict] | None = None,
+        confirmed_voice: dict | None = None,
     ) -> dict:
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -101,6 +104,29 @@ class EditPlanService:
             raise EditPlanPreconditionError("maximum_seconds deve ser positivo e finito")
         if maximum_seconds is not None:
             maximum_seconds = float(maximum_seconds)
+        semantic_ranges: list[tuple[float, float]] = []
+        for entry in approximate_edl or []:
+            if entry.get("audio_mode") == "room_tone":
+                continue
+            try:
+                range_start = float(entry["source_start"])
+                range_end = float(entry["source_end"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise EditPlanPreconditionError("approximate_edl possui intervalo inválido") from exc
+            if (
+                not math.isfinite(range_start) or not math.isfinite(range_end)
+                or range_start < start or range_end > end or range_end <= range_start
+            ):
+                raise EditPlanPreconditionError(
+                    "approximate_edl deve conter intervalos válidos dentro do envelope"
+                )
+            semantic_ranges.append((range_start, range_end))
+        semantic_ranges.sort()
+        if any(left[1] > right[0] for left, right in zip(semantic_ranges, semantic_ranges[1:])):
+            raise EditPlanPreconditionError("approximate_edl possui intervalos sobrepostos")
+        if approximate_edl is not None and not semantic_ranges:
+            raise EditPlanPreconditionError("approximate_edl não possui áudio editorial")
+        voice = ConfirmedVoice.model_validate(confirmed_voice) if confirmed_voice else None
         if analysis_artifact.stage != "analysis":
             raise EditPlanPreconditionError("artifact informado não é um AnalysisArtifact")
         if transcript_artifact.project_id != analysis_artifact.project_id:
@@ -191,6 +217,16 @@ class EditPlanService:
         if maximum_seconds is not None:
             hash_payload["maximum_seconds"] = maximum_seconds
             hash_payload["duration_limit_version"] = 1
+        if semantic_ranges:
+            hash_payload["semantic_ranges"] = semantic_ranges
+            hash_payload["semantic_planner_version"] = 1
+        if voice is not None:
+            hash_payload["confirmed_voice"] = {
+                "speaker": voice.speaker,
+                "diarization_artifact_id": voice.diarization_artifact_id,
+                "turns": [turn.model_dump(mode="json") for turn in voice.turns],
+                "validation_version": 1,
+            }
         # Absent a scene_index, the hash payload — and thus the cache key —
         # is identical to before this gate: EDLs stay byte-for-byte the same
         # when scene snapping does not participate.
@@ -212,7 +248,8 @@ class EditPlanService:
             progress_cb(100.0, "Plano de edição em cache reutilizado")
             return {"cached": True, "edit_plan_artifact_id": cached.id, "edit_plan_path": cached.path, "schema_version": cached.schema_version,
                     "duration_limit_applied": cached.metadata.get("duration_limit_applied", False),
-                    "timeline_duration_seconds": cached.metadata.get("timeline_duration_seconds")}
+                    "timeline_duration_seconds": cached.metadata.get("timeline_duration_seconds"),
+                    "voice_validation": cached.metadata.get("voice_validation")}
 
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -221,18 +258,67 @@ class EditPlanService:
         if should_cancel():
             raise EditPlanJobCancelled()
         progress_cb(45.0, "Planejando cortes seguros")
-        segments, diagnostics = plan_safe_segments(
-            words, start, end, resolved_profile, energy, vad_intervals=analysis.vad_intervals,
-        )
-        segments = protect_segment_boundaries(segments, words, resolved_profile)
+        planning_ranges = semantic_ranges or [(start, end)]
+        segments = []
+        range_diagnostics = []
+        for range_start, range_end in planning_ranges:
+            planned, range_diag = plan_safe_segments(
+                words, range_start, range_end, resolved_profile, energy,
+                vad_intervals=analysis.vad_intervals,
+            )
+            segments.extend(protect_segment_boundaries(planned, words, resolved_profile))
+            range_diagnostics.append(range_diag)
+        for index, segment in enumerate(segments):
+            segment["timeline_order"] = index
+            if index < len(segments) - 1 and "transition" not in segment:
+                segment["transition"] = {
+                    "video": "micro_dissolve", "audio": "equal_power_crossfade",
+                    "duration": resolved_profile.crossfade,
+                }
+        diagnostics = {
+            "profile": resolved_profile.name,
+            "waveform_used": any(item["waveform_used"] for item in range_diagnostics),
+            "candidate_pauses": sum(item["candidate_pauses"] for item in range_diagnostics),
+            "cuts": max(0, len(segments) - 1),
+            "saved_seconds": max(0.0, round(
+                (end - start) - sum(s["end"] - s["start"] for s in segments), 3,
+            )),
+            "crossfade": resolved_profile.crossfade,
+            "vad_used": any(item["vad_used"] for item in range_diagnostics),
+        }
 
         if should_cancel():
             raise EditPlanJobCancelled()
         progress_cb(70.0, "Validando fronteiras do plano")
-        segments, quality = validate_edit_plan(
-            segments, words, resolved_profile, start, end, energy,
-            vad_intervals=analysis.vad_intervals,
-        )
+        if semantic_ranges:
+            validated_segments = []
+            validation_reports = []
+            for segment in segments:
+                validated, report = validate_edit_plan(
+                    [segment], words, resolved_profile, float(segment["start"]),
+                    float(segment["end"]), energy, vad_intervals=analysis.vad_intervals,
+                )
+                validated_segments.extend(validated)
+                validation_reports.append(report)
+            segments = validated_segments
+            for index, segment in enumerate(segments):
+                segment["timeline_order"] = index
+                if index < len(segments) - 1:
+                    segment.setdefault("transition", {
+                        "video": "micro_dissolve", "audio": "equal_power_crossfade",
+                        "duration": resolved_profile.crossfade,
+                    })
+            quality = {
+                "passed": all(report["passed"] for report in validation_reports),
+                "issues": [issue for report in validation_reports for issue in report["issues"]],
+                "profile": resolved_profile.name,
+                "degraded": any(report["degraded"] for report in validation_reports),
+            }
+        else:
+            segments, quality = validate_edit_plan(
+                segments, words, resolved_profile, start, end, energy,
+                vad_intervals=analysis.vad_intervals,
+            )
         if quality["degraded"]:
             diagnostics = {
                 "profile": resolved_profile.name, "waveform_used": diagnostics["waveform_used"],
@@ -300,6 +386,25 @@ class EditPlanService:
         if clamped_issues:
             quality = {**quality, "issues": [*quality["issues"], *clamped_issues]}
 
+        # Validate the confirmed voice only after every duration, J/L-cut, and
+        # physical-source adjustment.  This is the audio timeline that render
+        # will actually consume, rather than the earlier semantic proposal.
+        voice_validation = None
+        if voice is not None:
+            final_share = subject_share_for_ranges(
+                [turn.model_dump() for turn in voice.turns], voice.speaker,
+                ((float(segment.get("audio_start", segment["start"])),
+                  float(segment.get("audio_end", segment["end"]))) for segment in segments),
+            )
+            voice_validation = {
+                "version": 1, "speaker": voice.speaker,
+                "subject_share": round(final_share, 6), "accepted": final_share >= 0.5,
+            }
+            if final_share < 0.5:
+                raise EditPlanPreconditionError(
+                    f"Plano final rejeitado: voz confirmada ocupa {final_share:.1%} do áudio falado"
+                )
+
         diagnostics = {
             **diagnostics,
             "scene_snap_count": scene_snap_count,
@@ -326,6 +431,7 @@ class EditPlanService:
                 max_offset_seconds=round(effective_max_jl_offset, 4),
                 requested_by=requested_by,
             ),
+            voice_validation=voice_validation,
         )
 
         if should_cancel():
@@ -358,8 +464,11 @@ class EditPlanService:
                 "maximum_seconds": maximum_seconds,
                 "duration_limit_applied": bool(duration_issues),
                 "timeline_duration_seconds": document.timeline_duration_seconds,
+                "semantic_range_count": len(semantic_ranges),
+                "voice_validation": voice_validation,
             },
         ))
         progress_cb(100.0, "Plano de edição concluído")
         return {"cached": False, "edit_plan_artifact_id": artifact.id, "edit_plan_path": artifact.path, "schema_version": artifact.schema_version,
-                "duration_limit_applied": bool(duration_issues), "timeline_duration_seconds": document.timeline_duration_seconds}
+                "duration_limit_applied": bool(duration_issues), "timeline_duration_seconds": document.timeline_duration_seconds,
+                "voice_validation": voice_validation}
