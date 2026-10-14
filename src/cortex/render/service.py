@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from cortex.config import CortexConfig
 from cortex.analyze.face_schemas import FaceIndexDocument
@@ -159,6 +160,65 @@ class _PunchInResolution:
     reason: str | None
 
 
+@dataclass(frozen=True)
+class _CropGeometry:
+    """Crop rectangle in SOURCE pixels plus the display window it is scaled
+    into on the canvas (vertical_crop: the whole canvas; blurred_background:
+    a full-width window positioned by framing.position_y)."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+    window_w: int
+    window_h: int
+
+
+def _even(value: float) -> int:
+    return max(2, int(round(value / 2.0)) * 2)
+
+
+def _blurred_geometry(
+    source_w: int, source_h: int, canvas_w: int, canvas_h: int, zoom: float, focus_x: float,
+) -> _CropGeometry:
+    """blurred_background zoom/focus: crop width W/zoom around focus_x, full
+    height, clamped so the display window never exceeds the canvas height (max
+    zoom = full-canvas vertical crop, no blur visible)."""
+    crop_w = source_w / zoom
+    crop_h = float(source_h)
+    clamped = canvas_w * crop_h / crop_w > canvas_h
+    if clamped:
+        crop_h = crop_w * canvas_h / canvas_w
+    cw, ch = min(source_w, _even(crop_w)), min(source_h, _even(crop_h))
+    x = int(min(max(focus_x * source_w - cw / 2, 0), source_w - cw)) // 2 * 2
+    y = int((source_h - ch) / 2) // 2 * 2
+    window_h = canvas_h if clamped else min(canvas_h, _even(canvas_w * ch / cw))
+    return _CropGeometry(x, y, cw, ch, canvas_w, window_h)
+
+
+def _cover_geometry(source_w: int, source_h: int, canvas_w: int, canvas_h: int) -> _CropGeometry:
+    """vertical_crop: the centred source region that covers the canvas."""
+    factor = max(canvas_w / source_w, canvas_h / source_h)
+    cw = min(source_w, _even(canvas_w / factor))
+    ch = min(source_h, _even(canvas_h / factor))
+    return _CropGeometry(
+        (source_w - cw) // 2 // 2 * 2, (source_h - ch) // 2 // 2 * 2, cw, ch, canvas_w, canvas_h,
+    )
+
+
+def _framing_geometry(
+    framing_mode: str, source_size: tuple[int, int] | None, canvas_w: int, canvas_h: int,
+    zoom: float, focus_x: float,
+) -> _CropGeometry | None:
+    if source_size is None:
+        return None
+    if framing_mode == "vertical_crop":
+        return _cover_geometry(*source_size, canvas_w, canvas_h)
+    if framing_mode == "blurred_background":
+        return _blurred_geometry(*source_size, canvas_w, canvas_h, zoom, focus_x)
+    return None
+
+
 def _resolve_segment_punch_in(
     segment_order: int,
     punch_in: RenderPunchInSettings,
@@ -167,8 +227,10 @@ def _resolve_segment_punch_in(
     canvas_width: int,
     canvas_height: int,
     static_face_crop_map: dict[int, dict[str, int]] | None,
+    geometry: _CropGeometry | None = None,
+    scale_override: float | None = None,
 ) -> _PunchInResolution:
-    scale = punch_in.scale
+    scale = punch_in.scale if scale_override is None else scale_override
     # Defense-in-depth: RenderPunchInSettings already bounds scale via a
     # pydantic Field, but the ceiling is safety-load-bearing enough to also
     # assert here rather than trust every caller to go through validation
@@ -206,6 +268,23 @@ def _resolve_segment_punch_in(
             segment_order, True, scale, scale, anchor_x, anchor_y, new_w, new_h, None
         )
 
+    if framing_mode in ("vertical_crop", "blurred_background") and geometry is not None:
+        # Punch-in in source pixels: shrink the base crop around its centre; the
+        # display window keeps its size, so it never changes between cuts.
+        new_w = min(geometry.w, _even(geometry.w / scale))
+        new_h = min(geometry.h, _even(geometry.h / scale))
+        anchor_x = geometry.x + (geometry.w - new_w) // 2
+        anchor_y = geometry.y + (geometry.h - new_h) // 2
+        upscale = max(geometry.window_w / new_w, geometry.window_h / new_h)
+        if upscale > PUNCH_IN_MAX_TOTAL_UPSCALE:
+            return _PunchInResolution(
+                segment_order, False, scale, 1.0, 0, 0, geometry.w, geometry.h,
+                "punch_in_resolution_limit",
+            )
+        return _PunchInResolution(
+            segment_order, True, scale, scale, anchor_x, anchor_y, new_w, new_h, None
+        )
+
     if framing_mode in ("vertical_crop", "blurred_background"):
         new_w = max(1, round(canvas_width / scale))
         new_h = max(1, round(canvas_height / scale))
@@ -236,6 +315,8 @@ def _resolve_punch_ins(
     canvas_width: int,
     canvas_height: int,
     static_face_crop_map: dict[int, dict[str, int]] | None,
+    geometry: _CropGeometry | None = None,
+    junction_orders: frozenset[int] = frozenset(),
 ) -> list[_PunchInResolution]:
     """Resolve every segment's punch-in geometry up front (fail-closed on
     invalid crops before any encode starts) and decide, deterministically,
@@ -245,7 +326,7 @@ def _resolve_punch_ins(
     plan is present, else the parity of the segment's own global
     timeline_order (no other scene concept exists on the plain EditPlanDocument).
     """
-    if not punch_in.enabled:
+    if not punch_in.enabled and not junction_orders:
         return [
             _PunchInResolution(
                 segment.timeline_order, False, punch_in.scale, 1.0, 0, 0,
@@ -253,6 +334,9 @@ def _resolve_punch_ins(
             )
             for segment in plan.segments
         ]
+    # A zoom junction (transitions.piece_junction == "zoom") pushes in harder on
+    # the first segment after a content jump instead of following alternation.
+    junction_scale = min(punch_in.scale + 0.08, PUNCH_IN_MAX_SCALE)
 
     scene_by_segment: dict[int, int] | None = None
     if camera_plan is not None:
@@ -261,7 +345,9 @@ def _resolve_punch_ins(
             scene_by_segment.setdefault(shot.edit_segment_order, shot.scene_index)
 
     apply_flags: dict[int, bool] = {}
-    if not punch_in.alternate_on_jump_cuts:
+    if not punch_in.enabled:
+        apply_flags = {segment.timeline_order: False for segment in plan.segments}
+    elif not punch_in.alternate_on_jump_cuts:
         apply_flags = {segment.timeline_order: True for segment in plan.segments}
     elif scene_by_segment is not None:
         previous_scene: object = object()
@@ -281,16 +367,19 @@ def _resolve_punch_ins(
     resolutions: list[_PunchInResolution] = []
     for segment in plan.segments:
         order = segment.timeline_order
-        if not apply_flags.get(order, False):
+        junction = order in junction_orders
+        if not junction and not apply_flags.get(order, False):
             resolutions.append(_PunchInResolution(
                 order, False, punch_in.scale, 1.0, 0, 0,
-                canvas_width, canvas_height, "alternation_skipped",
+                canvas_width, canvas_height,
+                "alternation_skipped" if punch_in.enabled else "punch_in_disabled",
             ))
             continue
         resolutions.append(_resolve_segment_punch_in(
             order, punch_in, framing_mode=framing_mode,
             canvas_width=canvas_width, canvas_height=canvas_height,
-            static_face_crop_map=static_face_crop_map,
+            static_face_crop_map=static_face_crop_map, geometry=geometry,
+            scale_override=junction_scale if junction else None,
         ))
     return resolutions
 
@@ -347,11 +436,11 @@ def _export_render_files(
         ) from exc
 
 
-def _encoder_args(encoder: str) -> list[str]:
+def _encoder_args(encoder: str, *, draft: bool = False) -> list[str]:
     if encoder == "h264_nvenc":
-        return ["-c:v", encoder, "-preset", "p4", "-cq", "18"]
+        return ["-c:v", encoder, "-preset", "p1" if draft else "p4", "-cq", "18"]
     if encoder == "libx264":
-        return ["-c:v", encoder, "-preset", "veryfast", "-crf", "18"]
+        return ["-c:v", encoder, "-preset", "ultrafast" if draft else "veryfast", "-crf", "18"]
     raise RenderPreconditionError(f"encoder não suportado: {encoder}")
 
 
@@ -574,6 +663,9 @@ def _filtergraph(
     auto_framing: list[AutoFramingSpan] | None = None,
     source_time_offset: float = 0.0,
     framing_position_y: float = 0.5,
+    source_size: tuple[int, int] | None = None,
+    framing_zoom: float = 1.0,
+    framing_focus_x: float = 0.5,
 ) -> tuple[str, str, str]:
     video_parts: list[str] = []
     audio_parts: list[str] = []
@@ -583,6 +675,11 @@ def _filtergraph(
         for shot in camera_plan.shots:
             shots_by_segment.setdefault(shot.edit_segment_order, []).append(shot)
     source_input_indices = source_input_indices or {plan.source_asset_id: 0}
+    geometry = _framing_geometry(
+        framing_mode, source_size, width, height, framing_zoom, framing_focus_x,
+    )
+    if framing_mode == "blurred_background" and framing_zoom != 1.0 and geometry is None:
+        raise RenderPreconditionError("zoom do enquadramento exige as dimensões da fonte")
     # Lossy AAC can overshoot the decoded PCM target. Keep a conservative
     # encoding margin while the publication gate still enforces the configured limit.
     normalization_true_peak = true_peak_limit_dbfs - _AAC_TRUE_PEAK_HEADROOM_DB
@@ -611,6 +708,12 @@ def _filtergraph(
                     f"setsar=1,format=yuv420p{output_label}"
                 )
             effective_mode = "blurred_background"
+        if effective_mode == "vertical_crop" and geometry is not None and punch is not None:
+            return (
+                f"{input_filter},fps={fps},crop={punch.crop_width}:{punch.crop_height}:"
+                f"{punch.anchor_x}:{punch.anchor_y},scale={width}:{height},"
+                f"setsar=1,format=yuv420p{output_label}"
+            )
         if effective_mode == "vertical_crop":
             punch_chain = (
                 f",crop={punch.crop_width}:{punch.crop_height}:"
@@ -637,7 +740,23 @@ def _filtergraph(
             foreground_raw = f"[{label_name}_fgraw]"
             background = f"[{label_name}_bg]"
             foreground = f"[{label_name}_fg]"
-            if punch is not None:
+            source_crop: tuple[int, int, int, int] | None = None
+            if framing_mode == "blurred_background" and geometry is not None:
+                if punch is not None:
+                    source_crop = (
+                        punch.crop_width, punch.crop_height, punch.anchor_x, punch.anchor_y,
+                    )
+                elif framing_zoom != 1.0:
+                    source_crop = (geometry.w, geometry.h, geometry.x, geometry.y)
+            if source_crop is not None:
+                assert geometry is not None
+                # Crop in source pixels (zoom/focus and punch-in), then scale once
+                # into the fixed display window.
+                foreground_chain = (
+                    f"crop={source_crop[0]}:{source_crop[1]}:{source_crop[2]}:{source_crop[3]},"
+                    f"scale={geometry.window_w}:{geometry.window_h},setsar=1"
+                )
+            elif punch is not None:
                 # Crop the source inside the fitted video window. Zoom must not
                 # expand that window into the caption area selected in preview.
                 foreground_chain = (
@@ -1322,7 +1441,9 @@ class RenderService:
         render_settings_override: RenderSettingsPatch | None = None,
         export_directory: str | None = None,
         confirmed_voice: dict | None = None,
+        purpose: Literal["export", "draft"] = "export",
     ) -> dict:
+        draft = purpose == "draft"
         total_started = time.monotonic()
         timings: dict[str, float] = {}
         if edit_plan_artifact.stage != "edit_plan":
@@ -1344,7 +1465,7 @@ class RenderService:
         )
         requested_settings = _merge_render_settings(requested_settings, render_settings_override)
         requested_encoder = requested_settings.encoder.strip()
-        _encoder_args(requested_encoder)
+        _encoder_args(requested_encoder, draft=draft)
         if (
             requested_settings.framing.mode == "face_static_crop"
             and camera_edit_plan_artifact is not None
@@ -1463,6 +1584,10 @@ class RenderService:
             "framing": requested_settings.framing.model_copy(update={
                 "position_y": (requested_settings.framing.position_y
                                if requested_settings.framing.mode == "blurred_background" else 0.5),
+                "zoom": (requested_settings.framing.zoom
+                         if requested_settings.framing.mode == "blurred_background" else 1.0),
+                "focus_x": (requested_settings.framing.focus_x
+                            if requested_settings.framing.mode == "blurred_background" else 0.5),
             }),
             "captions": requested_settings.captions.model_copy(update={
                 "font_family": caption_font,
@@ -1472,6 +1597,16 @@ class RenderService:
                 font_family=headline_font,
             ),
         })
+        if draft:
+            # Previews are cheap: half canvas, no burned typography or flashes.
+            effective_settings = effective_settings.model_copy(update={
+                "canvas": RenderCanvasSettings(
+                    width=max(320, effective_settings.canvas.width // 2 // 2 * 2),
+                    height=max(320, effective_settings.canvas.height // 2 // 2 * 2),
+                    fps=effective_settings.canvas.fps,
+                ),
+                "subtitles": RenderSubtitleSettings(sidecar_srt=False),
+            })
         requested_renderer = self._config.render.overlay_renderer
         fonts_dir = Path(self._config.render.fonts_dir)
         if not fonts_dir.is_absolute():
@@ -1571,12 +1706,34 @@ class RenderService:
         # Punch-in (Gate 5): resolved once, up front, so an invalid crop or
         # an unsafe upscale fails closed before any ffmpeg process starts.
         punch_in_settings = effective_settings.framing.punch_in
+        video_stream_info = next(
+            (item for item in source_probe.get("streams", []) if item.get("codec_type") == "video"),
+            None,
+        )
+        source_size = (
+            (int(video_stream_info["width"]), int(video_stream_info["height"]))
+            if video_stream_info and video_stream_info.get("width") and video_stream_info.get("height")
+            else None
+        )
+        if effective_settings.framing.zoom != 1.0 and source_size is None:
+            raise RenderPreconditionError("zoom do enquadramento exige as dimensões da fonte")
+        crop_geometry = _framing_geometry(
+            effective_settings.framing.mode, source_size,
+            effective_settings.canvas.width, effective_settings.canvas.height,
+            effective_settings.framing.zoom, effective_settings.framing.focus_x,
+        )
+        junction_orders = frozenset(
+            plan.segments[position].timeline_order for position, _moment in piece_junctions(plan)
+        ) if (
+            effective_settings.transitions.piece_junction == "zoom" and not draft and not auto_framing
+        ) else frozenset()
         punch_in_resolutions = [] if auto_framing else _resolve_punch_ins(
             plan, camera_plan, punch_in_settings,
             framing_mode=effective_settings.framing.mode,
             canvas_width=effective_settings.canvas.width,
             canvas_height=effective_settings.canvas.height,
             static_face_crop_map=static_face_crop_map,
+            geometry=crop_geometry, junction_orders=junction_orders,
         )
         punch_in_by_segment = {
             resolution.segment_order: resolution for resolution in punch_in_resolutions
@@ -1590,6 +1747,7 @@ class RenderService:
                 anchor_y=resolution.anchor_y,
                 applied=resolution.applied,
                 reason=resolution.reason,
+                junction=resolution.segment_order in junction_orders,
             )
             for resolution in punch_in_resolutions
         ]
@@ -1599,21 +1757,21 @@ class RenderService:
             raise RenderPreconditionError(f"safe zone não definido para canvas {canvas_key}")
         output_dir = renders_dir(self._config, plan.project_id)
         output_dir.mkdir(parents=True, exist_ok=True)
-        needs_cues = (
+        needs_cues = not draft and (
             effective_settings.captions.enabled or effective_settings.subtitles.sidecar_srt
         )
         try:
             plan_overlay = build_plan_overlay(
                 plan=plan, transcript=transcript, settings=effective_settings,
                 fonts_dir=fonts_dir, headline_text=headline_text, needs_cues=needs_cues,
-                build_ass=requested_renderer == "libass",
+                build_ass=requested_renderer == "libass" and not draft,
             )
         except ValueError as exc:
             raise RenderPreconditionError(str(exc)) from exc
         cues = plan_overlay.cues
         if needs_cues and not cues:
             raise RenderPreconditionError("nenhuma palavra do transcript coincide com a EDL")
-        overlay_enabled = bool(
+        overlay_enabled = not draft and bool(
             effective_settings.captions.enabled
             or (effective_settings.headline.enabled and headline_text)
             or plan_overlay.ass is not None
@@ -1708,6 +1866,7 @@ class RenderService:
             "black_threshold_seconds": self._config.render.black_threshold_seconds,
             "freeze_threshold_seconds": self._config.render.freeze_threshold_seconds,
             "transcript_sha256": _sha256(transcript_path),
+            "purpose": purpose,
             "junction_times": list(plan_overlay.junctions),
             "overlay_renderer": requested_renderer if overlay_enabled else "none",
             "overlay_input_hash": overlay_summary.cache_key if overlay_summary else None,
@@ -1751,7 +1910,7 @@ class RenderService:
                         input_hash=input_hash,
                     )
                 progress_cb(100.0, "Render em cache reutilizado")
-                return {"cached": True, "render_artifact_id": cached.id,
+                return {"cached": True, "purpose": purpose, "render_artifact_id": cached.id,
                         "render_path": cached_doc.output_path,
                         "schema_version": cached.schema_version,
                         "publish_ready": (
@@ -1775,10 +1934,11 @@ class RenderService:
                         f"shot excede duração da fonte de vídeo: {shot.video_source_asset_id}"
                     )
 
-        output_path = output_dir / f"render-{input_hash[:16]}.mp4"
+        stem = f"{'draft-' if draft else ''}render-{input_hash[:16]}"
+        output_path = output_dir / f"{stem}.mp4"
         temporary_path = output_path.with_suffix(".tmp.mp4")
-        subtitles_path = output_dir / f"render-{input_hash[:16]}.srt"
-        temporary_subtitles_path = output_dir / f".render-{input_hash[:16]}.tmp.srt"
+        subtitles_path = output_dir / f"{stem}.srt"
+        temporary_subtitles_path = output_dir / f".{stem}.tmp.srt"
         if cues:
             temporary_subtitles_path.write_text(render_srt(cues), encoding="utf-8")
         ordered_source_ids = [source.id]
@@ -1801,6 +1961,9 @@ class RenderService:
             source_input_indices=source_input_indices,
             source_time_offset=input_start,
             framing_position_y=effective_settings.framing.position_y,
+            source_size=source_size,
+            framing_zoom=effective_settings.framing.zoom,
+            framing_focus_x=effective_settings.framing.focus_x,
         )
         command = [str(self._config.render.ffmpeg), "-y", "-v", "error"]
         command.extend([
@@ -1811,11 +1974,11 @@ class RenderService:
             command.extend(["-c:v", "libvpx-vp9", "-i", overlay_manifest.output_path])
         command.extend([
             "-filter_complex", filtergraph, "-map", video_label, "-map", audio_label,
-            *_encoder_args(requested_encoder), "-c:a", "aac", "-b:a", "192k",
+            *_encoder_args(requested_encoder, draft=draft), "-c:a", "aac", "-b:a", "192k",
             "-ar", "48000", "-movflags", "+faststart", str(temporary_path),
         ])
         progress_cb(25.0, f"Renderizando com {requested_encoder}")
-        log_path = output_dir / f"render-{input_hash[:16]}.ffmpeg.log"
+        log_path = output_dir / f"{stem}.ffmpeg.log"
         try:
             encode_started = time.monotonic()
             _run_ffmpeg(
@@ -1856,7 +2019,7 @@ class RenderService:
                         temporary_path,
                         target_lufs=self._config.render.loudness_target_lufs,
                         true_peak_dbfs=self._config.render.true_peak_limit_dbfs,
-                        log_path=output_dir / f"render-{input_hash[:16]}.loudnorm.log",
+                        log_path=output_dir / f"{stem}.loudnorm.log",
                         should_cancel=should_cancel,
                     )
                     rendered_probe = probe_media(self._config.render.ffprobe, temporary_path)
@@ -1918,7 +2081,8 @@ class RenderService:
                 "freeze_total_duration_seconds": 0.0,
                 "freeze_max_duration_seconds": 0.0,
             }
-            if self._config.render.visual_quality_enabled and "video" in types:
+            visual_analysis = self._config.render.visual_quality_enabled and not draft
+            if visual_analysis and "video" in types:
                 visual_metrics = _measure_visual_quality(
                     self._config.render.ffmpeg,
                     temporary_path,
@@ -2055,6 +2219,8 @@ class RenderService:
                     "shot_count": len(context_spans),
                     "reasons": ", ".join(sorted({span.reason for span in context_spans})),
                 }
+            if draft:
+                check_evidence["draft_render"] = {"purpose": purpose}
             checks = _publication_checks(
                 issues=issues,
                 warnings=warnings,
@@ -2078,15 +2244,18 @@ class RenderService:
                     and effective_settings.headline.enabled
                     and headline_text
                 ),
-                visual_analysis_performed=self._config.render.visual_quality_enabled,
+                visual_analysis_performed=visual_analysis,
                 black_threshold_seconds=self._config.render.black_threshold_seconds,
                 freeze_threshold_seconds=self._config.render.freeze_threshold_seconds,
                 technical=technical,
                 **visual_metrics,
             )
             render_sha256 = _sha256(temporary_path)
+            if draft:
+                # Previews are never publishable: say so explicitly.
+                warnings.append("draft_render")
             publication = RenderQualityPublicationReport(
-                publish_ready=not issues,
+                publish_ready=not issues and not draft,
                 reasons=issues,
                 warnings=warnings,
                 checks=checks,
@@ -2098,7 +2267,7 @@ class RenderService:
                 visual={
                     "blackdetect": visual_metrics["black_interval_count"],
                     "freezedetect": visual_metrics["freeze_interval_count"],
-                    "visual_analysis_performed": self._config.render.visual_quality_enabled,
+                    "visual_analysis_performed": visual_analysis,
                     "black_threshold_seconds": self._config.render.black_threshold_seconds,
                     "freeze_threshold_seconds": self._config.render.freeze_threshold_seconds,
                 },
@@ -2144,6 +2313,7 @@ class RenderService:
                     "remotion_version": overlay_summary.remotion_version if overlay_summary else None,
                 },
                 punch_in={
+                    "piece_junction_zoom": bool(junction_orders),
                     "enabled": punch_in_settings.enabled,
                     "requested_scale": punch_in_settings.scale,
                     "anchor": punch_in_settings.anchor,
@@ -2151,6 +2321,9 @@ class RenderService:
                     "segments": [entry.model_dump() for entry in punch_ins_manifest],
                     "scope": "camera_shot" if auto_framing else "edit_segment",
                     "shots": [span.model_dump() for span in auto_framing],
+                    "source_size": list(source_size) if source_size else None,
+                    "zoom": effective_settings.framing.zoom,
+                    "focus_x": effective_settings.framing.focus_x,
                 },
                 technical=technical,
             )
@@ -2185,6 +2358,7 @@ class RenderService:
                     _sha256(subtitles_path)
                     if cues and effective_settings.subtitles.sidecar_srt else None
                 ),
+                purpose=purpose,
                 timeline_duration_seconds=plan.timeline_duration_seconds,
                 segment_count=len(plan.segments),
                 transitions=_render_transitions(plan),
@@ -2246,7 +2420,11 @@ class RenderService:
                     ),
                     requested_piece_junction=effective_settings.transitions.piece_junction,
                     piece_junction=(
-                        "flash" if ass_result is not None and ass_result.flash_count else "cut"
+                        "flash" if ass_result is not None and ass_result.flash_count
+                        else "zoom" if any(
+                            entry.junction and entry.applied for entry in punch_ins_manifest
+                        )
+                        else "cut"
                     ),
                     junction_times=list(plan_overlay.junctions),
                     sidecar_srt=bool(cues and effective_settings.subtitles.sidecar_srt),
@@ -2269,7 +2447,7 @@ class RenderService:
                 quality=quality,
                 publication=publication,
             )
-            manifest_path = output_dir / f"render-{input_hash[:16]}.json"
+            manifest_path = output_dir / f"{stem}.json"
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_dir,
                                              prefix=".render-", suffix=".tmp", delete=False) as handle:
                 json.dump(document.model_dump(mode="json"), handle, ensure_ascii=False, indent=2)
@@ -2306,7 +2484,7 @@ class RenderService:
             temporary_subtitles_path.unlink(missing_ok=True)
         progress_cb(100.0, "Render concluído" if quality.passed else "Render bloqueado pelo quality gate")
         exports = {}
-        if quality.passed:
+        if quality.passed and not draft:
             exports = _export_render_files(
                 self._config,
                 output_path=output_path,
@@ -2316,7 +2494,7 @@ class RenderService:
                 export_directory=export_directory,
                 input_hash=input_hash,
             )
-        return {"cached": False, "render_artifact_id": artifact.id,
+        return {"cached": False, "purpose": purpose, "render_artifact_id": artifact.id,
                 "render_path": str(output_path), "schema_version": artifact.schema_version,
                 "publish_ready": publication.publish_ready,
                 "context_shot_count": len([

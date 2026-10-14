@@ -411,7 +411,8 @@ def test_punch_in_render_proves_zoom_via_pixel_and_keeps_canvas_dimensions(tmp_p
     assert entry.applied is True
     assert entry.requested_scale == pytest.approx(1.2)
     assert entry.effective_scale == pytest.approx(1.2)
-    assert entry.anchor_x == 26 and entry.anchor_y == 26
+    # crop is now resolved in source pixels with even sizes: (320 - 266) // 2
+    assert entry.anchor_x == 27 and entry.anchor_y == 27
     assert document.publication is not None
     assert document.publication.punch_in["enabled"] is True
     assert document.publication.punch_in["segments"][0]["applied"] is True

@@ -6,7 +6,7 @@ import json
 import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -264,6 +264,7 @@ class RenderRequest(BaseModel):
     render_settings_override: RenderSettingsPatch | None = None
     export_directory: str | None = Field(default=None, max_length=4096)
     confirmed_voice: dict[str, Any] | None = None
+    purpose: Literal["export", "draft"] = "export"
 
     @model_validator(mode="after")
     def reject_mixed_settings(self) -> RenderRequest:
@@ -1608,6 +1609,7 @@ def create_app(config: CortexConfig | None = None):
                 ),
                 "export_directory": request.export_directory,
                 "confirmed_voice": request.confirmed_voice,
+                "purpose": request.purpose,
             },
         ))
 

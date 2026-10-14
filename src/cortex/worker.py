@@ -919,6 +919,7 @@ def run_render_job(
             ),
             export_directory=job.payload.get("export_directory"),
             confirmed_voice=job.payload.get("confirmed_voice"),
+            purpose=job.payload.get("purpose", "export"),
         )
     except RenderJobCancelled:
         return

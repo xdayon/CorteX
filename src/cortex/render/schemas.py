@@ -422,6 +422,9 @@ class RenderPunchInInfo(BaseModel):
     anchor_y: int = Field(ge=0)
     applied: bool
     reason: str | None = None
+    # True for the first segment after a piece junction when
+    # transitions.piece_junction is "zoom".
+    junction: bool = False
 
 
 class RenderQualityReport(BaseModel):

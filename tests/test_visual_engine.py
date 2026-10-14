@@ -651,3 +651,337 @@ def test_flash_frame_is_brighter_at_the_junction_than_after_it(tmp_path) -> None
     after = _burn_frame(result.ass_text, tmp_path, "flash_off", at=1.5, background="#202020")
     assert during.getpixel((540, 960))[0] > 140
     assert after.getpixel((540, 960))[0] < 50
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: framing zoom/focus, punch-in in source pixels, junction zoom
+# ---------------------------------------------------------------------------
+
+from cortex.render.schemas import (  # noqa: E402
+    PUNCH_IN_MAX_SCALE,
+    RenderFramingSettings,
+    RenderPunchInSettings,
+)
+from cortex.render.service import (  # noqa: E402
+    _blurred_geometry,
+    _cover_geometry,
+    _encoder_args,
+    _filtergraph,
+    _framing_geometry,
+    _PunchInResolution,
+    _resolve_punch_ins,
+    _resolve_segment_punch_in,
+)
+
+
+def test_zoom_and_focus_math_for_blurred_background() -> None:
+    whole = _blurred_geometry(1920, 1080, 1080, 1920, 1.0, 0.5)
+    assert (whole.x, whole.y, whole.w, whole.h) == (0, 0, 1920, 1080)
+    assert (whole.window_w, whole.window_h) == (1080, 608)
+
+    zoomed = _blurred_geometry(1920, 1080, 1080, 1920, 1.8, 0.5)
+    assert (zoomed.w, zoomed.h) == (1066, 1080)
+    assert zoomed.x == 426 and zoomed.y == 0
+    assert zoomed.window_h == 1094
+
+    left = _blurred_geometry(1920, 1080, 1080, 1920, 1.8, 0.0)
+    right = _blurred_geometry(1920, 1080, 1080, 1920, 1.8, 1.0)
+    assert left.x == 0
+    assert right.x + right.w <= 1920 and right.x >= 1920 - right.w - 2
+
+    maximum = _blurred_geometry(1920, 1080, 1080, 1920, 3.2, 0.5)
+    assert maximum.w == 600
+    # clamped to the canvas: full vertical crop, blur no longer visible
+    assert maximum.window_h == 1920
+    assert maximum.h < 1080 and maximum.y > 0
+
+
+def test_cover_geometry_is_the_centred_source_crop_for_vertical_crop() -> None:
+    geometry = _cover_geometry(1920, 1080, 1080, 1920)
+    assert geometry.h == 1080 and geometry.w == 608
+    assert geometry.x == (1920 - 608) // 2 and geometry.y == 0
+    assert (geometry.window_w, geometry.window_h) == (1080, 1920)
+
+
+def _one_segment_plan() -> EditPlanDocument:
+    return _plan([EditSegment(start=0.0, end=1.0, timeline_order=0)], 1.0)
+
+
+def test_filtergraph_zoom_crops_source_pixels_and_zoom_one_is_legacy() -> None:
+    plan = _one_segment_plan()
+    legacy, _v, _a = _filtergraph(plan, 1080, 1920, 30, -14.0, -1.0, framing_mode="blurred_background")
+    same, _v, _a = _filtergraph(
+        plan, 1080, 1920, 30, -14.0, -1.0, framing_mode="blurred_background",
+        source_size=(1920, 1080),
+    )
+    assert same == legacy
+    zoomed, _v, _a = _filtergraph(
+        plan, 1080, 1920, 30, -14.0, -1.0, framing_mode="blurred_background",
+        source_size=(1920, 1080), framing_zoom=1.8, framing_focus_x=0.5,
+    )
+    assert "crop=1066:1080:426:0,scale=1080:1094,setsar=1" in zoomed
+
+
+def test_punch_in_resolves_in_source_pixels_and_keeps_the_window() -> None:
+    geometry = _framing_geometry("vertical_crop", (1920, 1080), 1080, 1920, 1.0, 0.5)
+    resolution = _resolve_segment_punch_in(
+        0, RenderPunchInSettings(enabled=True, scale=1.12), framing_mode="vertical_crop",
+        canvas_width=1080, canvas_height=1920, static_face_crop_map=None, geometry=geometry,
+    )
+    assert resolution.applied
+    assert resolution.crop_width < geometry.w and resolution.crop_height < geometry.h
+    assert resolution.anchor_x >= geometry.x and resolution.anchor_y >= geometry.y
+    assert resolution.anchor_x + resolution.crop_width <= geometry.x + geometry.w
+    graph, _v, _a = _filtergraph(
+        _one_segment_plan(), 1080, 1920, 30, -14.0, -1.0, framing_mode="vertical_crop",
+        source_size=(1920, 1080), punch_ins={0: resolution},
+    )
+    assert (
+        f"crop={resolution.crop_width}:{resolution.crop_height}:"
+        f"{resolution.anchor_x}:{resolution.anchor_y},scale=1080:1920"
+    ) in graph
+    assert "force_original_aspect_ratio=increase" not in graph
+
+
+def test_punch_in_is_skipped_with_explicit_reason_past_the_upscale_limit() -> None:
+    geometry = _framing_geometry("vertical_crop", (360, 640), 1080, 1920, 1.0, 0.5)
+    resolution = _resolve_segment_punch_in(
+        3, RenderPunchInSettings(enabled=True, scale=1.12), framing_mode="vertical_crop",
+        canvas_width=1080, canvas_height=1920, static_face_crop_map=None, geometry=geometry,
+    )
+    assert resolution.applied is False
+    assert resolution.reason == "punch_in_resolution_limit"
+    assert resolution.requested_scale == pytest.approx(1.12)
+    assert resolution.effective_scale == 1.0
+
+
+def test_punch_in_defaults_are_on_at_112() -> None:
+    defaults = RenderPunchInSettings()
+    assert defaults.enabled is True and defaults.scale == pytest.approx(1.12)
+    assert RenderFramingSettings().punch_in.enabled is True
+
+
+def _three_piece_plan() -> EditPlanDocument:
+    return _plan([
+        EditSegment(start=0.0, end=1.0, timeline_order=0, piece_index=0),
+        EditSegment(start=1.0, end=2.0, timeline_order=1, piece_index=1),
+        EditSegment(start=2.0, end=3.0, timeline_order=2, piece_index=1),
+    ], 3.0)
+
+
+def test_zoom_junction_pushes_harder_on_the_first_segment_after_the_jump() -> None:
+    plan = _three_piece_plan()
+    geometry = _framing_geometry("vertical_crop", (1920, 1080), 1080, 1920, 1.0, 0.5)
+    resolutions = _resolve_punch_ins(
+        plan, None, RenderPunchInSettings(enabled=True, scale=1.12),
+        framing_mode="vertical_crop", canvas_width=1080, canvas_height=1920,
+        static_face_crop_map=None, geometry=geometry, junction_orders=frozenset({1}),
+    )
+    by_order = {item.segment_order: item for item in resolutions}
+    # order 1 is odd, so plain alternation would have skipped it
+    assert by_order[1].applied and by_order[1].effective_scale == pytest.approx(1.20)
+    assert by_order[0].effective_scale == pytest.approx(1.12)
+    assert by_order[2].effective_scale == pytest.approx(1.12)
+    capped = _resolve_punch_ins(
+        plan, None, RenderPunchInSettings(enabled=True, scale=PUNCH_IN_MAX_SCALE),
+        framing_mode="vertical_crop", canvas_width=1080, canvas_height=1920,
+        static_face_crop_map=None, geometry=geometry, junction_orders=frozenset({1}),
+    )
+    assert {item.segment_order: item for item in capped}[1].effective_scale <= PUNCH_IN_MAX_SCALE
+
+
+def test_encoder_args_draft_uses_the_fastest_presets() -> None:
+    assert _encoder_args("libx264", draft=True)[3] == "ultrafast"
+    assert _encoder_args("h264_nvenc", draft=True)[3] == "p1"
+    assert _encoder_args("libx264")[3] == "veryfast"
+    assert _encoder_args("h264_nvenc")[3] == "p4"
+
+
+def test_punch_resolution_without_source_size_keeps_the_canvas_pixel_contract() -> None:
+    resolution = _resolve_segment_punch_in(
+        0, RenderPunchInSettings(enabled=True, scale=1.2), framing_mode="vertical_crop",
+        canvas_width=320, canvas_height=320, static_face_crop_map=None,
+    )
+    assert isinstance(resolution, _PunchInResolution)
+    assert (resolution.anchor_x, resolution.crop_width) == (26, 267)
+
+
+def _synthetic_source(tmp_path: Path, size="1280x720") -> Path:
+    path = tmp_path / "source.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error",
+        "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=30:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        "-shortest", str(path),
+    ], check=True, timeout=60)
+    return path
+
+
+def _graph_frame(source: Path, tmp_path: Path, name: str, **kwargs) -> Image.Image:
+    graph, video, audio = _filtergraph(
+        _one_segment_plan(), 540, 960, 30, -14.0, -1.0, **kwargs,
+    )
+    out = tmp_path / f"{name}.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-i", str(source), "-filter_complex", graph,
+        "-map", video, "-map", audio, "-c:v", "libx264", "-crf", "8", "-preset", "ultrafast",
+        "-c:a", "aac", str(out),
+    ], check=True, timeout=60)
+    png = tmp_path / f"{name}.png"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-ss", "0.5", "-i", str(out), "-frames:v", "1", str(png),
+    ], check=True, timeout=60)
+    return Image.open(png).convert("RGB")
+
+
+def _mean_difference(a: Image.Image, b: Image.Image) -> float:
+    from PIL import ImageChops, ImageStat
+    return sum(ImageStat.Stat(ImageChops.difference(a, b)).mean) / 3
+
+
+@requires_ffmpeg
+def test_blurred_background_zoom_one_matches_today_and_zoom_changes_the_frame(tmp_path) -> None:
+    source = _synthetic_source(tmp_path)
+    base = dict(framing_mode="blurred_background", source_size=(1280, 720))
+    legacy = _graph_frame(source, tmp_path, "legacy", framing_mode="blurred_background")
+    geometry = _framing_geometry("blurred_background", (1280, 720), 540, 960, 1.0, 0.5)
+    whole = _resolve_segment_punch_in(
+        0, RenderPunchInSettings(enabled=True, scale=1.0), framing_mode="blurred_background",
+        canvas_width=540, canvas_height=960, static_face_crop_map=None, geometry=geometry,
+    )
+    # the new source-pixel chain at zoom 1 / focus 0.5 reproduces the legacy frame
+    modern = _graph_frame(source, tmp_path, "modern", punch_ins={0: whole}, **base)
+    assert _mean_difference(legacy, modern) < 3.0
+    zoomed = _graph_frame(source, tmp_path, "zoom18", framing_zoom=1.8, **base)
+    assert _mean_difference(legacy, zoomed) > 8.0
+    left = _graph_frame(source, tmp_path, "focus_left", framing_zoom=1.8, framing_focus_x=0.0, **base)
+    right = _graph_frame(source, tmp_path, "focus_right", framing_zoom=1.8, framing_focus_x=1.0, **base)
+    assert _mean_difference(left, right) > 8.0
+
+
+# ---------------------------------------------------------------------------
+# Draft renders
+# ---------------------------------------------------------------------------
+
+def _render_fixture(tmp_path: Path):
+    from cortex.render.schemas import RenderDocument
+    from test_render_punch_in import _make_plan_artifact, _make_transcript, _stripe_source
+    from test_render import _config
+
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    project = domain.create_project("Draft fixture")
+    source = _stripe_source(config, domain, tmp_path, project.id, duration=1.0)
+    transcript = _make_transcript(domain, tmp_path, project.id, source.id, duration=1.0)
+    plan_artifact = _make_plan_artifact(
+        domain, tmp_path, project.id, source.id, transcript.id,
+        segments=[EditSegment(start=0.0, end=1.0, timeline_order=0)], duration=1.0,
+    )
+    return config, domain, plan_artifact, RenderDocument
+
+
+@requires_ffmpeg
+def test_draft_render_halves_canvas_skips_overlays_and_is_never_publishable(tmp_path) -> None:
+    config, domain, plan_artifact, RenderDocument = _render_fixture(tmp_path)
+    settings = RenderSettings(
+        encoder="libx264", canvas=RenderCanvasSettings(width=640, height=640, fps=30),
+        framing=RenderFramingSettings(mode="vertical_crop"),
+        captions=RenderCaptionSettings(
+            enabled=True, font_family="Montserrat", font_size=28, words_per_cue=3, outline=False,
+        ),
+        headline=RenderHeadlineSettings(
+            enabled=True, text="TESTE", font_family="Montserrat", font_size=36, duration_seconds=1.0,
+        ),
+        subtitles=RenderSubtitleSettings(sidecar_srt=True),
+    )
+    service = RenderService(config, domain)
+
+    def load(result):
+        return RenderDocument.model_validate_json(
+            Path(domain.get_stage_artifact(result["render_artifact_id"]).path).read_text()
+        )
+
+    draft_result = service.run(
+        edit_plan_artifact=plan_artifact, encoder=None, headline=None,
+        progress_cb=lambda *_a: None, should_cancel=lambda: False,
+        render_settings=settings, purpose="draft",
+    )
+    draft = load(draft_result)
+    assert draft_result["purpose"] == "draft" and draft.purpose == "draft"
+    assert Path(draft.output_path).name.startswith("draft-")
+    assert (draft.engine.width, draft.engine.height) == (320, 320)
+    assert draft.requested_settings.canvas.width == 640
+    assert draft.publication is not None and draft.publication.publish_ready is False
+    assert "draft_render" in draft.publication.warnings
+    assert draft.quality.visual_analysis_performed is False
+    assert draft.overlays is not None
+    assert draft.overlays.captions_enabled is False and draft.overlays.headline_enabled is False
+    assert draft.overlays.piece_junction == "cut"
+    assert draft.subtitles_path is None
+    assert draft_result["publish_ready"] is False
+
+    again = service.run(
+        edit_plan_artifact=plan_artifact, encoder=None, headline=None,
+        progress_cb=lambda *_a: None, should_cancel=lambda: False,
+        render_settings=settings, purpose="draft",
+    )
+    assert again["cached"] is True and again["render_artifact_id"] == draft_result["render_artifact_id"]
+
+    export_settings = settings.model_copy(update={
+        "captions": settings.captions.model_copy(update={"enabled": False}),
+        "headline": settings.headline.model_copy(update={"enabled": False}),
+        "subtitles": RenderSubtitleSettings(sidecar_srt=False),
+    })
+    export_result = service.run(
+        edit_plan_artifact=plan_artifact, encoder=None, headline=None,
+        progress_cb=lambda *_a: None, should_cancel=lambda: False,
+        render_settings=export_settings,
+    )
+    export = load(export_result)
+    assert export.purpose == "export"
+    assert export_result["render_artifact_id"] != draft_result["render_artifact_id"]
+    assert not Path(export.output_path).name.startswith("draft-")
+    assert (export.engine.width, export.engine.height) == (640, 640)
+
+
+def test_render_request_and_worker_pass_purpose_through(tmp_path, monkeypatch) -> None:
+    import cortex.worker as worker
+    from cortex.jobs import JobStore
+    from cortex.schemas import JobStatus
+
+    config, project, plan_artifact = _api_fixture(tmp_path)
+    client = TestClient(create_app(config))
+    response = client.post(
+        f"/api/v1/projects/{project.id}/renders",
+        json={"edit_plan_artifact_id": plan_artifact.id, "purpose": "draft"},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["payload"]["purpose"] == "draft"
+    default = client.post(
+        f"/api/v1/projects/{project.id}/renders", json={"edit_plan_artifact_id": plan_artifact.id},
+    )
+    assert default.json()["payload"]["purpose"] == "export"
+    assert client.post(
+        f"/api/v1/projects/{project.id}/renders",
+        json={"edit_plan_artifact_id": plan_artifact.id, "purpose": "final"},
+    ).status_code == 422
+
+    seen: dict = {}
+
+    class FakeRenderService:
+        def __init__(self, *_args) -> None:
+            pass
+
+        def run(self, **kwargs):
+            seen.update(kwargs)
+            return {"cached": False}
+
+    monkeypatch.setattr(worker, "RenderService", FakeRenderService)
+    jobs = JobStore(config.paths.database)
+    domain = DomainStore(config.paths.database)
+    from conftest import FakeTranscriptionEngine
+    assert worker.process_next(config, jobs, domain, FakeTranscriptionEngine()) is True
+    assert seen["purpose"] == "draft"
+    assert jobs.get(response.json()["id"]).status == JobStatus.SUCCEEDED
