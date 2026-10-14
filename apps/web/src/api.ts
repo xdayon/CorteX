@@ -10,6 +10,9 @@ export type ApiJob = {
   created_at?: string;
   updated_at?: string;
   worker_pid?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  elapsed_seconds?: number | null;
 };
 
 export type Project = {
@@ -70,6 +73,7 @@ export type ArtifactEnvelope<T> = {
 
 export type SuggestionBrief = {
   primary_subject?: string;
+  confirmed_voice?: Record<string, unknown> | null;
   new_clips_only?: boolean;
   count: number;
   minimum_seconds: number;
@@ -85,14 +89,16 @@ export type NarrativeBeat = {
   evidence: string;
 };
 
+// Selection v2 stores a single 1–10 score in `total`; the sub-scores exist only
+// in older (v1) selections.
 export type ClipScores = {
-  spoken_hook: number;
-  standalone_clarity: number;
-  emotion: number;
-  quotability: number;
-  payoff: number;
-  compression_safety: number;
-  audience_relevance: number;
+  spoken_hook?: number;
+  standalone_clarity?: number;
+  emotion?: number;
+  quotability?: number;
+  payoff?: number;
+  compression_safety?: number;
+  audience_relevance?: number;
   total: number;
 };
 
@@ -113,7 +119,12 @@ export type SuggestedClip = {
   warnings: string[];
   scores: ClipScores;
   approximate_edl?: Array<Record<string, unknown>>;
+  pieces?: ClipPiece[];
+  transcript_text?: string;
+  connective_logic?: string;
 };
+
+export type ClipPiece = {from_id: number; to_id: number; start: number; end: number; text: string};
 
 export type ClipRevision = {
   id: string; project_id: string; workflow_run_id: string; version: number;
@@ -179,8 +190,9 @@ export type RenderSettings = {
   };
   framing: {
     schema_version: 1;
-    mode: "vertical_crop" | "blurred_background" | "face_static_crop" | "speaker_auto";
+    mode: "vertical_crop" | "blurred_background" | "face_static_crop" | "speaker_auto" | "speaker_face";
     position_y?: number;
+    primary_side?: "left" | "right" | null;
     scene_overrides?: SceneFramingOverride[];
     punch_in: {
       enabled: boolean;
@@ -256,6 +268,8 @@ export const api = {
   archiveEpisode: (id: string, archived: boolean) => request<EpisodeEntry>(`/api/v1/episodes/${id}`, {method:'PATCH', body:JSON.stringify({archived})}),
   registerEpisode: (url: string, participant_count?: number) => request<EpisodeEntry>("/api/v1/episodes", {method:"POST", body:JSON.stringify({url, participant_count})}),
   downloadEpisode: (id: string) => request<{source: SourceAsset | null; job: ApiJob | null; cached: boolean}>(`/api/v1/episodes/${id}/download`, {method:"POST"}),
+  cancelJob: (jobId: string) => request<ApiJob>(`/api/v1/jobs/${jobId}/cancel`, {method:"POST"}),
+  job: (jobId: string, signal?: AbortSignal) => request<ApiJob>(`/api/v1/jobs/${jobId}`, {signal}),
   createProject: (name: string) =>
     request<Project>("/api/v1/projects", { method: "POST", body: JSON.stringify({ name }) }),
 
@@ -324,10 +338,10 @@ export const api = {
   transcript: (projectId: string, artifactId: string, signal?: AbortSignal) =>
     request<{document:{segments:Array<{words:TranscriptWord[]}>}}>(`/api/v1/projects/${projectId}/transcripts/${artifactId}`, {signal}),
 
-  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string, maximum_seconds?: number) =>
+  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string, maximum_seconds?: number, approximate_edl?: Array<Record<string, unknown>>) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/edit-plans`, {
       method: "POST",
-      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, start, end, profile, maximum_seconds }),
+      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, start, end, profile, maximum_seconds, approximate_edl }),
     }),
 
   startSceneIndex: (projectId: string, sourceAssetId: string, sourceRanges?: Array<{start:number;end:number}>) =>
@@ -372,13 +386,14 @@ export const api = {
   sourcePreviewUrl: (projectId: string, sourceAssetId: string, timeSeconds: number) =>
     `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/preview?time_seconds=${encodeURIComponent(timeSeconds.toFixed(3))}`,
 
-  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, cameraEditPlanArtifactId?: string) =>
+  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, cameraEditPlanArtifactId?: string, confirmedVoice?: Record<string, unknown> | null) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/renders`, {
       method: "POST",
       body: JSON.stringify({
         edit_plan_artifact_id: editPlanArtifactId,
         camera_edit_plan_artifact_id: cameraEditPlanArtifactId ?? null,
         render_settings: renderSettings,
+        confirmed_voice: confirmedVoice ?? null,
       }),
     }),
 
@@ -419,11 +434,25 @@ export const api = {
     new Promise<ApiJob>((resolve, reject) => {
       signal?.throwIfAborted();
       const source = new EventSource(`/api/v1/jobs/${jobId}/events`);
+      let polling = false;
       function close() {
         source.close();
         signal?.removeEventListener("abort", abort);
       }
       function abort() { close(); reject(signal?.reason); }
+      async function pollAfterDisconnect() {
+        if (polling || signal?.aborted) return;
+        polling = true;
+        source.close();
+        try {
+          while (!signal?.aborted) {
+            const job = await request<ApiJob>(`/api/v1/jobs/${jobId}`, {signal});
+            onUpdate?.(job);
+            if (TERMINAL_STATUSES.has(job.status)) { close(); resolve(job); return; }
+            await new Promise<void>((done) => window.setTimeout(done, 1500));
+          }
+        } catch (reason) { close(); reject(reason); }
+      }
       signal?.addEventListener("abort", abort, { once: true });
       source.addEventListener("job", (event) => {
         if (signal?.aborted) return;
@@ -433,6 +462,7 @@ export const api = {
           if (TERMINAL_STATUSES.has(job.status)) { close(); resolve(job); }
         } catch (reason) { close(); reject(reason); }
       });
+      source.addEventListener("error", () => { void pollAfterDisconnect(); });
       source.onerror = () => {
         close();
         reject(new Error("Conexão de eventos perdida — verifique se a API está de pé"));

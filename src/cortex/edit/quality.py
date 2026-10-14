@@ -1,12 +1,19 @@
 """Fail-safe validation for edit plans before rendering.
 
 Known bug fixed here: a proposed cut boundary landing inside a word used to
-abort the whole plan (severity=error, code=boundary_inside_word). Instead we
-now re-anchor the boundary to the nearest safe gap (outside every word and
-VAD interval) within 2x the profile's boundary_radius, recording a
-severity=warning code=boundary_snapped issue. Only when no safe point exists
-in that radius do we degrade the plan to the full, uncut clip — the job
-itself never fails because of a boundary problem.
+abort the whole plan (severity=error, code=boundary_inside_word). We
+re-anchor the boundary to the nearest safe gap (outside every guarded word
+span) within 2x the profile's boundary_radius, recording a
+severity=warning code=boundary_snapped issue.
+
+Per-cut fail-safe (Requirement R3): when no safe snap point exists for an
+*interior* cut boundary, we no longer degrade the whole plan to the full,
+uncut clip — we drop that single cut instead (re-joining the two
+neighbouring segments, i.e. keeping that pause) and record a
+severity=warning code=cut_dropped_unsafe_boundary issue. Only a plan that
+ends up with no speech-safe timeline left at all is an error
+(code=empty_timeline). VAD no longer forbids cut placement here either
+(Requirement R2) — it is diagnostic only, upstream in the planner.
 """
 
 from __future__ import annotations
@@ -49,13 +56,15 @@ def validate_edit_plan(
         issues.append({"severity": "error", "code": "empty_timeline"})
         return segments, {"passed": False, "issues": issues, "profile": profile.name, "degraded": False}
 
+    # Forbidden zones are guarded word spans only — VAD is diagnostic, not a
+    # veto, at this stage too (Requirement R2).
     forbidden = _word_intervals(words)
-    for interval in vad_intervals or []:
-        if interval.end > interval.start:
-            forbidden.append((interval.start, interval.end))
 
     repaired = [dict(segment) for segment in segments]
-    degraded = False
+    # drop_after[i] marks the cut between repaired[i] and repaired[i + 1] as
+    # unsafe-and-unsnappable: that single cut is dropped (the two segments
+    # are re-joined) instead of degrading the whole plan (Requirement R3).
+    drop_after = [False] * len(repaired)
 
     for index, segment in enumerate(repaired):
         start = float(segment.get("start", 0))
@@ -79,17 +88,7 @@ def validate_edit_plan(
                 if _word_containing(words, snapped) is None and round(snapped, 3) != round(boundary, 3):
                     candidate = snapped
 
-            if candidate is None:
-                degraded = True
-                issues.append({
-                    "severity": "warning",
-                    "code": "boundary_unsafe_degraded",
-                    "segment": index,
-                    "boundary": boundary_name,
-                    "word": offending.word,
-                    "time": round(boundary, 3),
-                })
-            else:
+            if candidate is not None:
                 segment[boundary_key] = candidate
                 issues.append({
                     "severity": "warning",
@@ -100,9 +99,63 @@ def validate_edit_plan(
                     "snapped_from": round(boundary, 3),
                     "snapped_to": candidate,
                 })
+                continue
 
-    if degraded:
-        repaired = [{"start": round(clip_start, 3), "end": round(clip_end, 3), "timeline_order": 0}]
+            if boundary_name == "out" and index < len(repaired) - 1:
+                drop_after[index] = True
+            elif boundary_name == "in" and index > 0:
+                drop_after[index - 1] = True
+            else:
+                # An envelope boundary (very first start / very last end) —
+                # there is no neighbour to re-join with. Extend outward to
+                # fully include the offending word rather than truncate it;
+                # this never collapses the plan.
+                if boundary_key == "start":
+                    segment[boundary_key] = round(max(0.0, offending.start - _BOUNDARY_GUARD), 3)
+                else:
+                    segment[boundary_key] = round(offending.end + _BOUNDARY_GUARD, 3)
+                issues.append({
+                    "severity": "warning",
+                    "code": "boundary_extended_unsafe",
+                    "segment": index,
+                    "boundary": boundary_name,
+                    "word": offending.word,
+                    "time": round(boundary, 3),
+                })
+                continue
+
+            issues.append({
+                "severity": "warning",
+                "code": "cut_dropped_unsafe_boundary",
+                "segment": index,
+                "boundary": boundary_name,
+                "word": offending.word,
+                "time": round(boundary, 3),
+            })
+
+    if any(drop_after):
+        joined: list[dict] = []
+        for index, segment in enumerate(repaired):
+            if joined and drop_after[index - 1]:
+                joined[-1]["end"] = segment["end"]
+                for key in ("video_end", "audio_end"):
+                    if key in segment:
+                        joined[-1][key] = segment[key]
+                joined[-1]["transition"] = segment.get("transition")
+                if joined[-1]["transition"] is None:
+                    joined[-1].pop("transition", None)
+            else:
+                joined.append(dict(segment))
+        repaired = joined
+
+    if not repaired or all(
+        float(s.get("end", 0)) <= float(s.get("start", 0)) for s in repaired
+    ):
+        issues.append({"severity": "error", "code": "empty_timeline"})
+        return repaired, {"passed": False, "issues": issues, "profile": profile.name, "degraded": False}
+
+    for index, segment in enumerate(repaired):
+        segment["timeline_order"] = index
 
     total_duration = sum(
         max(0.0, float(s.get("end", 0)) - float(s.get("start", 0))) for s in repaired
@@ -117,4 +170,4 @@ def validate_edit_plan(
         })
 
     passed = not any(issue["severity"] == "error" for issue in issues)
-    return repaired, {"passed": passed, "issues": issues, "profile": profile.name, "degraded": degraded}
+    return repaired, {"passed": passed, "issues": issues, "profile": profile.name, "degraded": False}

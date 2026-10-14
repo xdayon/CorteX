@@ -96,7 +96,7 @@ Não afirmar speedup sem benchmark comparável persistido.
 
 - [ ] Curar exemplos aprovados/reprovados do perfil; qualidade técnica e editorial separadas.
 - [ ] Comparar contexto, começo/final de fala, lipsync, naturalidade de câmera e legibilidade.
-- [ ] Acompanhar retenção/compartilhamentos reais; score Codex não é promessa de viralização.
+- [ ] Acompanhar retenção/compartilhamentos reais; score da IA não é promessa de viralização.
 - [ ] Matriz com estúdios distintos, fontes YouTube/local, 1/10/25 cortes e pausa/retomada.
 
 ## Fora de escopo atual

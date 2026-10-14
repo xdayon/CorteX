@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
@@ -14,6 +16,21 @@ class TranscriptionEngineError(RuntimeError):
     """Raised when the engine cannot produce a transcript (e.g. CUDA load
     failure with allow_cpu_fallback=False). The worker persists this as the
     job's failure reason — CUDA never silently falls back to CPU."""
+
+
+class CudaContextLostError(TranscriptionEngineError):
+    """The CUDA context is unusable even after reloading the model (typically
+    after the machine suspended); only a fresh process can recover it."""
+
+
+_CUDA_RUNTIME_ERROR = re.compile(
+    r"cudaError\w+|CUDA_ERROR_\w+|invalid device ordinal|CUDA failed with error",
+    re.IGNORECASE,
+)
+
+
+def _is_cuda_runtime_error(exc: BaseException) -> bool:
+    return _CUDA_RUNTIME_ERROR.search(str(exc)) is not None
 
 
 class TranscriptionCancelled(RuntimeError):
@@ -75,7 +92,32 @@ class FasterWhisperEngine:
         self._loaded_key = key
         return loaded
 
-    def transcribe(
+    def transcribe(self, audio_path: Path, **kwargs) -> EngineTranscriptionResult:
+        try:
+            return self._attempt(audio_path, **kwargs)
+        except TranscriptionCancelled:
+            raise
+        except Exception as exc:
+            if kwargs["device"] != "cuda" or not _is_cuda_runtime_error(exc):
+                raise
+            first_error = exc
+        # A suspended/resumed GPU leaves the cached model pointing at a dead
+        # context; reload from scratch once before giving up.
+        self.unload()
+        gc.collect()
+        try:
+            return self._attempt(audio_path, **kwargs)
+        except TranscriptionCancelled:
+            raise
+        except Exception as exc:
+            if not _is_cuda_runtime_error(exc):
+                raise
+            raise CudaContextLostError(
+                f"A GPU ficou indisponível e não voltou após recarregar o modelo "
+                f"(comum após suspender o computador). Erro original: {first_error}"
+            ) from exc
+
+    def _attempt(
         self,
         audio_path: Path,
         *,
@@ -127,7 +169,9 @@ class FasterWhisperEngine:
                 segment_iter, info = self._batched_pipeline.transcribe(
                     str(audio_path), batch_size=batch_size, **common,
                 )
-            except Exception:
+            except Exception as exc:
+                if _is_cuda_runtime_error(exc):
+                    raise
                 segment_iter = None
 
         if segment_iter is None:

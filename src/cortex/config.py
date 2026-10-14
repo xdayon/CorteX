@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -49,6 +49,8 @@ class RenderConfig(BaseModel):
     remotion_node: Path = Path("node")
     remotion_browser: Path | None = None
     remotion_app_dir: Path = Path("apps/remotion")
+    overlay_renderer: Literal["libass", "remotion"] = "libass"
+    fonts_dir: str = "assets/fonts"
     encoder: str = "h264_nvenc"
     allow_cpu_fallback: bool = False
     width: int = Field(default=1080, ge=320)
@@ -122,11 +124,17 @@ class ClipConfig(BaseModel):
 class AiConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    provider: Literal["claude_code_cli", "codex_cli"] = "claude_code_cli"
+    claude_binary: str = "claude"
+    claude_model: str = "sonnet"
+    claude_effort: str | None = "low"
+    tighten_enabled: bool = True
     codex_binary: str = "codex"
     codex_model: str = "gpt-5.5"
     codex_reasoning_effort: str = "medium"
     timeout_seconds: int = Field(default=300, ge=10, le=3600)
     max_input_chars: int = Field(default=800_000, ge=10_000, le=5_000_000)
+    selection_max_envelope_seconds: float = Field(default=240.0, gt=0)
 
 
 class CortexConfig(BaseModel):

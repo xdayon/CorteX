@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["keep_ids", "notes"],
+  "properties": {
+    "keep_ids": {
+      "type": "array",
+      "items": { "type": "integer" }
+    },
+    "notes": { "type": "string" }
+  }
+}

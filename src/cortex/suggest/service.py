@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -17,12 +18,18 @@ from cortex.diarize.attribution import (
     subject_share_for_ranges,
 )
 from cortex.domain.models import StageArtifact, TranscriptArtifact
-from cortex.domain.store import DomainStore
+from cortex.domain.store import DomainStore, SourceAssetNotFoundError
 from cortex.paths import suggestions_dir
 from cortex.suggest.provider import SuggestionProvider, SuggestionProviderCancelled
 
-SUGGESTION_ARTIFACT_VERSION = 1
+SUGGESTION_ARTIFACT_VERSION = 3
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+# Whole-word hesitation fillers stripped from the transcript sent to the LLM.
+# They carry no editorial signal and only inflate token usage.
+_HESITATION_PATTERN = re.compile(r"\b(?:eh|ah|hum|h[ãa]|uh|hmm)\b", re.IGNORECASE)
+_MAX_PIECES = 15
+_MIN_PIECE_SECONDS = 0.6
 
 
 class SuggestionJobCancelled(RuntimeError):
@@ -36,28 +43,305 @@ def _sha256_json(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _transcript_lines(document: dict[str, Any]) -> str:
-    lines = []
-    for segment in document.get("segments") or []:
-        text = " ".join(str(segment.get("text") or "").split())
-        if text:
-            lines.append(
-                f"[{float(segment.get('start', 0)):.3f}-{float(segment.get('end', 0)):.3f}] {text}"
+def _strip_hesitations(text: str) -> str:
+    return " ".join(_HESITATION_PATTERN.sub(" ", text).split())
+
+
+_SENTENCE_END = (".", "?", "!", "…", ",", ";", ":")
+_UNIT_MIN_SENTENCE_SECONDS = 1.2
+_UNIT_MAX_SECONDS = 8.0
+_UNIT_PAUSE_SECONDS = 0.6
+_DANGLING_REFERENTS = frozenset({
+    "isso", "isto", "esse", "essa", "esses", "essas", "ele", "ela", "eles", "elas",
+    "aquilo", "aquele", "aquela",
+})
+
+
+def _unit_speaker_label(
+    start: float, end: float, voice: ConfirmedVoice, primary_subject: str,
+) -> str | None:
+    overlap: dict[str, float] = {}
+    for turn in voice.turns:
+        shared = min(end, turn.end) - max(start, turn.start)
+        if shared > 0:
+            overlap[turn.speaker] = overlap.get(turn.speaker, 0.0) + shared
+    if not overlap:
+        return None
+    dominant = max(overlap, key=lambda speaker: overlap[speaker])
+    return primary_subject if dominant == voice.speaker else "Outro"
+
+
+def _selection_units(
+    transcript: dict[str, Any], *, voice: ConfirmedVoice | None, primary_subject: str,
+) -> list[dict[str, Any]]:
+    """Group word timings into sentence-sized units the model can target precisely.
+
+    Whisper's batched segments span ~24 s, too coarse to compose a cut from, so
+    the model sees one numbered line per clause (or per 8 s / pause) instead.
+    """
+    units: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+
+    def emit(start: float, end: float, raw_text: str) -> None:
+        text = _strip_hesitations(raw_text)
+        if not text:
+            return
+        label = _unit_speaker_label(start, end, voice, primary_subject) if voice else None
+        units.append({
+            "id": len(units), "start": start, "end": end, "text": text, "speaker_label": label,
+        })
+
+    def flush() -> None:
+        if current:
+            emit(
+                float(current[0]["start"]), float(current[-1]["end"]),
+                " ".join(str(word["word"]).strip() for word in current),
             )
+            current.clear()
+
+    for segment in transcript.get("segments") or []:
+        words = segment.get("words") or []
+        if not words:
+            flush()
+            emit(float(segment.get("start", 0)), float(segment.get("end", 0)),
+                 str(segment.get("text") or ""))
+            continue
+        for word in words:
+            if current and float(word["start"]) - float(current[-1]["end"]) >= _UNIT_PAUSE_SECONDS:
+                flush()
+            current.append(word)
+            duration = float(word["end"]) - float(current[0]["start"])
+            ends_sentence = str(word["word"]).strip().endswith(_SENTENCE_END)
+            if duration >= _UNIT_MAX_SECONDS or (
+                ends_sentence and duration >= _UNIT_MIN_SENTENCE_SECONDS
+            ):
+                flush()
+    flush()
+    return units
+
+
+def _transcript_lines(units: list[dict[str, Any]]) -> str:
+    lines = []
+    for unit in units:
+        label = f"{unit['speaker_label']}: " if unit.get("speaker_label") else ""
+        lines.append(f"#{unit['id']} [{float(unit['start']):.1f}] {label}{unit['text']}")
     return "\n".join(lines)
 
 
-def _compact_analysis(document: dict[str, Any]) -> dict[str, Any]:
-    pauses = document.get("pauses") or []
+def _selection_rules(config: CortexConfig) -> dict[str, Any]:
     return {
-        "overall_speech_ratio": document.get("overall_speech_ratio"),
-        "loudness": document.get("loudness"),
-        "room_tone_samples": document.get("room_tone"),
-        "notable_pauses": [
-            {"start": pause.get("start"), "end": pause.get("end"), "duration": pause.get("duration")}
-            for pause in pauses
-            if float(pause.get("duration") or 0) >= 0.4
-        ][:200],
+        "max_envelope_seconds": config.ai.selection_max_envelope_seconds,
+        "max_pieces": _MAX_PIECES,
+        "min_piece_seconds": _MIN_PIECE_SECONDS,
+    }
+
+
+def _normalize_text(text: str) -> str:
+    return " ".join(re.sub(r"[^\w\s]", " ", text.casefold()).split())
+
+
+def _clip_ranges(clip: dict[str, Any]) -> list[tuple[float, float]]:
+    pieces = clip.get("pieces")
+    if pieces:
+        return [(float(piece["start"]), float(piece["end"])) for piece in pieces]
+    return [(float(clip["start_second"]), float(clip["end_second"]))]
+
+
+def _ranges_overlap(
+    first: list[tuple[float, float]], second: list[tuple[float, float]],
+) -> bool:
+    return any(
+        min(a_end, b_end) > max(a_start, b_start)
+        for a_start, a_end in first for b_start, b_end in second
+    )
+
+
+def _resolve_pieces(
+    raw_pieces: list[Any], units: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Turn the model's unit-id ranges into timed, ordered pieces; never reorders."""
+    warnings: list[str] = []
+    ranges: list[list[int]] = []
+    for index, raw in enumerate(raw_pieces, start=1):
+        from_id = raw.get("from_id") if isinstance(raw, dict) else None
+        to_id = raw.get("to_id") if isinstance(raw, dict) else None
+        if (
+            isinstance(from_id, bool) or isinstance(to_id, bool)
+            or not isinstance(from_id, int) or not isinstance(to_id, int)
+            or not 0 <= from_id < len(units) or not 0 <= to_id < len(units)
+            or to_id < from_id
+        ):
+            warnings.append(f"Peça {index} descartada: IDs de linha inválidos.")
+            continue
+        if ranges and from_id <= ranges[-1][1]:
+            warnings.append(f"Peça {index} descartada: fora de ordem cronológica ou sobreposta.")
+            continue
+        if ranges and from_id == ranges[-1][1] + 1:
+            ranges[-1][1] = to_id
+            continue
+        ranges.append([from_id, to_id])
+    pieces: list[dict[str, Any]] = []
+    for from_id, to_id in ranges:
+        start, end = float(units[from_id]["start"]), float(units[to_id]["end"])
+        if end - start < _MIN_PIECE_SECONDS:
+            warnings.append(f"Peça descartada: trecho de {end - start:.1f}s é curto demais.")
+            continue
+        pieces.append({
+            "from_id": from_id, "to_id": to_id, "start": start, "end": end,
+            "text": " ".join(str(unit["text"]) for unit in units[from_id:to_id + 1]),
+        })
+    return pieces, warnings
+
+
+def _piece_warnings(clip: dict[str, Any], pieces: list[dict[str, Any]]) -> list[str]:
+    warnings: list[str] = []
+    hook = _normalize_text(str(clip.get("hook_quote") or ""))
+    if hook and hook not in _normalize_text(pieces[0]["text"]):
+        warnings.append("Gancho não encontrado literalmente na primeira peça.")
+    payoff = _normalize_text(str(clip.get("payoff_quote") or ""))
+    if payoff and payoff not in _normalize_text(pieces[-1]["text"]):
+        warnings.append("Desfecho não encontrado literalmente na última peça.")
+    for number, piece in enumerate(pieces[1:], start=2):
+        words = piece["text"].split()
+        first = _normalize_text(words[0]) if words else ""
+        if first in _DANGLING_REFERENTS:
+            warnings.append(
+                f"A peça {number} começa com '{first}': confira se o referente ficou de fora."
+            )
+    return warnings
+
+
+def _resolve_clip(
+    clip: dict[str, Any], *, units: list[dict[str, Any]], minimum_seconds: float | None,
+    maximum_seconds: float | None, duration_seconds: float | None,
+    max_envelope_seconds: float | None,
+) -> dict[str, Any] | None:
+    score = clip.get("score")
+    raw_pieces = clip.get("pieces")
+    if isinstance(score, bool) or not isinstance(score, int) or not 1 <= score <= 10:
+        return None
+    if not isinstance(raw_pieces, list) or not raw_pieces or len(raw_pieces) > _MAX_PIECES:
+        return None
+    pieces, dropped = _resolve_pieces(raw_pieces, units)
+    if not pieces:
+        return None
+    total = sum(piece["end"] - piece["start"] for piece in pieces)
+    if minimum_seconds is not None and total < float(minimum_seconds):
+        return None
+    if maximum_seconds is not None and total > float(maximum_seconds):
+        return None
+    envelope = pieces[-1]["end"] - pieces[0]["start"]
+    if max_envelope_seconds is not None and envelope > float(max_envelope_seconds):
+        return None
+    if duration_seconds is not None and pieces[-1]["end"] > float(duration_seconds):
+        return None
+    return {
+        **clip, "pieces": pieces,
+        "warnings": [*(clip.get("warnings") or []), *dropped, *_piece_warnings(clip, pieces)],
+    }
+
+
+def _drop_overlaps(clips: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    ordered = sorted(
+        clips, key=lambda clip: (-int(clip["score"]), _clip_ranges(clip)[0][0]),
+    )
+    kept: list[dict[str, Any]] = []
+    for clip in ordered:
+        ranges = _clip_ranges(clip)
+        if not any(_ranges_overlap(ranges, _clip_ranges(other)) for other in kept):
+            kept.append(clip)
+    return kept, len(clips) - len(kept)
+
+
+def _normalize_clip(rank: int, clip: dict[str, Any], brief: dict[str, Any]) -> dict[str, Any]:
+    pieces = clip["pieces"]
+    start, end = float(pieces[0]["start"]), float(pieces[-1]["end"])
+    hook_quote = str(clip["hook_quote"])
+    payoff_quote = str(clip["payoff_quote"])
+    hook_end = min(start + 5.0, float(pieces[0]["end"]))
+    payoff_start = max(end - 8.0, float(pieces[-1]["start"]))
+    count = len(pieces)
+
+    def purpose(index: int) -> str:
+        if index == 0:
+            return "hook"
+        return "payoff" if index == count - 1 else "development"
+
+    return {
+        "rank": rank,
+        "title": clip["title"],
+        "headline": clip["headline"],
+        "start_second": start,
+        "end_second": end,
+        "estimated_duration": sum(float(p["end"]) - float(p["start"]) for p in pieces),
+        "primary_speaker": brief.get("primary_subject") or "Dayon",
+        "pacing": "dynamic",
+        "pieces": [dict(piece) for piece in pieces],
+        "transcript_text": " … ".join(str(piece["text"]) for piece in pieces),
+        "connective_logic": str(clip.get("connective_logic") or ""),
+        "hook": {
+            "start_second": start, "end_second": hook_end,
+            "summary": hook_quote, "evidence": hook_quote,
+        },
+        "context": {
+            "start_second": start, "end_second": end,
+            "summary": clip.get("reason") or clip["title"], "evidence": hook_quote,
+        },
+        "payoff": {
+            "start_second": payoff_start, "end_second": end,
+            "summary": payoff_quote, "evidence": payoff_quote,
+        },
+        "approximate_edl": [{
+            "order": index, "source_start": float(piece["start"]),
+            "source_end": float(piece["end"]),
+            "purpose": purpose(index), "preferred_visual": "primary_speaker",
+            "audio_mode": "source", "transition_in": "hard_cut",
+            "mask_jump_with": "none", "confidence": 1.0,
+            "notes": f"Peça {index + 1} de {count}; o motor de edição resolve o corte fino e o enxugamento.",
+        } for index, piece in enumerate(pieces)],
+        "scores": {"total": int(clip["score"])},
+        "reasoning": clip["reason"],
+        "warnings": list(clip.get("warnings") or []),
+    }
+
+
+def _validate_and_normalize_selection(
+    document: dict[str, Any], *, brief: dict[str, Any], transcript: dict[str, Any],
+    units: list[dict[str, Any]] | None = None, max_envelope_seconds: float | None = None,
+) -> dict[str, Any]:
+    if units is None:
+        units = _selection_units(transcript, voice=None, primary_subject="")
+    minimum_seconds = brief.get("minimum_seconds")
+    maximum_seconds = brief.get("maximum_seconds")
+    duration_seconds = transcript.get("duration_seconds")
+    raw_clips = list(document["clips"])
+    resolved = [
+        item for item in (
+            _resolve_clip(
+                clip, units=units, minimum_seconds=minimum_seconds,
+                maximum_seconds=maximum_seconds, duration_seconds=duration_seconds,
+                max_envelope_seconds=max_envelope_seconds,
+            ) for clip in raw_clips
+        ) if item is not None
+    ]
+    malformed_count = len(raw_clips) - len(resolved)
+    deduped, overlap_dropped = _drop_overlaps(resolved)
+    deduped.sort(key=lambda clip: -int(clip["score"]))
+    notes = str(document.get("selection_notes") or "")
+    if malformed_count:
+        notes += f" {malformed_count} corte(s) fora da pontuação, duração, peças ou janela do episódio foram removidos."
+    if overlap_dropped:
+        notes += f" {overlap_dropped} corte(s) sobrepostos com pontuação menor foram removidos."
+    if not deduped:
+        raise ValueError(
+            "Nenhum corte válido sobrou após a validação de pontuação, duração e sobreposição. "
+            "Nenhuma seleção foi salva; ajuste a direção editorial ou os limites de duração."
+        )
+    clips = [_normalize_clip(rank, clip, brief) for rank, clip in enumerate(deduped, start=1)]
+    return {
+        "schema_version": "1.0",
+        "selection_notes": notes.strip(),
+        "clips": clips,
     }
 
 
@@ -71,6 +355,119 @@ class SuggestionService:
         self._config = config
         self._domain = domain
         self._provider = provider
+
+    def _select(
+        self, *, brief: dict[str, Any], transcript: dict[str, Any],
+        units: list[dict[str, Any]], voice: ConfirmedVoice | None,
+        prompt_template: str, schema: dict[str, Any], second_round: bool,
+        should_cancel: Callable[[], bool], episode_title: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, list[tuple[dict[str, Any], dict[str, Any]]]]:
+        request_payload = {
+            "brief": {key: value for key, value in brief.items() if key != "confirmed_voice"},
+            "transcript": _transcript_lines(units),
+            "transcript_metadata": {
+                "duration_seconds": transcript.get("duration_seconds"),
+                "language": transcript.get("language"),
+            },
+            "selection_rules": _selection_rules(self._config),
+            **({"episode_title": episode_title} if episode_title else {}),
+        }
+        round_note = (
+            "## Segunda rodada\n"
+            "Esta é uma segunda rodada: os intervalos em `brief.exclude_ranges` já foram "
+            "escolhidos (ou já foram sugeridos antes). Devolva apenas cortes novos, fora "
+            "desses intervalos, até completar `brief.count`.\n\n"
+        ) if second_round else ""
+        prompt = (
+            f"{prompt_template}\n\n{round_note}"
+            "## Pedido atual e transcrição\n"
+            f"{json.dumps(request_payload, ensure_ascii=False, separators=(',', ':'))}"
+        )
+        if len(prompt) > self._config.ai.max_input_chars:
+            raise ValueError(
+                "transcrição excede o limite do provider; análise em chunks ainda é necessária "
+                f"({len(prompt)} > {self._config.ai.max_input_chars} caracteres)"
+            )
+        try:
+            generated = self._provider.generate(prompt, schema, should_cancel=should_cancel)
+        except SuggestionProviderCancelled as exc:
+            raise SuggestionJobCancelled() from exc
+        if should_cancel():
+            raise SuggestionJobCancelled()
+
+        errors = sorted(Draft202012Validator(schema).iter_errors(generated.document), key=str)
+        if errors:
+            first = errors[0]
+            location = ".".join(str(part) for part in first.absolute_path) or "root"
+            raise ValueError(f"resposta da IA inválida em {location}: {first.message}")
+
+        maximum = brief.get("maximum_seconds")
+        if maximum is not None and not 0 < float(maximum) < float("inf"):
+            raise ValueError("maximum_seconds deve ser positivo e finito")
+        selection = _validate_and_normalize_selection(
+            generated.document, brief=brief, transcript=transcript, units=units,
+            max_envelope_seconds=self._config.ai.selection_max_envelope_seconds,
+        )
+
+        voice_validation = None
+        metrics: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        if voice is not None:
+            turns = [turn.model_dump() for turn in voice.turns]
+            fresh = []
+            for clip in selection["clips"]:
+                envelope_share = subject_share(
+                    turns, voice.speaker, clip["start_second"], clip["end_second"],
+                )
+                editorial_share = subject_share_for_ranges(
+                    turns, voice.speaker,
+                    ((item["source_start"], item["source_end"])
+                     for item in clip["approximate_edl"] if item["audio_mode"] != "room_tone"),
+                )
+                accepted = editorial_share >= 0.5 and (
+                    len(clip["pieces"]) > 1 or envelope_share >= 0.5
+                )
+                metrics.append((clip, {
+                    "clip_rank": clip["rank"],
+                    "envelope_subject_share": envelope_share,
+                    "editorial_subject_share": editorial_share,
+                    "accepted": accepted,
+                }))
+                if accepted:
+                    fresh.append(clip)
+            if not fresh:
+                envelope_failures = sum(
+                    len(c["pieces"]) == 1 and m["envelope_subject_share"] < 0.5
+                    for c, m in metrics
+                )
+                editorial_failures = sum(m["editorial_subject_share"] < 0.5 for _, m in metrics)
+                raise ValueError(
+                    "Nenhum corte tem fala predominante da voz confirmada do Dayon "
+                    "no intervalo e na EDL editorial. "
+                    f"Abaixo de 50%: intervalo={envelope_failures}; EDL editorial={editorial_failures}. "
+                    "Revise a identificação e a direção editorial."
+                )
+            # These are suggestion checks. The deterministic final audio plan is separate.
+            voice_validation = {
+                "version": VOICE_ATTRIBUTION_VERSION,
+                "scope": "suggestion_envelope_and_editorial_source_union",
+                "speaker": voice.speaker,
+                "minimum_subject_share": 0.5,
+            }
+            selection["clips"] = fresh
+        excluded = brief.get("exclude_ranges") or []
+        if excluded:
+            clips = selection["clips"]
+            excluded_ranges = [(float(old["start"]), float(old["end"])) for old in excluded]
+            fresh = [
+                clip for clip in clips
+                if not _ranges_overlap(_clip_ranges(clip), excluded_ranges)
+            ]
+            if not fresh:
+                raise ValueError("A seleção repetiu trechos já sugeridos. Nenhum corte novo foi salvo; ajuste a direção editorial.")
+            if len(fresh) != len(clips):
+                selection["selection_notes"] += " Trechos já sugeridos foram removidos."
+                selection["clips"] = fresh
+        return selection, generated.provenance, voice_validation, metrics
 
     def run(
         self,
@@ -92,37 +489,41 @@ class SuggestionService:
                     "Referência de voz confirmada inválida; revise a voz e os turnos da diarização."
                 ) from exc
         transcript = json.loads(Path(transcript_artifact.path).read_text(encoding="utf-8"))
-        analysis_context = None
-        if analysis_artifact is not None:
-            analysis_context = _compact_analysis(
-                json.loads(Path(analysis_artifact.path).read_text(encoding="utf-8"))
-            )
         prompt_path = _PROJECT_ROOT / "prompts/clip_selection.pt-BR.md"
-        schema_path = _PROJECT_ROOT / "prompts/clip_selection.schema.json"
+        schema_path = _PROJECT_ROOT / "prompts/clip_selection.v3.schema.json"
         prompt_template = prompt_path.read_text(encoding="utf-8")
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        units = _selection_units(
+            transcript, voice=voice, primary_subject=str(brief.get("primary_subject") or "Dayon"),
+        )
 
-        request_payload = {
-            "brief": brief,
-            "transcript": _transcript_lines(transcript),
-            "transcript_metadata": {
-                "duration_seconds": transcript.get("duration_seconds"),
-                "language": transcript.get("language"),
-            },
-            "local_audio_analysis": analysis_context,
-        }
+        episode_title = None
+        try:
+            asset = self._domain.get_source_asset(transcript_artifact.source_asset_id)
+            episode_title = (asset.original_filename or "").strip() or None
+        except SourceAssetNotFoundError:
+            pass
+
+        # The model never sees the (huge) diarization turns, but the hash must change with the voice.
+        request_brief = {key: value for key, value in brief.items() if key != "confirmed_voice"}
         prompt_sha256 = hashlib.sha256(prompt_template.encode()).hexdigest()
         input_hash = _sha256_json({
             "artifact_version": SUGGESTION_ARTIFACT_VERSION,
-            "duration_validation_version": 1,
+            "duration_validation_version": 2,
             "transcript_sha256": transcript_artifact.audio_sha256,
             "prompt_sha256": prompt_sha256,
             "schema_sha256": hashlib.sha256(
                 json.dumps(schema, sort_keys=True).encode()
             ).hexdigest(),
             "provider": self._config.ai.model_dump(mode="json"),
-            "request": request_payload,
-            **({"voice_attribution_version": VOICE_ATTRIBUTION_VERSION} if voice else {}),
+            "selection_mode": "composed_v1",
+            "selection_rules": _selection_rules(self._config),
+            "request": {
+                "brief": request_brief, "transcript": _transcript_lines(units),
+                "episode_title": episode_title,
+            },
+            **({"voice_attribution_version": VOICE_ATTRIBUTION_VERSION,
+                "confirmed_voice": brief["confirmed_voice"]} if voice else {}),
         })
         cached = self._domain.find_cached_stage_artifact(
             project_id=transcript_artifact.project_id,
@@ -141,122 +542,83 @@ class SuggestionService:
                 "provenance": cached_document.get("provenance"),
             }
 
-        prompt = (
-            f"{prompt_template}\n\n"
-            "## Pedido atual e transcrição\n"
-            f"{json.dumps(request_payload, ensure_ascii=False, separators=(',', ':'))}"
-        )
-        if len(prompt) > self._config.ai.max_input_chars:
-            raise ValueError(
-                "transcrição excede o limite do provider; análise em chunks ainda é necessária "
-                f"({len(prompt)} > {self._config.ai.max_input_chars} caracteres)"
-            )
-
         progress_cb(5.0, "Preparando seleção editorial")
-        try:
-            generated = self._provider.generate(prompt, schema, should_cancel=should_cancel)
-        except SuggestionProviderCancelled as exc:
-            raise SuggestionJobCancelled() from exc
-        if should_cancel():
-            raise SuggestionJobCancelled()
-        progress_cb(90.0, "Validando resposta estruturada")
+        select_kwargs = dict(
+            transcript=transcript, units=units, voice=voice,
+            prompt_template=prompt_template, schema=schema, should_cancel=should_cancel,
+            episode_title=episode_title,
+        )
+        selection, provenance, voice_validation, metrics = self._select(
+            brief=brief, second_round=False, **select_kwargs,
+        )
+        progress_cb(80.0, "Validando resposta estruturada")
 
-        errors = sorted(Draft202012Validator(schema).iter_errors(generated.document), key=str)
-        if errors:
-            first = errors[0]
-            location = ".".join(str(part) for part in first.absolute_path) or "root"
-            raise ValueError(f"resposta da IA inválida em {location}: {first.message}")
-
-        duration_validation = None
-        maximum = brief.get("maximum_seconds")
-        if maximum is not None:
-            ceiling = float(maximum)
-            if not 0 < ceiling < float("inf"):
-                raise ValueError("maximum_seconds deve ser positivo e finito")
-            clips = generated.document["clips"]
-            # The current planner consumes the envelope, not approximate_edl.
-            # Reject a long envelope even when the model estimates a short edit.
-            accepted = [clip for clip in clips if
-                        clip["end_second"] - clip["start_second"] <= ceiling
-                        and clip["estimated_duration"] <= ceiling]
-            duration_validation = {"version": 1, "maximum_seconds": ceiling,
-                                   "rejected_count": len(clips) - len(accepted)}
-            if not accepted:
-                raise ValueError(f"Nenhum corte respeitou o máximo de {ceiling:g}s. "
-                                 "Gere outra seleção; nenhum corte acima do limite foi salvo.")
-            if len(accepted) != len(clips):
-                generated.document["selection_notes"] += (
-                    f" {len(clips)-len(accepted)} sugestões acima de {ceiling:g}s foram removidas."
-                )
-            generated.document["clips"] = accepted
-
-        voice_validation = None
-        if voice is not None:
-            turns = [turn.model_dump() for turn in voice.turns]
-            fresh = []
-            metrics = []
-            for clip in generated.document["clips"]:
-                envelope_share = subject_share(
-                    turns, voice.speaker, clip["start_second"], clip["end_second"],
-                )
-                editorial_share = subject_share_for_ranges(
-                    turns, voice.speaker,
-                    ((item["source_start"], item["source_end"])
-                     for item in clip["approximate_edl"] if item["audio_mode"] != "room_tone"),
-                )
-                accepted = envelope_share >= 0.5 and editorial_share >= 0.5
-                metrics.append({
-                    "clip_rank": clip["rank"],
-                    "envelope_subject_share": envelope_share,
-                    "editorial_subject_share": editorial_share,
-                    "accepted": accepted,
-                })
-                if accepted:
-                    fresh.append(clip)
-            if not fresh:
-                envelope_failures = sum(item["envelope_subject_share"] < 0.5 for item in metrics)
-                editorial_failures = sum(item["editorial_subject_share"] < 0.5 for item in metrics)
-                raise ValueError(
-                    "Nenhum corte tem fala predominante da voz confirmada do Dayon "
-                    "no intervalo e na EDL editorial. "
-                    f"Abaixo de 50%: intervalo={envelope_failures}; EDL editorial={editorial_failures}. "
-                    "Revise a identificação e a direção editorial."
-                )
-            # These are suggestion checks. The deterministic final audio plan is separate.
-            voice_validation = {
-                "version": VOICE_ATTRIBUTION_VERSION,
-                "scope": "suggestion_envelope_and_editorial_source_union",
-                "speaker": voice.speaker,
-                "minimum_subject_share": 0.5,
-                "clips": metrics,
+        requested = brief.get("count")
+        top_up = None
+        if isinstance(requested, int) and len(selection["clips"]) < 0.6 * requested:
+            missing = requested - len(selection["clips"])
+            progress_cb(90.0, "Buscando mais cortes")
+            top_up_brief = {
+                **brief,
+                "count": missing,
+                "exclude_ranges": [
+                    *(brief.get("exclude_ranges") or []),
+                    *({"start": start, "end": end}
+                      for clip in selection["clips"] for start, end in _clip_ranges(clip)),
+                ],
             }
-            generated.document["clips"] = fresh
-        excluded = brief.get("exclude_ranges") or []
-        if excluded:
-            clips = generated.document["clips"]
-            fresh = [clip for clip in clips if not any(
-                min(clip["end_second"], old["end"]) > max(clip["start_second"], old["start"])
-                for old in excluded
-            )]
-            if not fresh:
-                raise ValueError("A seleção repetiu trechos já sugeridos. Nenhum corte novo foi salvo; ajuste a direção editorial.")
-            if len(fresh) != len(clips):
-                generated.document["selection_notes"] += " Trechos já sugeridos foram removidos."
-                generated.document["clips"] = fresh
+            try:
+                extra, extra_provenance, _, extra_metrics = self._select(
+                    brief=top_up_brief, second_round=True, **select_kwargs,
+                )
+            except SuggestionJobCancelled:
+                raise
+            except Exception as exc:  # the first round is already a usable result
+                selection["selection_notes"] = (
+                    f"{selection['selection_notes']} Segunda rodada de cortes falhou "
+                    f"({type(exc).__name__}: {exc}); mantido o resultado da primeira."
+                ).strip()
+                top_up = {"requested": missing, "added": 0, "error": str(exc)}
+            else:
+                first_ranges = [r for clip in selection["clips"] for r in _clip_ranges(clip)]
+                extra["clips"] = [
+                    clip for clip in extra["clips"]
+                    if not _ranges_overlap(_clip_ranges(clip), first_ranges)
+                ]
+                merged = sorted(
+                    [*selection["clips"], *extra["clips"]],
+                    key=lambda clip: -clip["scores"]["total"],
+                )
+                for rank, clip in enumerate(merged, start=1):
+                    clip["rank"] = rank
+                selection["clips"] = merged
+                added = len(extra["clips"])
+                selection["selection_notes"] = (
+                    f"{selection['selection_notes']} {added} corte(s) adicionados em uma "
+                    "segunda rodada."
+                ).strip()
+                top_up = {"requested": missing, "added": added, "provenance": extra_provenance}
+                metrics = [*metrics, *extra_metrics]
+        if voice_validation is not None:
+            kept = {id(clip) for clip in selection["clips"]}
+            voice_validation["clips"] = [
+                {**metric, "clip_rank": clip["rank"]} if id(clip) in kept else metric
+                for clip, metric in metrics
+            ]
 
         artifact_document = {
-            "duration_validation": duration_validation,
             "artifact_schema_version": SUGGESTION_ARTIFACT_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "input_hash": input_hash,
             "transcript_artifact_id": transcript_artifact.id,
             "analysis_artifact_id": analysis_artifact.id if analysis_artifact else None,
             "provenance": {
-                **generated.provenance,
+                **provenance,
                 "prompt_sha256": prompt_sha256,
                 "schema_id": schema.get("$id"),
+                **({"top_up": top_up} if top_up is not None else {}),
             },
-            "selection": generated.document,
+            "selection": selection,
             **({"voice_validation": voice_validation} if voice_validation is not None else {}),
         }
         out_dir = suggestions_dir(self._config, transcript_artifact.project_id)
@@ -272,8 +634,8 @@ class SuggestionService:
             path=str(out_path),
             input_hash=input_hash,
             metadata={
-                "provenance": generated.provenance,
-                "clip_count": len(generated.document["clips"]),
+                "provenance": provenance,
+                "clip_count": len(selection["clips"]),
             },
         ))
         progress_cb(100.0, "Sugestões editoriais concluídas")
@@ -281,6 +643,6 @@ class SuggestionService:
             "cached": False,
             "suggestion_artifact_id": artifact.id,
             "suggestion_path": artifact.path,
-            "selection": generated.document,
-            "provenance": generated.provenance,
+            "selection": selection,
+            "provenance": artifact_document["provenance"],
         }

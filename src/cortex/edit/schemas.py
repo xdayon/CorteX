@@ -80,6 +80,9 @@ class EditPlanDiagnostics(BaseModel):
     j_cuts: int = Field(default=0, ge=0)
     l_cuts: int = Field(default=0, ge=0)
     jl_blocked: int = Field(default=0, ge=0)
+    # Fillers removed by the dry-cut ("dynamic") profile's filler pass
+    # (Requirement R4). Always zero for other profiles.
+    fillers_removed: int = Field(default=0, ge=0)
 
 
 class EditQualityIssue(BaseModel):

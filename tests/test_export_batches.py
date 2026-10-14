@@ -41,7 +41,7 @@ def _settings() -> dict:
     }
 
 
-def _workflow(tmp_path: Path):
+def _workflow(tmp_path: Path, brief: dict | None = None):
     config = _config(tmp_path)
     domain = DomainStore(config.paths.database)
     project = domain.create_project("Batch")
@@ -58,7 +58,7 @@ def _workflow(tmp_path: Path):
     run = domain.create_workflow_run(WorkflowRun(
         project_id=project.id, source_asset_id=source.id, status="ready_for_review",
         stage="review", artifacts=artifacts,
-        brief={"maximum_seconds": 120},
+        brief=brief or {"maximum_seconds": 120},
     ))
     return config, domain, project, run
 
@@ -149,7 +149,7 @@ def test_three_item_batch_finishes_after_client_and_worker_restart(
     ).json()["id"]
     del client  # the server-side queue must not depend on this browser session
 
-    def finish_plan(job, _config, jobs, _domain):
+    def finish_plan(job, _config, jobs, _domain, _provider=None):
         jobs.update(job.id, JobUpdate(
             status=JobStatus.SUCCEEDED, stage=PipelineStage.COMPLETE,
             result={"edit_plan_artifact_id": f"edl-{job.payload['export_item_id']}"},
@@ -178,3 +178,42 @@ def test_three_item_batch_finishes_after_client_and_worker_restart(
     assert [item.render_artifact_id for item in batch.items] == [
         f"render-{item.id}" for item in batch.items
     ]
+
+
+def test_confirmed_voice_reaches_render_job_payload(tmp_path: Path, monkeypatch) -> None:
+    voice = {"speaker": "S1", "turns": [{"start": 0, "end": 5, "speaker": "S1"}]}
+    config, domain, project, run = _workflow(
+        tmp_path, {"maximum_seconds": 120, "confirmed_voice": voice})
+    client = TestClient(create_app(config))
+    revision = client.post(
+        f"/api/v1/projects/{project.id}/runs/{run.id}/revisions",
+        json={"selection_artifact_id": run.artifacts["suggestion"],
+              "selected_clips": [{"key": "c", "title": "C", "start_second": 0, "end_second": 8,
+                                  "pacing": "balanced"}], "render_settings": _settings()},
+    ).json()
+    client.post(
+        f"/api/v1/projects/{project.id}/runs/{run.id}/export-batches",
+        json={"revision_id": revision["id"], "idempotency_key": "voice"},
+    )
+    seen = []
+
+    def finish_plan(job, _config, jobs, _domain, _provider=None):
+        jobs.update(job.id, JobUpdate(
+            status=JobStatus.SUCCEEDED, stage=PipelineStage.COMPLETE,
+            result={"edit_plan_artifact_id": "edl"},
+        ))
+
+    def finish_render(job, _config, jobs, _domain):
+        seen.append(job.payload)
+        jobs.update(job.id, JobUpdate(
+            status=JobStatus.SUCCEEDED, stage=PipelineStage.COMPLETE,
+            result={"render_artifact_id": "render"},
+        ))
+
+    import cortex.worker as worker
+    monkeypatch.setitem(worker._HANDLERS, JobType.EDIT_PLAN, finish_plan)
+    monkeypatch.setitem(worker._HANDLERS, JobType.RENDER, finish_render)
+    jobs = JobStore(config.paths.database)
+    for _ in range(3):
+        process_next(config, jobs, domain, FakeTranscriptionEngine())
+    assert seen and seen[0]["confirmed_voice"] == voice

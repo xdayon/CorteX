@@ -16,7 +16,8 @@ export function TranscriptEditor({projectId,artifactId,clip,corrections,onChange
     }).catch(e=>{if(!controller.signal.aborted)setError(String(e));}).finally(()=>{if(!controller.signal.aborted)setLoading(false);});
     return ()=>controller.abort();
   },[projectId,artifactId,open]);
-  const selected=words.filter(w=>w.end>clip.start_second && w.start<clip.end_second);
+  const ranges=clip.pieces?.length?clip.pieces.map(p=>[p.start,p.end]):[[clip.start_second,clip.end_second]];
+  const selected=words.filter(w=>ranges.some(([a,b])=>w.end>a && w.start<b));
   return <details className="transcript-editor" onToggle={e=>setOpen(e.currentTarget.open)}><summary>Corrigir texto deste corte · {corrections.length} alterações</summary>
     <p>Corrija nomes e palavras mantendo o tempo original. Campo vazio oculta a palavra na legenda. O áudio não muda.</p>
     {loading && <p>Carregando transcrição…</p>}{error && <p role="alert">{error}</p>}

@@ -26,10 +26,13 @@ class EditingProfile(BaseModel):
 
 
 PROFILES: dict[str, EditingProfile] = {
+    # "dynamic" is the dry-cut ("corte seco") profile: aggressive, fast,
+    # no sentence-pause preservation, no crossfade — every removed pause is
+    # a hard video cut. It is the default profile (see resolve_profile).
     "dynamic": EditingProfile(
-        name="dynamic", silence_threshold=0.82, pre_roll=0.10, post_roll=0.15,
-        boundary_radius=0.24, crossfade=0.045, rhetorical_ceiling=1.20,
-        min_removed_pause=0.32, max_cuts_per_30s=7, max_jl_offset=0.35,
+        name="dynamic", silence_threshold=0.25, pre_roll=0.05, post_roll=0.08,
+        boundary_radius=0.12, crossfade=0.0, rhetorical_ceiling=0.0,
+        min_removed_pause=0.10, max_cuts_per_30s=40, max_jl_offset=0.35,
     ),
     "balanced": EditingProfile(
         name="balanced", silence_threshold=1.10, pre_roll=0.12, post_roll=0.21,
@@ -59,19 +62,10 @@ def resolve_profile(
     start_second: float,
     end_second: float,
 ) -> EditingProfile:
+    # Dry-cut ("dynamic") is the default rhythm: no requested profile, "auto",
+    # or an unknown name all resolve to it. Explicit balanced/contemplative
+    # requests are honored as-is; the old words-per-second heuristic no
+    # longer decides the default.
     name = (requested or "auto").strip().lower()
     name = _PROFILE_ALIASES.get(name, name)
-    if name in PROFILES:
-        return PROFILES[name]
-
-    clip_words = [w for w in words if w.end > start_second and w.start < end_second]
-    duration = max(0.1, end_second - start_second)
-    words_per_second = len(clip_words) / duration
-    punctuation = "".join(w.word[-1:] for w in clip_words)
-    question_energy = punctuation.count("?") + punctuation.count("!")
-
-    if words_per_second >= 2.85 or question_energy >= 3:
-        return PROFILES["dynamic"]
-    if words_per_second <= 1.72 and question_energy == 0:
-        return PROFILES["contemplative"]
-    return PROFILES["balanced"]
+    return PROFILES.get(name, PROFILES["dynamic"])

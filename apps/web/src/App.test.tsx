@@ -123,7 +123,7 @@ test("unmount cancels polling and ignores a late response in a replacement view"
 });
 
 test.each([
-  ["failed", "Codex indisponível"], ["cancelled", "O processamento foi cancelado"],
+  ["failed", "Claude indisponível"], ["cancelled", "O processamento foi cancelado"],
 ] as const)("reopening %s work displays its terminal failure", async (status, message) => {
   localStorage.setItem("cortex-active-run", "project:run");
   vi.mocked(api.workflowRun).mockResolvedValue({ ...ready, status, error: status === "failed" ? message : null });

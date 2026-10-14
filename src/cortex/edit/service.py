@@ -14,9 +14,13 @@ from cortex.domain.store import DomainStore
 from cortex.diarize.attribution import ConfirmedVoice, subject_share_for_ranges
 from cortex.edit.boundary import energy_track_from_analysis, snap_segments_to_scene_cuts
 from cortex.edit.planner import (
+    build_transition,
     limit_timeline_duration,
+    absorb_short_segments,
+    merge_touching_segments,
     plan_safe_segments,
     protect_segment_boundaries,
+    remove_fillers,
     resolve_jl_cuts,
     timeline_duration,
 )
@@ -42,6 +46,49 @@ class EditPlanJobCancelled(RuntimeError):
 
 class EditPlanPreconditionError(ValueError):
     pass
+
+
+def resolve_semantic_ranges(
+    approximate_edl: list[dict] | None, start: float, end: float,
+) -> list[tuple[float, float]]:
+    """Turn ``approximate_edl`` entries into clamped, unioned keep-ranges.
+
+    Requirement R5: a range partly outside the ``[start, end)`` envelope is
+    clamped instead of rejected, and dropped if clamping leaves it empty.
+    Overlapping (or exactly touching) ranges are unioned instead of raising
+    "approximate_edl possui intervalos sobrepostos" — ``approximate_edl`` is
+    model output (an AI "tighten" pass proposing several keep-ranges per
+    clip), not a hand-authored EDL, so overlap is expected input, not an
+    error. Raises only when ``approximate_edl`` was given but nothing usable
+    remains.
+    """
+    raw_ranges: list[tuple[float, float]] = []
+    for entry in approximate_edl or []:
+        if entry.get("audio_mode") == "room_tone":
+            continue
+        try:
+            range_start = float(entry["source_start"])
+            range_end = float(entry["source_end"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EditPlanPreconditionError("approximate_edl possui intervalo inválido") from exc
+        if not math.isfinite(range_start) or not math.isfinite(range_end) or range_end <= range_start:
+            raise EditPlanPreconditionError("approximate_edl possui intervalo inválido")
+        clamped_start = max(range_start, start)
+        clamped_end = min(range_end, end)
+        if clamped_end <= clamped_start:
+            continue
+        raw_ranges.append((clamped_start, clamped_end))
+    raw_ranges.sort()
+    semantic_ranges: list[tuple[float, float]] = []
+    for range_start, range_end in raw_ranges:
+        if semantic_ranges and range_start <= semantic_ranges[-1][1]:
+            prev_start, prev_end = semantic_ranges[-1]
+            semantic_ranges[-1] = (prev_start, max(prev_end, range_end))
+        else:
+            semantic_ranges.append((range_start, range_end))
+    if approximate_edl is not None and not semantic_ranges:
+        raise EditPlanPreconditionError("approximate_edl não possui áudio editorial")
+    return semantic_ranges
 
 
 def _sha256(path: Path) -> str:
@@ -104,28 +151,7 @@ class EditPlanService:
             raise EditPlanPreconditionError("maximum_seconds deve ser positivo e finito")
         if maximum_seconds is not None:
             maximum_seconds = float(maximum_seconds)
-        semantic_ranges: list[tuple[float, float]] = []
-        for entry in approximate_edl or []:
-            if entry.get("audio_mode") == "room_tone":
-                continue
-            try:
-                range_start = float(entry["source_start"])
-                range_end = float(entry["source_end"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise EditPlanPreconditionError("approximate_edl possui intervalo inválido") from exc
-            if (
-                not math.isfinite(range_start) or not math.isfinite(range_end)
-                or range_start < start or range_end > end or range_end <= range_start
-            ):
-                raise EditPlanPreconditionError(
-                    "approximate_edl deve conter intervalos válidos dentro do envelope"
-                )
-            semantic_ranges.append((range_start, range_end))
-        semantic_ranges.sort()
-        if any(left[1] > right[0] for left, right in zip(semantic_ranges, semantic_ranges[1:])):
-            raise EditPlanPreconditionError("approximate_edl possui intervalos sobrepostos")
-        if approximate_edl is not None and not semantic_ranges:
-            raise EditPlanPreconditionError("approximate_edl não possui áudio editorial")
+        semantic_ranges = resolve_semantic_ranges(approximate_edl, start, end)
         voice = ConfirmedVoice.model_validate(confirmed_voice) if confirmed_voice else None
         if analysis_artifact.stage != "analysis":
             raise EditPlanPreconditionError("artifact informado não é um AnalysisArtifact")
@@ -206,7 +232,7 @@ class EditPlanService:
             "clip_start_effective": round(start, 4),
             "clip_end_effective": round(end, 4),
             "source_duration_seconds": round(source_duration, 6),
-            "physical_boundary_version": 1,
+            "physical_boundary_version": 2,
             "profile": requested_profile,
             "jl_settings": {
                 "enabled": effective_jl_enabled,
@@ -219,7 +245,7 @@ class EditPlanService:
             hash_payload["duration_limit_version"] = 1
         if semantic_ranges:
             hash_payload["semantic_ranges"] = semantic_ranges
-            hash_payload["semantic_planner_version"] = 1
+            hash_payload["semantic_planner_version"] = 2
         if voice is not None:
             hash_payload["confirmed_voice"] = {
                 "speaker": voice.speaker,
@@ -268,23 +294,38 @@ class EditPlanService:
             )
             segments.extend(protect_segment_boundaries(planned, words, resolved_profile))
             range_diagnostics.append(range_diag)
+        if len(planning_ranges) > 1:
+            # Independently-planned semantic ranges may abut once padded;
+            # merge those touches into one continuous kept range instead of a
+            # spurious zero-content cut (Requirement R5).
+            segments = merge_touching_segments(segments)
+            segments = absorb_short_segments(segments)
+
+        fillers_removed = 0
+        if resolved_profile.name == "dynamic" and analysis.fillers:
+            # Filler removal is the last split performed before boundary
+            # validation, so nothing downstream merges short segments back
+            # together and reinserts the removed audio (Requirement R4).
+            segments, fillers_removed = remove_fillers(
+                segments, words, analysis.fillers, resolved_profile, energy,
+            )
+
         for index, segment in enumerate(segments):
             segment["timeline_order"] = index
             if index < len(segments) - 1 and "transition" not in segment:
-                segment["transition"] = {
-                    "video": "micro_dissolve", "audio": "equal_power_crossfade",
-                    "duration": resolved_profile.crossfade,
-                }
+                segment["transition"] = build_transition(resolved_profile)
         diagnostics = {
             "profile": resolved_profile.name,
             "waveform_used": any(item["waveform_used"] for item in range_diagnostics),
             "candidate_pauses": sum(item["candidate_pauses"] for item in range_diagnostics),
             "cuts": max(0, len(segments) - 1),
             "saved_seconds": max(0.0, round(
-                (end - start) - sum(s["end"] - s["start"] for s in segments), 3,
+                (sum(b - a for a, b in semantic_ranges) if semantic_ranges else end - start)
+                - sum(s["end"] - s["start"] for s in segments), 3,
             )),
             "crossfade": resolved_profile.crossfade,
             "vad_used": any(item["vad_used"] for item in range_diagnostics),
+            "fillers_removed": fillers_removed,
         }
 
         if should_cancel():
@@ -304,10 +345,7 @@ class EditPlanService:
             for index, segment in enumerate(segments):
                 segment["timeline_order"] = index
                 if index < len(segments) - 1:
-                    segment.setdefault("transition", {
-                        "video": "micro_dissolve", "audio": "equal_power_crossfade",
-                        "duration": resolved_profile.crossfade,
-                    })
+                    segment.setdefault("transition", build_transition(resolved_profile))
             quality = {
                 "passed": all(report["passed"] for report in validation_reports),
                 "issues": [issue for report in validation_reports for issue in report["issues"]],
@@ -319,14 +357,6 @@ class EditPlanService:
                 segments, words, resolved_profile, start, end, energy,
                 vad_intervals=analysis.vad_intervals,
             )
-        if quality["degraded"]:
-            diagnostics = {
-                "profile": resolved_profile.name, "waveform_used": diagnostics["waveform_used"],
-                "candidate_pauses": diagnostics["candidate_pauses"], "cuts": 0,
-                "saved_seconds": 0.0, "crossfade": resolved_profile.crossfade,
-                "vad_used": diagnostics["vad_used"],
-            }
-
         scene_snap_count = 0
         if scene_index is not None:
             if should_cancel():
@@ -405,8 +435,18 @@ class EditPlanService:
                     f"Plano final rejeitado: voz confirmada ocupa {final_share:.1%} do áudio falado"
                 )
 
+        # Diagnostics always reflect the real, final plan (Requirement R3):
+        # boundary validation may have dropped individual cuts (or, for
+        # semantic ranges, snapped/extended their edges), scene snapping and
+        # duration limiting may have changed segment count further — cuts
+        # and saved_seconds are recomputed here from the actual final
+        # segments rather than trusted from the pre-validation estimate.
         diagnostics = {
             **diagnostics,
+            "cuts": max(0, len(segments) - 1),
+            "saved_seconds": max(0.0, round(
+                (end - start) - sum(float(s["end"]) - float(s["start"]) for s in segments), 3,
+            )),
             "scene_snap_count": scene_snap_count,
             "j_cuts": jl_counts["j_cuts"],
             "l_cuts": jl_counts["l_cuts"],

@@ -35,6 +35,8 @@ def _queue_export_plan(
             "maximum_seconds": run.brief.get("maximum_seconds"),
             "approximate_edl": item.clip.get("approximate_edl"),
             "confirmed_voice": run.brief.get("confirmed_voice"),
+            "primary_subject": run.brief.get("primary_subject"),
+            "tighten": True,
             "export_batch_id": batch.id, "export_item_id": item.id,
         },
         idempotency_key=f"export:{batch.id}:item:{item.id}:plan:{item.attempt}",
@@ -50,7 +52,7 @@ def _queue_export_plan(
 
 
 def _queue_export_render(
-    *, batch: ExportBatch, item: ExportItem, jobs: JobStore,
+    *, batch: ExportBatch, item: ExportItem, run, jobs: JobStore,
     domain: DomainStore, connection,
 ) -> None:
     job = jobs.create(JobCreate(
@@ -60,6 +62,7 @@ def _queue_export_render(
             "edit_plan_artifact_id": item.edit_plan_artifact_id,
             "camera_edit_plan_artifact_id": item.camera_edit_plan_artifact_id,
             "render_settings": item.render_settings,
+            "confirmed_voice": run.brief.get("confirmed_voice"),
             "export_batch_id": batch.id, "export_item_id": item.id,
         },
         idempotency_key=f"export:{batch.id}:item:{item.id}:render:{item.attempt}",
@@ -165,7 +168,7 @@ def advance_export_batch(job: Job, jobs: JobStore, domain: DomainStore) -> bool:
                 active_job_id=None,
             )
             framing_mode = item.render_settings.get("framing", {}).get("mode")
-            if framing_mode == "speaker_auto":
+            if framing_mode in {"speaker_auto", "speaker_face"}:
                 required = {"camera", "identity", "quality"}
                 if not required <= revision.visual_artifacts.keys():
                     domain.update_export_item(
@@ -203,7 +206,7 @@ def advance_export_batch(job: Job, jobs: JobStore, domain: DomainStore) -> bool:
                 )
             else:
                 _queue_export_render(
-                    batch=batch, item=item, jobs=jobs,
+                    batch=batch, item=item, run=run, jobs=jobs,
                     domain=domain, connection=connection,
                 )
             return True
@@ -217,7 +220,7 @@ def advance_export_batch(job: Job, jobs: JobStore, domain: DomainStore) -> bool:
                 active_job_id=None,
             )
             _queue_export_render(
-                batch=batch, item=item, jobs=jobs,
+                batch=batch, item=item, run=run, jobs=jobs,
                 domain=domain, connection=connection,
             )
             return True

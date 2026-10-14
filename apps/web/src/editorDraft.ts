@@ -23,7 +23,8 @@ function validSettings(value: unknown, defaults: RenderSettings): value is Rende
   const s = value as RenderSettings;
   return s.schema_version === 1 && ['h264_nvenc', 'libx264'].includes(s.encoder)
     && [1080, 1920].includes(s.canvas.width) && [1080, 1920].includes(s.canvas.height) && s.canvas.fps === 30
-    && ['vertical_crop', 'blurred_background', 'face_static_crop', 'speaker_auto'].includes(s.framing.mode)
+    && ['vertical_crop', 'blurred_background', 'face_static_crop', 'speaker_auto', 'speaker_face'].includes(s.framing.mode)
+    && [undefined, null, 'left', 'right'].includes(s.framing.primary_side)
     && Number.isFinite(s.framing.position_y ?? .5) && (s.framing.position_y ?? .5) >= 0 && (s.framing.position_y ?? .5) <= 1
     && Number.isInteger(s.captions.words_per_cue) && s.captions.words_per_cue >= 1 && s.captions.words_per_cue <= 12
     && s.captions.font_size >= 16 && s.captions.font_size <= 96

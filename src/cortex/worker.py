@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
 import signal
 import sys
 import time
@@ -51,11 +53,35 @@ from cortex.suggest.provider import (
     build_suggestion_provider,
 )
 from cortex.suggest.service import SuggestionJobCancelled, SuggestionService
-from cortex.transcribe.engine import FasterWhisperEngine, TranscriptionEngine
+from cortex.suggest.tighten import TightenJobCancelled, TightenService
+from cortex.transcribe.engine import CudaContextLostError, FasterWhisperEngine, TranscriptionEngine
 from cortex.transcribe.cuda_env import bootstrap_cuda_env
 from cortex.transcribe.service import TranscribeJobCancelled, TranscribeService
 
 _MAX_ERROR_LENGTH = 4000
+_STALLED_JOB_SECONDS = 300
+_WATCHDOG_INTERVAL_SECONDS = 5
+
+
+_CUDA_RECOVERY_EXIT_CODE = 75
+# Injectable so tests do not kill the pytest process.
+_exit_process = os._exit
+
+
+def _cuda_marker_path(config: CortexConfig) -> Path:
+    return config.paths.data_dir / "cuda-recovery.json"
+
+
+def _read_cuda_marker(config: CortexConfig) -> dict[str, Any] | None:
+    try:
+        marker = json.loads(_cuda_marker_path(config).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return marker if isinstance(marker, dict) else None
+
+
+def _clear_cuda_marker(config: CortexConfig) -> None:
+    _cuda_marker_path(config).unlink(missing_ok=True)
 
 
 class _YoutubeCancelled(RuntimeError):
@@ -151,10 +177,11 @@ def run_youtube_ingest_job(
     def should_cancel() -> bool:
         return _job_is_cancelled(jobs, job.id)
 
-    def progress_cb(fraction: float) -> None:
+    def progress_cb(fraction: float, detail: str | None = None) -> None:
         if should_cancel():
             raise _YoutubeCancelled()
-        _safe_progress(jobs, job.id, fraction * 90.0, "Baixando vídeo do YouTube", PipelineStage.INGEST)
+        message = "Baixando vídeo do YouTube" + (f" · {detail}" if detail else "")
+        _safe_progress(jobs, job.id, fraction * 90.0, message, PipelineStage.INGEST)
 
     _safe_progress(jobs, job.id, 0.0, "Resolvendo vídeo do YouTube", PipelineStage.INGEST)
     if should_cancel():
@@ -741,6 +768,7 @@ def run_edit_plan_job(
     config: CortexConfig,
     jobs: JobStore,
     domain: DomainStore,
+    provider: SuggestionProvider,
 ) -> None:
     transcript_artifact_id = job.payload.get("transcript_artifact_id")
     if not transcript_artifact_id:
@@ -764,6 +792,7 @@ def run_edit_plan_job(
     end = job.payload.get("end")
     if start is None or end is None:
         raise ValueError("payload do job de plano de edição sem start/end")
+    start, end = float(start), float(end)
     service = EditPlanService(config, domain)
 
     def progress_cb(progress_percent: float, message: str) -> None:
@@ -772,12 +801,35 @@ def run_edit_plan_job(
     def should_cancel() -> bool:
         return _job_is_cancelled(jobs, job.id)
 
+    approximate_edl = job.payload.get("approximate_edl")
+    tighten_artifact_id = None
+    if (
+        job.payload.get("tighten") is True and config.ai.tighten_enabled
+        and (not approximate_edl or len(approximate_edl) == 1)
+    ):
+        tighten_service = TightenService(config, domain, provider)
+        try:
+            tighten_result = tighten_service.run(
+                transcript_artifact=transcript,
+                start=start,
+                end=end,
+                brief={"primary_subject": job.payload.get("primary_subject")},
+                progress_cb=lambda percent, _message: _safe_progress(
+                    jobs, job.id, percent * 0.3, "Enxugando o corte com IA", PipelineStage.EDIT
+                ),
+                should_cancel=should_cancel,
+            )
+        except TightenJobCancelled:
+            return
+        tighten_artifact_id = tighten_result["tighten_artifact_id"]
+        approximate_edl = tighten_result["ranges"]
+
     try:
         result = service.run(
             transcript_artifact=transcript,
             analysis_artifact=analysis_artifact,
-            start=float(start),
-            end=float(end),
+            start=start,
+            end=end,
             profile=job.payload.get("profile"),
             maximum_seconds=job.payload.get("maximum_seconds"),
             progress_cb=progress_cb,
@@ -785,11 +837,13 @@ def run_edit_plan_job(
             scene_index_artifact=scene_index_artifact,
             jl_cut=job.payload.get("jl_cut"),
             max_jl_offset_seconds=job.payload.get("max_jl_offset_seconds"),
-            approximate_edl=job.payload.get("approximate_edl"),
+            approximate_edl=approximate_edl,
             confirmed_voice=job.payload.get("confirmed_voice"),
         )
     except EditPlanJobCancelled:
         return
+    if tighten_artifact_id is not None:
+        result["tighten_artifact_id"] = tighten_artifact_id
     jobs.update(
         job.id,
         JobUpdate(
@@ -855,6 +909,7 @@ def run_render_job(
                 if job.payload.get("render_settings_override") is not None else None
             ),
             export_directory=job.payload.get("export_directory"),
+            confirmed_voice=job.payload.get("confirmed_voice"),
         )
     except RenderJobCancelled:
         return
@@ -955,7 +1010,7 @@ def _advance_workflow(job: Job, jobs: JobStore, domain: DomainStore) -> None:
             ), connection=connection)
             domain.update_workflow_run(
                 run.id, connection=connection, stage="suggest", progress=70,
-                message="Codex selecionando os melhores cortes", active_job_id=next_job.id,
+                message="Claude selecionando os melhores cortes", active_job_id=next_job.id,
                 artifacts=artifacts,
             )
         return
@@ -990,16 +1045,67 @@ def process_next(
             raise ValueError(f"tipo de job não suportado por este worker: {job.type}")
         if job.type == JobType.TRANSCRIPTION:
             handler(job, config, jobs, domain, engine)
-        elif job.type == JobType.SUGGESTION:
+        elif job.type in (JobType.SUGGESTION, JobType.EDIT_PLAN):
             provider = suggestion_provider or build_suggestion_provider(
                 config.ai, cwd=Path(__file__).resolve().parents[2]
             )
             handler(job, config, jobs, domain, provider)
         else:
             handler(job, config, jobs, domain)
+    except CudaContextLostError as exc:
+        marker = _read_cuda_marker(config)
+        if marker is not None and marker.get("job_id") == job.id and int(marker.get("attempts", 0)) >= 1:
+            _clear_cuda_marker(config)
+            try:
+                jobs.update(job.id, JobUpdate(status=JobStatus.FAILED, error=_truncate(
+                    "A GPU continuou indisponível mesmo após reiniciar o worker (comum após "
+                    "suspender o computador). Reinicie o computador ou verifique o driver "
+                    f"NVIDIA. Detalhe: {exc}"
+                )))
+            except InvalidJobTransitionError:
+                pass
+        else:
+            # The CUDA context only recovers in a fresh process. Leave the job
+            # running with a dead PID so recover_abandoned_jobs requeues it.
+            _cuda_marker_path(config).write_text(
+                json.dumps({"job_id": job.id, "attempts": 1}), encoding="utf-8"
+            )
+            try:
+                jobs.update(job.id, JobUpdate(
+                    message="GPU perdida após suspensão; reiniciando o worker para recuperar",
+                ))
+            except InvalidJobTransitionError:
+                pass
+            print(
+                f"GPU perdida ({exc}); encerrando o worker para reiniciar em processo limpo",
+                file=sys.stderr, flush=True,
+            )
+            _exit_process(_CUDA_RECOVERY_EXIT_CODE)
+            return True
     except Exception as exc:  # noqa: BLE001 - persisted as the job's failure reason
         try:
             jobs.update(job.id, JobUpdate(status=JobStatus.FAILED, error=_truncate(str(exc))))
+        except InvalidJobTransitionError:
+            pass
+    # A handler may return early only after it has cancelled or completed its
+    # own job. Leaving it running would make both the UI and the durable queue
+    # lie indefinitely, as happened with a YouTube download that lost its
+    # downloader child. Fail closed and preserve an actionable retry path.
+    final = jobs.get(job.id)
+    if final.status == JobStatus.SUCCEEDED:
+        marker = _read_cuda_marker(config)
+        if marker is not None and marker.get("job_id") == job.id:
+            _clear_cuda_marker(config)
+    if final.status == JobStatus.RUNNING:
+        try:
+            jobs.update(job.id, JobUpdate(
+                status=JobStatus.FAILED,
+                error=(
+                    "O worker terminou esta tarefa sem registrar um resultado. "
+                    "Repita o processamento para tentar novamente."
+                ),
+                message="Interrompida: o worker não confirmou conclusão",
+            ))
         except InvalidJobTransitionError:
             pass
     if not advance_export_batch(job, jobs, domain):
@@ -1017,6 +1123,10 @@ def run_worker(
     config = config or load_config()
     config.ensure_runtime_dirs()
     jobs = JobStore(config.paths.database)
+    # A job may retain a PID from a worker that is gone by the time a service
+    # restart reaches here. Check its last genuine activity first; otherwise
+    # recovery would refresh its timestamp and conceal an already-stalled job.
+    jobs.fail_stalled_jobs(stale_after_seconds=_STALLED_JOB_SECONDS)
     jobs.recover_abandoned_jobs()
     domain = DomainStore(config.paths.database)
     reconcile_export_batches(jobs, domain)
@@ -1035,10 +1145,14 @@ def run_worker(
         signal.signal(signal.SIGINT, _stop)
 
     processed = 0
+    last_watchdog = time.monotonic()
     try:
         while state["running"]:
             if max_jobs is not None and processed >= max_jobs:
                 break
+            if time.monotonic() - last_watchdog >= _WATCHDOG_INTERVAL_SECONDS:
+                jobs.fail_stalled_jobs(stale_after_seconds=_STALLED_JOB_SECONDS)
+                last_watchdog = time.monotonic()
             did_work = process_next(config, jobs, domain, engine, suggestion_provider)
             if did_work:
                 processed += 1

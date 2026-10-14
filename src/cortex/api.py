@@ -254,6 +254,7 @@ class RenderRequest(BaseModel):
     render_settings: RenderSettings | None = None
     render_settings_override: RenderSettingsPatch | None = None
     export_directory: str | None = Field(default=None, max_length=4096)
+    confirmed_voice: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def reject_mixed_settings(self) -> RenderRequest:
@@ -262,9 +263,9 @@ class RenderRequest(BaseModel):
         ):
             raise ValueError("render_settings não pode ser combinado com encoder/headline legados")
         if (self.render_settings is not None
-                and self.render_settings.framing.mode == "speaker_auto"
+                and self.render_settings.framing.mode in {"speaker_auto", "speaker_face"}
                 and not self.camera_edit_plan_artifact_id):
-            raise ValueError("speaker_auto exige camera_edit_plan_artifact_id")
+            raise ValueError(f"{self.render_settings.framing.mode} exige camera_edit_plan_artifact_id")
         face_fields = (
             self.face_index_artifact_id,
             self.identity_index_artifact_id,
@@ -661,8 +662,13 @@ def create_app(config: CortexConfig | None = None):
                 for artifact in domain.list_stage_artifacts(previous_project, stage="suggestion"):
                     if Path(artifact.path).is_file():
                         document = json.loads(Path(artifact.path).read_text())
-                        excluded.extend({"start": c["start_second"], "end": c["end_second"]}
-                                        for c in document.get("selection", {}).get("clips", []))
+                        for c in document.get("selection", {}).get("clips", []):
+                            excluded.extend(
+                                {"start": p["start"], "end": p["end"]}
+                                for p in (c.get("pieces") or [
+                                    {"start": c["start_second"], "end": c["end_second"]}
+                                ])
+                            )
             brief["exclude_ranges"] = sorted(excluded, key=lambda r: (r["start"], r["end"]))
         run = WorkflowRun(
             project_id=project_id,
@@ -1589,6 +1595,7 @@ def create_app(config: CortexConfig | None = None):
                     if request.render_settings_override is not None else None
                 ),
                 "export_directory": request.export_directory,
+                "confirmed_voice": request.confirmed_voice,
             },
         ))
 

@@ -112,8 +112,9 @@ class RenderFramingSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
-    mode: Literal["vertical_crop", "blurred_background", "face_static_crop", "speaker_auto"] = "vertical_crop"
+    mode: Literal["vertical_crop", "blurred_background", "face_static_crop", "speaker_auto", "speaker_face"] = "vertical_crop"
     position_y: float = Field(default=0.5, ge=0.0, le=1.0, allow_inf_nan=False)
+    primary_side: Literal["left", "right"] | None = None
     punch_in: RenderPunchInSettings = Field(default_factory=RenderPunchInSettings)
     scene_overrides: list[SceneFramingOverride] = Field(default_factory=list, max_length=500)
 
@@ -269,8 +270,9 @@ class RenderTemplateSettingsPatch(BaseModel):
 class RenderFramingSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["vertical_crop", "blurred_background", "face_static_crop", "speaker_auto"] | None = None
+    mode: Literal["vertical_crop", "blurred_background", "face_static_crop", "speaker_auto", "speaker_face"] | None = None
     position_y: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
+    primary_side: Literal["left", "right"] | None = None
     # Whole-object override, matching how captions.animation / headline.animation
     # already behave in this patch model: no partial-field patch for nested
     # settings, the incoming object fully replaces punch_in when present.
@@ -392,6 +394,9 @@ class RenderOverlayInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     renderer: str
+    requested_renderer: str | None = None
+    ass_generator_version: int | None = None
+    font_files: dict[str, str] | None = None
     captions_enabled: bool
     caption_font: str | None = None
     caption_text_color: str | None = None

@@ -11,6 +11,7 @@ dependencies = [
   "fastapi>=0.116,<1",
   "jsonschema>=4.23,<5",
   "nvidia-ml-py>=13,<14",
+  "pillow>=10,<13",
   "psutil>=7,<8",
   "pydantic>=2.11,<3",
   "python-multipart>=0.0.9,<1",

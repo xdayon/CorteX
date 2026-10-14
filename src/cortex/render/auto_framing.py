@@ -16,13 +16,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from cortex.analyze.camera_schemas import CameraTimelineDocument
 from cortex.analyze.face_schemas import FaceIndexDocument
 from cortex.analyze.speaker_schemas import SpeakerTimelineDocument
+from cortex.diarize.attribution import ConfirmedVoice
 from cortex.domain.models import SourceAsset
 from cortex.domain.store import DomainStore
 from cortex.edit.camera_plan_schemas import CameraEditPlanDocument
 
-AUTO_FRAMING_VERSION = "1.2.0"
+AUTO_FRAMING_VERSION = "1.3.0"
 MIN_SPEAKER_SECONDS = 1.2
 MIN_CONFIDENCE = 0.6
+FACE_FIRST_PRESENCE = 0.8
+FACE_FIRST_NOISE_TRACK = 0.2
+FACE_FIRST_MIN_SWITCH_US = 1_500_000
+FACE_FIRST_MIN_SUBSPAN_US = 2_000_000
 
 
 class SceneFramingOverride(BaseModel):
@@ -90,11 +95,21 @@ def resolve_auto_framing(
     *, source_width: int, source_height: int, width: int, height: int, fps: int,
     zoom: float = 1.0, alternate: bool = True,
     overrides: list[SceneFramingOverride] | None = None,
+    policy: Literal["default", "face_first"] = "default",
+    confirmed_voice: ConfirmedVoice | dict | None = None,
+    primary_side: Literal["left", "right"] | None = None,
 ) -> list[AutoFramingSpan]:
     frames = sorted(faces.frames, key=lambda frame: frame.time)
     times = [round(frame.time * 1_000_000) for frame in frames]
     result: list[AutoFramingSpan] = []
     choices = {item.scene_index: item.target for item in overrides or []}
+    if policy == "face_first":
+        voice = (ConfirmedVoice.model_validate(confirmed_voice)
+                 if isinstance(confirmed_voice, dict) else confirmed_voice)
+        return _resolve_face_first(
+            plan, frames, times, choices, voice, primary_side,
+            source_width=source_width, source_height=source_height, width=width, height=height,
+        )
     for shot in plan.shots:
         start, end = shot.source_start_us, shot.source_end_us
         manual = choices.get(shot.scene_index) if shot.visual_origin == "primary_in_place" else None
@@ -238,4 +253,130 @@ def resolve_auto_framing(
                 if span.mode != "face_crop":
                     span.reason = "face_outside_safe_crop"
             result.append(span)
+    return result
+
+
+def _voice_subspans(
+    start: int, end: int, voice: ConfirmedVoice, primary_side: str,
+) -> list[tuple[int, int, str]]:
+    """Split a shot by the confirmed voice, holding the target through short interjections."""
+    other = "right" if primary_side == "left" else "left"
+    turns = []
+    for turn in sorted(voice.turns, key=lambda item: (item.start, item.end)):
+        left, right = max(start, round(turn.start * 1_000_000)), min(end, round(turn.end * 1_000_000))
+        if right > left:
+            turns.append((left, right, primary_side if turn.speaker == voice.speaker else other))
+    if not turns:
+        return [(start, end, primary_side)]
+    current = next((side for a, b, side in turns if b - a >= FACE_FIRST_MIN_SWITCH_US), turns[0][2])
+    changes: list[tuple[int, str]] = [(start, current)]
+    for a, b, side in turns:
+        if side != current and b - a >= FACE_FIRST_MIN_SWITCH_US:
+            current = side
+            changes.append((a, side))
+    spans = [[a, b, side] for (a, side), (b, _) in zip(changes, [*changes[1:], (end, "")])]
+    while len(spans) > 1:
+        shortest = min(range(len(spans)), key=lambda i: spans[i][1] - spans[i][0])
+        if spans[shortest][1] - spans[shortest][0] >= FACE_FIRST_MIN_SUBSPAN_US:
+            break
+        neighbor = shortest - 1 if shortest > 0 else shortest + 1
+        low, high = sorted((neighbor, shortest))
+        spans[low] = [spans[low][0], spans[high][1], spans[neighbor][2]]
+        spans.pop(high)
+        merged = [spans[0]]
+        for item in spans[1:]:
+            if item[2] == merged[-1][2]:
+                merged[-1][1] = item[1]
+            else:
+                merged.append(item)
+        spans = merged
+    return [(a, b, side) for a, b, side in spans]
+
+
+def _resolve_face_first(
+    plan: CameraEditPlanDocument, frames, times: list[int], choices: dict[int, str],
+    voice: ConfirmedVoice | None, primary_side: str | None,
+    *, source_width: int, source_height: int, width: int, height: int,
+) -> list[AutoFramingSpan]:
+    """Always crop on a face: the only person, or the voice-selected side of a two-shot."""
+    result: list[AutoFramingSpan] = []
+    base_w = min(source_width, int(source_height * width / height)) // 2 * 2
+    base_h = min(source_height, int(source_width * height / width)) // 2 * 2
+
+    def usable(frame, track):
+        return next((face for face in frame.faces
+                     if face.track_id == track and face.score >= MIN_CONFIDENCE), None)
+
+    for shot in plan.shots:
+        start, end = shot.source_start_us, shot.source_end_us
+        manual = choices.get(shot.scene_index) if shot.visual_origin == "primary_in_place" else None
+        shot_samples = frames[bisect_left(times, start):bisect_left(times, end)]
+
+        def emit(left, right, track, reason):
+            samples = frames[bisect_left(times, left):bisect_left(times, right)]
+            span = AutoFramingSpan(
+                segment_order=shot.edit_segment_order, scene_index=shot.scene_index,
+                source_start_us=left, source_end_us=right, visual_origin=shot.visual_origin,
+                mode="blurred_background", reason="face_first_target_missing",
+                sample_count=len(samples),
+            )
+            result.append(span)
+            if manual == "full":
+                span.reason = "manual_full_frame"
+                return
+            if not shot.visual_quality_usable:
+                span.reason = "scene_quality_uncertain"
+                return
+            selected = [usable(frame, track) for frame in samples] if track else []
+            detected = [face for face in selected if face is not None]
+            if not samples or not detected or len(detected) / len(samples) < FACE_FIRST_PRESENCE:
+                return
+            center_x = median((face.x + face.width / 2) * source_width for face in detected)
+            x = max(0, min(source_width - base_w, round(center_x - base_w / 2))) // 2 * 2
+            y = max(0, (source_height - base_h) // 2) // 2 * 2
+            fits = sum(
+                1 for face in detected
+                if x <= (face.x - face.width * 0.15) * source_width
+                and x + base_w >= (face.x + face.width * 1.15) * source_width
+                and y <= (face.y - face.height * 0.2) * source_height
+                and y + base_h >= (face.y + face.height * 1.1) * source_height
+            )
+            if fits / len(samples) < FACE_FIRST_PRESENCE:
+                span.reason = "face_first_target_outside_crop"
+                return
+            span.mode, span.reason, span.track_id = "face_crop", reason, track
+            span.crop_x, span.crop_y, span.crop_width, span.crop_height = x, y, base_w, base_h
+            span.zoom_reason = "disabled"
+
+        if manual in {"left", "right"} and shot_samples and all(f.faces for f in shot_samples):
+            chosen = {sorted(f.faces, key=lambda face: face.x + face.width / 2)[
+                0 if manual == "left" else -1].track_id for f in shot_samples}
+            emit(start, end, next(iter(chosen)) if len(chosen) == 1 else None, f"manual_{manual}")
+            continue
+
+        stats: dict[str, list[float]] = {}
+        presence: dict[str, int] = {}
+        for frame in shot_samples:
+            for face in frame.faces:
+                if face.track_id is not None and face.score >= MIN_CONFIDENCE:
+                    stats.setdefault(face.track_id, []).append(face.x + face.width / 2)
+                    presence[face.track_id] = presence.get(face.track_id, 0) + 1
+        area = {track: sum(face.width * face.height for frame in shot_samples for face in frame.faces
+                           if face.track_id == track) / presence[track] for track in presence}
+        total = max(1, len(shot_samples))
+        significant = [track for track in presence if presence[track] / total >= FACE_FIRST_NOISE_TRACK]
+        if len(significant) <= 1:
+            only = significant[0] if significant else None
+            emit(start, end, only, "face_first_single_person")
+            continue
+        ordered = sorted(significant, key=lambda track: median(stats[track]))
+        sides = {"left": ordered[0], "right": ordered[-1]}
+        dominant = max(significant, key=lambda track: (area[track], track))
+        if primary_side is None:
+            emit(start, end, dominant, "face_first_dominant_face")
+        elif voice is None:
+            emit(start, end, sides[primary_side], "face_first_primary_side")
+        else:
+            for left, right, side in _voice_subspans(start, end, voice, primary_side):
+                emit(left, right, sides[side], "face_first_voice_turn")
     return result

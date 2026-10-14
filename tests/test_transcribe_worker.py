@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import threading
+from datetime import timedelta
 import unittest
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from cortex.config import CortexConfig, load_config  # noqa: E402
 from cortex.domain.models import SourceAsset, SourceKind  # noqa: E402
 from cortex.domain.store import DomainStore  # noqa: E402
 from cortex.jobs import JobStore  # noqa: E402
-from cortex.schemas import JobCreate, JobStatus, JobType, JobUpdate  # noqa: E402
+from cortex.schemas import JobCreate, JobStatus, JobType, JobUpdate, utc_now  # noqa: E402
 from cortex.transcribe.engine import TranscriptionEngineError  # noqa: E402
 from cortex.transcribe.service import TranscribeService  # noqa: E402
 from cortex.worker import process_next, run_transcription_job  # noqa: E402
@@ -148,6 +149,39 @@ class JobRecoveryTests(unittest.TestCase):
             self.assertEqual(claimed_ids, [job.id for job in created])
             self.assertEqual(len(claimed_ids), len(set(claimed_ids)))
             self.assertIsNone(restarted_store.claim_next())
+
+    def test_stalled_live_worker_job_is_failed_with_an_actionable_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = JobStore(Path(d) / "jobs.sqlite3")
+            created = store.create(JobCreate(type=JobType.INGEST_YOUTUBE))
+            running = store.claim_next()
+            assert running is not None
+            stale = running.model_copy(update={
+                "updated_at": utc_now() - timedelta(minutes=6),
+            })
+            store._save(stale)
+
+            failed = store.fail_stalled_jobs(stale_after_seconds=300)
+
+            self.assertEqual([job.id for job in failed], [created.id])
+            self.assertEqual(failed[0].status, JobStatus.FAILED)
+            self.assertIn("sem atualização", failed[0].message)
+            self.assertIn("Repita", failed[0].error or "")
+
+
+def test_worker_fails_a_handler_that_returns_without_a_terminal_job(tmp_path, monkeypatch) -> None:
+    config = _make_config(tmp_path)
+    jobs = JobStore(config.paths.database)
+    domain = DomainStore(config.paths.database)
+    job = jobs.create(JobCreate(type=JobType.INGEST_YOUTUBE))
+
+    import cortex.worker as worker
+    monkeypatch.setitem(worker._HANDLERS, JobType.INGEST_YOUTUBE, lambda *_args: None)
+
+    assert process_next(config, jobs, domain, FakeTranscriptionEngine())
+    failed = jobs.get(job.id)
+    assert failed.status == JobStatus.FAILED
+    assert "sem registrar um resultado" in (failed.error or "")
 
 
 class TranscribeServiceCacheTests(unittest.TestCase):

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
+import time
 from importlib.util import find_spec
 from typing import Any, Callable, Protocol
 
@@ -65,14 +66,80 @@ def find_cached_download(dest_dir: Path, video_id: str) -> Path | None:
 
 
 def progress_hook_to_fraction(status: dict[str, Any]) -> float | None:
-    """Map a yt-dlp progress hook dict to a 0..1 fraction, if computable."""
+    """Map a yt-dlp progress hook dict to a 0..1 fraction, if computable.
+
+    Fragmented (HLS/DASH) downloads only have a rough ``total_bytes_estimate``
+    that can start far too low, so fragment counts win when present.
+    """
     if status.get("status") != "downloading":
         return None
+    fragment_index, fragment_count = status.get("fragment_index"), status.get("fragment_count")
+    if fragment_index is not None and fragment_count and fragment_count > 0:
+        return max(0.0, min(1.0, fragment_index / fragment_count))
     total = status.get("total_bytes") or status.get("total_bytes_estimate")
     downloaded = status.get("downloaded_bytes")
     if not total or downloaded is None:
         return None
     return max(0.0, min(1.0, downloaded / total))
+
+
+def _format_bytes(value: float) -> str:
+    if value >= 1e9:
+        return f"{value / 1e9:.1f} GB".replace(".", ",")
+    return f"{value / 1e6:.0f} MB"
+
+
+def progress_hook_to_detail(status: dict[str, Any]) -> str | None:
+    downloaded = status.get("downloaded_bytes")
+    if not downloaded:
+        return None
+    total = status.get("total_bytes")
+    estimated = status.get("total_bytes_estimate")
+    if total:
+        return f"{_format_bytes(downloaded)} de {_format_bytes(total)}"
+    if estimated:
+        return f"{_format_bytes(downloaded)} de ~{_format_bytes(estimated)}"
+    return f"{_format_bytes(downloaded)} baixados"
+
+
+class DownloadProgressReporter:
+    """yt-dlp progress hook that reports a monotonic fraction, at most once per
+    second, with a heartbeat every ``heartbeat_seconds`` even if it stalls.
+
+    The hook fires many times per second; each report is a SQLite write, and a
+    stalled fraction must still refresh the job's ``updated_at``.
+    """
+
+    def __init__(
+        self,
+        progress_cb: Callable[[float, str | None], None],
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        min_interval_seconds: float = 1.0,
+        heartbeat_seconds: float = 2.0,
+    ) -> None:
+        self._progress_cb = progress_cb
+        self._clock = clock
+        self._min_interval = min_interval_seconds
+        self._heartbeat = heartbeat_seconds
+        self._best = 0.0
+        self._last_emit_at: float | None = None
+        self._last_emitted_fraction = -1.0
+
+    def __call__(self, status: dict[str, Any]) -> None:
+        fraction = progress_hook_to_fraction(status)
+        if fraction is None:
+            return
+        self._best = max(self._best, fraction)
+        now = self._clock()
+        if self._last_emit_at is not None:
+            elapsed = now - self._last_emit_at
+            advanced = self._best > self._last_emitted_fraction
+            if elapsed < self._min_interval or (not advanced and elapsed < self._heartbeat):
+                return
+        self._last_emit_at = now
+        self._last_emitted_fraction = self._best
+        self._progress_cb(self._best, progress_hook_to_detail(status))
 
 
 @dataclass(frozen=True)
@@ -89,7 +156,8 @@ def download_youtube_source(
     *,
     youtube_format: str,
     downloader: YoutubeDownloader | None = None,
-    progress_cb: Callable[[float], None] | None = None,
+    progress_cb: Callable[[float, str | None], None] | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> YoutubeDownloadResult:
     """Resolve `url` to a video id, reuse a cached download if present for
     this project, otherwise download with yt-dlp using the venv install.
@@ -107,12 +175,7 @@ def download_youtube_source(
     if cached is not None:
         return YoutubeDownloadResult(path=cached, video_id=video_id, title=info.get("title"), cached=True)
 
-    def _hook(status: dict[str, Any]) -> None:
-        if progress_cb is None:
-            return
-        fraction = progress_hook_to_fraction(status)
-        if fraction is not None:
-            progress_cb(fraction)
+    _hook = DownloadProgressReporter(progress_cb, clock=clock) if progress_cb is not None else None
 
     download_options = build_ydl_options(youtube_format, dest_dir, progress_hook=_hook)
     info = downloader.extract_info(url, download=True, options=download_options)

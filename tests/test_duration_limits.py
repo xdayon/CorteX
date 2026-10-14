@@ -24,25 +24,24 @@ def test_suggestion_rejects_long_envelope_even_when_model_estimates_under_ceilin
     transcript = _transcript(domain, tmp_path)
     provider = FakeSuggestionProvider(
         {
-            "schema_version": "1.0",
             "selection_notes": "Teste",
             "clips": [
-                _valid_clip(rank=1, end_second=175, estimated_duration=110),
-                _valid_clip(rank=2),
+                _valid_clip(title="Longo", start_second=0, end_second=80, score=9),
+                _valid_clip(title="Curto", start_second=0, end_second=30, score=5),
             ],
         }
     )
     result = SuggestionService(config, domain, provider).run(
         transcript_artifact=transcript,
-        brief={"count": 2, "maximum_seconds": 120},
+        brief={"count": 2, "maximum_seconds": 60},
         progress_cb=lambda *_: None,
         should_cancel=lambda: False,
     )
     doc = json.loads(Path(result["suggestion_path"]).read_text())
     assert len(doc["selection"]["clips"]) == 1
-    assert doc["selection"]["clips"][0]["rank"] == 2
-    assert doc["duration_validation"]["rejected_count"] == 1
-    assert "120s" in doc["selection"]["selection_notes"]
+    assert doc["selection"]["clips"][0]["title"] == "Curto"
+    assert doc["selection"]["clips"][0]["rank"] == 1
+    assert "removid" in doc["selection"]["selection_notes"].lower()
 
 
 def test_ceiling_preserves_words_and_handles_incoming_overlap():

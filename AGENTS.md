@@ -15,11 +15,9 @@
 
 ## Orchestration And Token Budget
 
-- Prefer `gpt-5.4-mini` with low reasoning for bounded routine development when
-  available; otherwise use the configured available project model. Development
-  model availability must never change the product's editorial model.
-- Reserve a frontier model for architecture choices, security-sensitive work,
-  cross-module integration, difficult debugging, and final review.
+- The development agent's model and the product's editorial model (`ai.*` in
+  `config/cortex.yaml`) are independent settings; changing one never changes
+  the other.
 - Delegate only bounded work that has clear parallel value. Good delegation:
   one module, one test file, one audit question, or one mechanical migration.
 - Never ask a subagent to read the whole repository or repeat documents already
@@ -27,9 +25,8 @@
   acceptance commands.
 - Every subagent prompt must include: read/write scope, expected deliverable,
   verification command, maximum response size, and a stop condition.
-- Prefer `gpt-5.4-mini`, low reasoning, read-only sandbox for discovery. Grant
-  workspace writes only for isolated file ownership; never let parallel agents
-  edit the same files.
+- Use read-only agents for discovery. Grant writes only with isolated file
+  ownership; never let parallel agents edit the same files.
 - Stop agents that begin broad exploration or dump large file contents. Raw
   agent transcripts are not useful deliverables.
 - The orchestrator owns integration, conflict resolution, final tests, product
@@ -57,8 +54,13 @@
   physical cut boundaries from words, VAD, waveform, scenes, and media timebase.
 - LLM providers are replaceable adapters. CLI/subscription and local providers
   are allowed; API billing must never be required for the local-first path.
-- Transcript analysis requests only Codex CLI (`gpt-5.5`, medium reasoning).
-  Do not add an editorial fallback provider; surface Codex failures explicitly.
+- Editorial AI runs through the Claude Code CLI (`claude -p`, Sonnet, low
+  effort) on the user's Claude Pro subscription — never API credits, never
+  `--bare`. One configured provider (`ai.provider`), no fallback between
+  providers; surface failures (including subscription usage limits) explicitly.
+- Keep editorial token use small: one selection call per episode (cached), a
+  compact transcript and a slim output schema; the per-clip tighten pass runs
+  only for exported clips, never for previews.
 - Validate every model response against a versioned JSON Schema. Record provider,
   model, command/version, prompt hash, input hash, timestamps, and effective mode.
 - Never silently fall back between LLM, heuristic, GPU/CPU, decoder, or encoder.

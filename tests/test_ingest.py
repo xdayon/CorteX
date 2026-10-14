@@ -15,6 +15,8 @@ from cortex.ingest.youtube import (  # noqa: E402
     build_ydl_options,
     download_youtube_source,
     find_cached_download,
+    DownloadProgressReporter,
+    progress_hook_to_detail,
     progress_hook_to_fraction,
 )
 
@@ -198,6 +200,59 @@ class YoutubeIngestTests(unittest.TestCase):
         )
         self.assertIsNone(progress_hook_to_fraction({"status": "finished"}))
 
+    def test_progress_hook_prefers_fragment_count_over_byte_estimate(self):
+        status = {
+            "status": "downloading", "fragment_index": 25, "fragment_count": 100,
+            "downloaded_bytes": 900, "total_bytes_estimate": 1000,
+        }
+        self.assertAlmostEqual(progress_hook_to_fraction(status), 0.25)
+
+    def test_progress_hook_detail_formats_bytes_in_pt_br(self):
+        self.assertEqual(
+            progress_hook_to_detail({"downloaded_bytes": 3.6e9, "total_bytes_estimate": 15.7e9}),
+            "3,6 GB de ~15,7 GB",
+        )
+        self.assertEqual(
+            progress_hook_to_detail({"downloaded_bytes": 3.6e9, "total_bytes": 15.7e9}),
+            "3,6 GB de 15,7 GB",
+        )
+        self.assertEqual(progress_hook_to_detail({"downloaded_bytes": 3.6e9}), "3,6 GB baixados")
+        self.assertIsNone(progress_hook_to_detail({}))
+
+    def test_reporter_is_monotonic_throttled_and_heartbeats(self):
+        now = [0.0]
+        reports: list[tuple[float, str | None]] = []
+        reporter = DownloadProgressReporter(
+            lambda fraction, detail: reports.append((fraction, detail)), clock=lambda: now[0],
+        )
+
+        def hook(fraction, downloaded=1e9):
+            reporter({
+                "status": "downloading", "downloaded_bytes": downloaded,
+                "total_bytes": downloaded / fraction,
+            })
+
+        hook(1.0)                       # first report always goes out
+        now[0] = 0.4
+        hook(1.0)                       # throttled
+        now[0] = 1.2
+        hook(0.2)                       # not advanced, under heartbeat interval: skipped
+        self.assertEqual(len(reports), 1)
+        now[0] = 2.1
+        hook(0.3)                       # heartbeat: never below the max reported
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(reports[1][0], 1.0)
+        self.assertIn("1,0 GB", reports[1][1])
+
+    def test_reporter_reports_advancing_fraction_each_second(self):
+        now = [0.0]
+        reports: list[float] = []
+        reporter = DownloadProgressReporter(lambda f, d: reports.append(f), clock=lambda: now[0])
+        for tick, index in enumerate((1, 2, 3, 4)):
+            now[0] = tick * 1.1
+            reporter({"status": "downloading", "fragment_index": index, "fragment_count": 10})
+        self.assertEqual(reports, [0.1, 0.2, 0.3, 0.4])
+
     def test_download_without_network_uses_fake_downloader_and_caches(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -209,7 +264,7 @@ class YoutubeIngestTests(unittest.TestCase):
                 dest,
                 youtube_format="best",
                 downloader=downloader,
-                progress_cb=progressed.append,
+                progress_cb=lambda fraction, detail: progressed.append(fraction),
             )
             self.assertFalse(result.cached)
             self.assertTrue(result.path.exists())

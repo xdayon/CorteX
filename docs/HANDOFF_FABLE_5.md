@@ -9,7 +9,8 @@ O histórico não é uma fila de instruções. Não relê-lo inteiro por padrão
 Editor pessoal Dayon News/HiTechX para podcasts em um master único do YouTube
 ou arquivo local. Foco nas falas de Dayon, com contexto real dos participantes.
 Sem fontes ISO, PodCLI, Claude, API editorial paga ou fallback silencioso.
-Codex CLI `gpt-5.5`, medium, é o único editorial. O CLI usa login ChatGPT e rede;
+Claude Code CLI (`claude -p`, Sonnet, esforço baixo) na assinatura Pro é o único editorial;
+sem créditos de API. O CLI usa o login OAuth e rede;
 transcrição/render e mídia ficam locais. Modelo do agente de desenvolvimento e
 modelo editorial são configurações independentes.
 
@@ -18,7 +19,7 @@ modelo editorial são configurações independentes.
 - Biblioteca por ID YouTube, título/canal/capa via oEmbed, arquivar/restaurar e busca.
   Oito links Dayon cadastrados no host; entradas antigas arquivadas, mídia preservada.
 - Ingestão YouTube/upload, WAV/transcript e
-  análise de áudio cacheados, seleção Codex validada por schema, jobs SQLite.
+  análise de áudio cacheados, seleção Claude validada por schema, jobs SQLite.
 - Workflow encadeia transcrição/análise/sugestão até revisão. `ClipRevision` e
   `ExportBatch` persistem a edição; um POST idempotente mantém o lote no worker,
   com retomada, cancelamento e retry de falhas independentes do navegador.
@@ -87,4 +88,4 @@ git diff --check
 
 No host com browser configurado: `CORTEX_RUN_REMOTION_E2E=1 .venv/bin/pytest -q`.
 GPU: `./scripts/check_gpu.sh`. Não executar episódio inteiro como smoke test.
-Nunca apagar `data/`, `.env`, autenticação Codex ou worktree não commitado.
+Nunca apagar `data/`, `.env`, autenticação Claude ou worktree não commitado.

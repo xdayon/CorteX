@@ -14,6 +14,7 @@ from cortex.domain.store import DomainStore
 from cortex.jobs import JobStore
 from cortex.schemas import JobCreate, JobStatus, JobType
 from cortex.suggest.provider import (
+    ClaudeCodeCliProvider,
     CodexCliProvider,
     SuggestionProviderResult,
     _codex_error_detail,
@@ -26,46 +27,23 @@ from conftest import FakeTranscriptionEngine
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CLIP_SELECTION_SCHEMA = json.loads(
-    (_PROJECT_ROOT / "prompts/clip_selection.schema.json").read_text(encoding="utf-8")
+    (_PROJECT_ROOT / "prompts/clip_selection.v3.schema.json").read_text(encoding="utf-8")
 )
 
 
 def _valid_clip(**overrides) -> dict:
+    """Build a v3 clip; start_second/end_second map onto the fixture's 10 s units."""
+    start = overrides.pop("start_second", 0)
+    end = overrides.pop("end_second", 30)
     clip = {
-        "rank": 1,
         "title": "Um corte de teste",
         "headline": "Headline de teste",
-        "start_second": 0,
-        "end_second": 30,
-        "estimated_duration": 30,
-        "primary_speaker": "Convidado",
-        "topic": "Tópico de teste",
-        "pacing": "balanced",
-        "hook": {
-            "start_second": 0, "end_second": 5,
-            "summary": "Abertura do corte.", "evidence": "Frase de abertura.",
-        },
-        "context": {
-            "start_second": 5, "end_second": 20,
-            "summary": "Desenvolvimento do corte.", "evidence": "Trecho intermediário.",
-        },
-        "payoff": {
-            "start_second": 20, "end_second": 30,
-            "summary": "Conclusão do corte.", "evidence": "Frase final.",
-        },
-        "approximate_edl": [
-            {
-                "order": 0, "source_start": 0, "source_end": 30, "purpose": "hook",
-                "preferred_visual": "primary_speaker", "audio_mode": "source",
-                "transition_in": "hard_cut", "mask_jump_with": "none",
-                "confidence": 0.9, "notes": "Segmento único.",
-            },
-        ],
-        "scores": {
-            "spoken_hook": 4, "standalone_clarity": 4, "emotion": 3, "quotability": 4,
-            "payoff": 4, "compression_safety": 4, "audience_relevance": 4, "total": 27,
-        },
-        "reasoning": "Corte autocontido com abertura, desenvolvimento e conclusão claros.",
+        "pieces": [{"from_id": int(start // 10), "to_id": int(end // 10) - 1}],
+        "connective_logic": "Uma única ideia contínua.",
+        "hook_quote": "Frase de abertura.",
+        "payoff_quote": "Frase final.",
+        "score": 7,
+        "reason": "Corte autocontido com abertura, desenvolvimento e conclusão claros.",
         "warnings": [],
     }
     clip.update(overrides)
@@ -75,7 +53,6 @@ def _valid_clip(**overrides) -> dict:
 class FakeSuggestionProvider:
     def __init__(self, document: dict | None = None) -> None:
         self.document = document or {
-            "schema_version": "1.0",
             "selection_notes": "Corte de teste selecionado.",
             "clips": [_valid_clip()],
         }
@@ -115,8 +92,10 @@ def _transcript(domain: DomainStore, tmp_dir: Path) -> TranscriptArtifact:
         "language": "pt",
         "duration_seconds": 90,
         "segments": [
-            {"start": 0, "end": 20, "text": "Uma ideia completa para o teste."},
-            {"start": 20, "end": 60, "text": "Ela possui contexto e conclusão."},
+            {"start": 0, "end": 10, "text": "Uma ideia completa para o teste."},
+            {"start": 10, "end": 20, "text": "Ela possui contexto e conclusão."},
+            *({"start": 10 * i, "end": 10 * i + 10, "text": f"Trecho número {i}."}
+              for i in range(2, 9)),
         ],
     }), encoding="utf-8")
     return domain.create_transcript_artifact(TranscriptArtifact(
@@ -166,14 +145,14 @@ def test_suggestion_service_validates_persists_and_reuses_cache():
         first = service.run(
             transcript_artifact=transcript,
             analysis_artifact=analysis,
-            brief={"count": 3, "minimum_seconds": 15, "maximum_seconds": 60},
+            brief={"count": 1, "minimum_seconds": 15, "maximum_seconds": 60},
             progress_cb=lambda _progress, _message: None,
             should_cancel=lambda: False,
         )
         second = service.run(
             transcript_artifact=transcript,
             analysis_artifact=analysis,
-            brief={"count": 3, "minimum_seconds": 15, "maximum_seconds": 60},
+            brief={"count": 1, "minimum_seconds": 15, "maximum_seconds": 60},
             progress_cb=lambda _progress, _message: None,
             should_cancel=lambda: False,
         )
@@ -185,10 +164,28 @@ def test_suggestion_service_validates_persists_and_reuses_cache():
         persisted = json.loads(Path(first["suggestion_path"]).read_text(encoding="utf-8"))
         assert persisted["provenance"]["provider"] == "fake"
         assert len(persisted["selection"]["clips"]) == 1
+        clip = persisted["selection"]["clips"][0]
+        assert clip["rank"] == 1
+        assert clip["primary_speaker"] == "Dayon"
+        assert clip["pacing"] == "dynamic"
+        assert clip["scores"] == {"total": 7}
+        assert clip["approximate_edl"] == [{
+            "order": 0, "source_start": 0.0, "source_end": 30.0, "purpose": "hook",
+            "preferred_visual": "primary_speaker", "audio_mode": "source",
+            "transition_in": "hard_cut", "mask_jump_with": "none", "confidence": 1.0,
+            "notes": "Peça 1 de 1; o motor de edição resolve o corte fino e o enxugamento.",
+        }]
 
 
-def test_provider_factory_returns_codex_directly():
+def test_provider_factory_returns_claude_code_cli_by_default():
     provider = build_suggestion_provider(load_config().ai, cwd=_PROJECT_ROOT)
+
+    assert isinstance(provider, ClaudeCodeCliProvider)
+
+
+def test_provider_factory_returns_codex_when_configured():
+    ai_config = load_config().ai.model_copy(update={"provider": "codex_cli"})
+    provider = build_suggestion_provider(ai_config, cwd=_PROJECT_ROOT)
 
     assert isinstance(provider, CodexCliProvider)
 
@@ -269,7 +266,6 @@ def test_suggestion_service_rejects_empty_clip_list():
         transcript = _transcript(domain, tmp_dir)
         analysis = _analysis(domain, tmp_dir, transcript)
         provider = FakeSuggestionProvider(document={
-            "schema_version": "1.0",
             "selection_notes": "Sem cortes.",
             "clips": [],
         })
@@ -284,7 +280,7 @@ def test_suggestion_service_rejects_empty_clip_list():
                 should_cancel=lambda: False,
             )
         except ValueError as exc:
-            assert "clips" in str(exc)
+            assert "corte" in str(exc)
         else:
             raise AssertionError("resposta com 0 clips deveria ser rejeitada")
 
@@ -298,9 +294,8 @@ def test_suggestion_service_rejects_clip_below_minimum_duration():
         transcript = _transcript(domain, tmp_dir)
         analysis = _analysis(domain, tmp_dir, transcript)
         provider = FakeSuggestionProvider(document={
-            "schema_version": "1.0",
             "selection_notes": "Corte curto demais.",
-            "clips": [_valid_clip(end_second=14, estimated_duration=14)],
+            "clips": [_valid_clip(end_second=10)],
         })
         service = SuggestionService(config, domain, provider)
 
@@ -313,37 +308,77 @@ def test_suggestion_service_rejects_clip_below_minimum_duration():
                 should_cancel=lambda: False,
             )
         except ValueError as exc:
-            assert "estimated_duration" in str(exc)
+            assert "Nenhum corte válido" in str(exc)
         else:
-            raise AssertionError("clip com estimated_duration 14 deveria ser rejeitado")
+            raise AssertionError("clip com duração 14 deveria ser rejeitado")
 
 
-def test_clip_selection_schema_boundary_validation_directly():
-    minimal_document = {
-        "schema_version": "1.0",
-        "selection_notes": "notas",
-        "clips": [],
-    }
-    errors = sorted(Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(minimal_document), key=str)
-    assert errors, "clips vazio deveria falhar com minItems: 1"
+def test_suggestion_service_keeps_higher_score_on_overlap():
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_dir = Path(directory)
+        config = _config(tmp_dir)
+        config.ensure_runtime_dirs()
+        domain = DomainStore(config.paths.database)
+        transcript = _transcript(domain, tmp_dir)
+        analysis = _analysis(domain, tmp_dir, transcript)
+        provider = FakeSuggestionProvider(document={
+            "selection_notes": "Dois cortes sobrepostos.",
+            "clips": [
+                _valid_clip(title="Fraco", start_second=0, end_second=30, score=5),
+                _valid_clip(title="Forte", start_second=10, end_second=40, score=9),
+            ],
+        })
+        service = SuggestionService(config, domain, provider)
 
-    document_with_short_clip = {
-        "schema_version": "1.0",
-        "selection_notes": "notas",
-        "clips": [_valid_clip(estimated_duration=14)],
-    }
-    errors = sorted(
-        Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(document_with_short_clip), key=str
-    )
-    assert errors, "estimated_duration 14 deveria falhar com minimum: 15"
+        result = service.run(
+            transcript_artifact=transcript,
+            analysis_artifact=analysis,
+            brief={"minimum_seconds": 15, "maximum_seconds": 60},
+            progress_cb=lambda _progress, _message: None,
+            should_cancel=lambda: False,
+        )
 
-    document_with_valid_clip = {
-        "schema_version": "1.0",
-        "selection_notes": "notas",
-        "clips": [_valid_clip(estimated_duration=15, end_second=15)],
-    }
-    errors = list(Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(document_with_valid_clip))
+        clips = result["selection"]["clips"]
+        assert len(clips) == 1
+        assert clips[0]["title"] == "Forte"
+        assert clips[0]["rank"] == 1
+
+
+def test_suggestion_service_rejects_score_out_of_range():
+    with tempfile.TemporaryDirectory() as directory:
+        tmp_dir = Path(directory)
+        config = _config(tmp_dir)
+        config.ensure_runtime_dirs()
+        domain = DomainStore(config.paths.database)
+        transcript = _transcript(domain, tmp_dir)
+        analysis = _analysis(domain, tmp_dir, transcript)
+        provider = FakeSuggestionProvider(document={
+            "selection_notes": "Pontuação inválida.",
+            "clips": [_valid_clip(score=11), _valid_clip(title="Válido", score=8, start_second=40, end_second=70)],
+        })
+        service = SuggestionService(config, domain, provider)
+
+        result = service.run(
+            transcript_artifact=transcript,
+            analysis_artifact=analysis,
+            brief={"minimum_seconds": 15, "maximum_seconds": 60},
+            progress_cb=lambda _progress, _message: None,
+            should_cancel=lambda: False,
+        )
+
+        clips = result["selection"]["clips"]
+        assert len(clips) == 1
+        assert clips[0]["title"] == "Válido"
+
+
+def test_clip_selection_v3_schema_direct_validation():
+    valid_document = {"selection_notes": "notas", "clips": [_valid_clip()]}
+    errors = list(Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(valid_document))
     assert errors == []
+
+    invalid_document = {"selection_notes": "notas", "clips": [{"title": "sem os outros campos"}]}
+    errors = sorted(Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(invalid_document), key=str)
+    assert errors, "clip incompleto deveria falhar a validação do schema"
 
 
 def test_suggestion_request_boundary_counts_and_durations():

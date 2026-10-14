@@ -5,7 +5,7 @@
 Editor pessoal Dayon News/HiTechX, master único, local e com revisão humana.
 Não há runtime PodCLI, multicam ISO ou servidor editorial alternativo.
 Interface React/TypeScript; backend Python/FastAPI; SQLite e arquivos locais;
-FFmpeg para mídia; Remotion para overlays; Codex CLI para narrativa.
+FFmpeg para mídia e legendas (libass); Claude Code CLI para narrativa.
 
 ## Mapa para mudanças
 
@@ -21,7 +21,7 @@ FFmpeg para mídia; Remotion para overlays; Codex CLI para narrativa.
 | Áudio/cenas/faces/identidade | `analyze/` | analysis, scene_index, face_index, speaker_timeline, identity_index |
 | Seleção semântica | `suggest/`, `prompts/` | suggestion_cli, speaker_attribution |
 | Fronteiras e EDL | `edit/` | edit_plan, audio_editing, camera_edit_plan |
-| MP4/legendas/QA | `render/`, `apps/remotion/` | render*, auto_framing, video_transitions |
+| MP4/legendas/QA | `render/` (`ass_overlay.py`), `assets/fonts/` | render*, auto_framing, video_transitions |
 | UI e drafts | `apps/web/src/`, `editorDraft.ts` | App.test.tsx, api.test.ts |
 | Avaliação | `eval/`, `scripts/eval_selection.py`, `gate9_benchmark.py` | eval_runner, gate9_benchmark |
 | Operação local | `scripts/studio.sh`, `install_local_service.py`, `open_studio.py` | studio + systemd-analyze + health no host |
@@ -53,13 +53,18 @@ Proposta de LLM é JSON validado como dados, nunca shell executável.
 
 ## Quem decide o quê
 
-- Codex CLI (`gpt-5.5`, medium): regiões, narrativa, headline e justificativa.
+- Claude Code CLI (Sonnet, assinatura): janela do corte, headline, nota e motivo;
+  passada "enxugar" escolhe as frases mantidas nos cortes exportados.
   Sem API key obrigatória; login de assinatura, rede e limites da conta continuam.
 - Boundary/EDL: fronteiras físicas usando palavras/VAD/RMS e clocks A/V separados.
 - FFmpeg: normalização, trim, crossfade, J/L-cut, crop, gblur, loudness, compositing,
   encode e verificações técnicas. Input seek usa janela física e filtros relativos;
   manifests/EDL/captions conservam tempos absolutos da fonte.
-- Remotion: overlay alpha de legenda/headline, cache próprio e browser explícito.
+- libass (`render/ass_overlay.py`): legenda karaoke/pop e headline queimadas no mesmo
+  encode, fontes Montserrat versionadas em `assets/fonts/`. Remotion fica só como
+  `render.overlay_renderer: remotion` explícito e fonte dos componentes da prévia web.
+- Edição: perfil `dynamic` (padrão) faz corte seco em pausas ≥0,25s e remove muletas;
+  a passada "enxugar" (Claude) escolhe frases mantidas nos cortes exportados.
 - Humano: identidade/voz, cortes escolhidos, texto, framing, intenção e aprovação.
 
 `approximate_edl` orienta as regiões semânticas, mas as fronteiras físicas ainda

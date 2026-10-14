@@ -6,7 +6,8 @@ export function FramingReview({ projectId, sourceId, scenes, clips, overrides, d
   onChange: (overrides: SceneFramingOverride[]) => void;
 }) {
   const visible = scenes.filter((scene) => clips.some((clip) =>
-    scene.start_us / 1e6 < clip.end_second && scene.end_us / 1e6 > clip.start_second));
+    (clip.pieces?.length ? clip.pieces.map((piece) => [piece.start, piece.end]) : [[clip.start_second, clip.end_second]])
+      .some(([start, end]) => scene.start_us / 1e6 < end && scene.end_us / 1e6 > start)));
   if (!visible.length) return null;
   return <details className="simple-card framing-review">
     <summary>Ajustar enquadramento por câmera · {visible.length} planos</summary>

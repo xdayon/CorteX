@@ -259,37 +259,48 @@ def test_boundary_inside_word_is_snapped_by_quality_gate() -> None:
 
 # -- 4. No safe point degrades to the full clip -------------------------------
 
-def test_no_safe_point_within_radius_degrades_to_full_clip() -> None:
+def test_no_safe_point_within_radius_extends_envelope_boundary_instead_of_degrading() -> None:
+    # Requirement R3: a single-segment plan has no neighbour to re-join with
+    # at its one unsafe boundary (it is the clip's own envelope edge), so the
+    # fail-safe extends the boundary outward to fully include the offending
+    # word instead of degrading the whole plan to the full clip.
     profile = PROFILES["balanced"]
     word = _word("inteira", 1.0, 1.6)
     words = [word]
     segments = [{"start": 0.5, "end": 1.58, "timeline_order": 0}]
 
     # No energy track at all -> no candidate can ever be found, forcing the
-    # degrade path.
+    # extend-outward fallback.
     repaired, quality = validate_edit_plan(
         segments, words, profile, clip_start=0.2, clip_end=2.4, energy=None,
     )
 
     assert quality["passed"] is True
-    assert quality["degraded"] is True
-    assert repaired == [{"start": 0.2, "end": 2.4, "timeline_order": 0}]
+    assert quality["degraded"] is False
+    assert repaired[0]["start"] == pytest.approx(0.5)
+    assert repaired[0]["end"] == pytest.approx(word.end + 0.015)
     codes = {issue["code"] for issue in quality["issues"]}
     assert "boundary_inside_word" not in codes
+    assert "boundary_extended_unsafe" in codes
 
 
 # -- 5. Multi-segment plan with ordered timeline and transitions -------------
 
 def test_multi_segment_plan_has_ordered_timeline_and_transitions() -> None:
     profile = PROFILES["dynamic"]
+    # Three short phrases (words close together, <silence_threshold apart)
+    # separated by 0.6s pauses. The dry-cut profile's tight pre/post-roll
+    # (0.05/0.08) means an isolated single-word "phrase" leaves too little
+    # kept material either side of a cut and gets folded back in by
+    # _merge_short_segments' 0.72s floor — two words per phrase keeps each
+    # kept span comfortably above that floor.
     words = [
-        _word("um", 0.5, 1.0),
-        _word("dois", 2.2, 2.6),
-        _word("tres", 3.8, 4.2),
-        _word("quatro", 5.4, 5.8),
+        _word("um", 0.0, 0.45), _word("dois", 0.55, 1.0),
+        _word("tres", 1.6, 2.05), _word("quatro", 2.15, 2.6),
+        _word("cinco", 3.2, 3.65), _word("seis", 3.75, 4.2),
     ]
-    energy = EnergyTrack(origin=0.0, frame_seconds=0.05, rms=[0.4] * 140)
-    segments, diagnostics = plan_safe_segments(words, 0.0, 6.3, profile, energy)
+    energy = EnergyTrack(origin=0.0, frame_seconds=0.05, rms=[0.4] * 100)
+    segments, diagnostics = plan_safe_segments(words, 0.0, 4.5, profile, energy)
 
     assert diagnostics["cuts"] >= 2
     assert len(segments) >= 3
@@ -449,16 +460,30 @@ def test_resolve_jl_cuts_blocks_when_entire_window_is_forbidden_by_word() -> Non
     assert resolved[1]["audio_start"] == resolved[1]["start"]
 
 
-def test_resolve_jl_cuts_blocks_when_entire_window_is_forbidden_by_vad() -> None:
+def test_resolve_jl_cuts_is_not_blocked_by_vad_covering_the_whole_window() -> None:
+    # Requirement R2: VAD is diagnostic only and must not veto boundary
+    # placement — a VAD interval spanning the entire search radius must not
+    # stop a j/l-cut from finding the same quiet point it would find with no
+    # VAD at all (contrast with the "by_word" test above, where an actual
+    # guarded word still blocks it).
     vad_intervals = [VadInterval(start=1.6, end=2.4, duration=0.8, start_sample=0, end_sample=1)]
-    energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=[0.5] * 500)
+    rms = [0.5] * 500
+    for i in range(180, 195):
+        rms[i] = 0.01
+    energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=rms)
+    expected_candidate = energy.quiet_boundary(2.0, 0.30, [])
+    expected_offset = round(expected_candidate - 2.0, 3)
+    assert abs(expected_offset) > 0.001  # sanity: fixture actually moves the boundary
 
     resolved, issues, counts = resolve_jl_cuts(_jl_segments(), [], vad_intervals, energy, 0.30)
 
-    assert counts["jl_blocked"] == 1
-    assert issues[0]["code"] == "jl_no_safe_boundary"
-    assert resolved[0]["audio_end"] == resolved[0]["end"]
-    assert resolved[1]["audio_start"] == resolved[1]["start"]
+    assert counts["jl_blocked"] == 0
+    assert issues == []
+    transition = resolved[0]["transition"]
+    assert transition["audio_offset_seconds"] == pytest.approx(expected_offset)
+    expected_kind = "j_cut" if expected_offset < 0 else "l_cut"
+    assert transition["kind"] == expected_kind
+    assert counts[f"{expected_kind}s"] == 1
 
 
 def test_resolve_jl_cuts_noop_when_max_offset_zero() -> None:

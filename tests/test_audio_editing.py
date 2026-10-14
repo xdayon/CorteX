@@ -130,9 +130,15 @@ def test_timeline_duration_accounts_for_crossfades() -> None:
     assert timeline_duration(segments) == pytest.approx(14.86)
 
 
-def test_auto_profile_respects_delivery_speed() -> None:
+def test_auto_profile_defaults_to_dynamic_regardless_of_delivery_speed() -> None:
+    # Requirement R1: "auto" (and no requested profile at all) always
+    # resolves to the dry-cut "dynamic" profile now — the old
+    # words-per-second heuristic no longer picks balanced/contemplative.
     fast = [word(str(index), index * 0.2, index * 0.2 + 0.12) for index in range(30)]
     slow = [word(str(index), index * 0.7, index * 0.7 + 0.2) for index in range(8)]
 
     assert resolve_profile("auto", fast, 0, 6).name == "dynamic"
-    assert resolve_profile("auto", slow, 0, 6).name == "contemplative"
+    assert resolve_profile("auto", slow, 0, 6).name == "dynamic"
+    assert resolve_profile(None, slow, 0, 6).name == "dynamic"
+    assert resolve_profile("unknown-profile", slow, 0, 6).name == "dynamic"
+    assert resolve_profile("contemplative", slow, 0, 6).name == "contemplative"

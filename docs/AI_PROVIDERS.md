@@ -1,53 +1,55 @@
-# Motor editorial do CorteX
+# Provedor editorial
 
-## Decisao atual
-
-O unico motor editorial e o Codex CLI, autenticado pela assinatura ChatGPT.
-O CorteX nao usa Claude, heuristica local ou troca automatica de provider. Uma
-falha do Codex permanece visivel no job para que o usuario possa corrigir a
-causa e tentar novamente, sem degradacao silenciosa de qualidade.
+O único motor editorial configurado é o **Claude Code CLI**, autenticado pelo
+login OAuth da assinatura Claude (Pro) do usuário. Não há API key, créditos de API
+nem fallback entre provedores: uma falha (inclusive limite de uso da assinatura)
+fica visível no job. `ai.provider: codex_cli` continua disponível apenas como
+escolha explícita.
 
 ```yaml
 ai:
-  codex_binary: codex
-  codex_model: gpt-5.5
-  codex_reasoning_effort: medium
+  provider: claude_code_cli
+  claude_binary: /home/dx/.local/share/fnm/node-versions/v26.8.1/installation/bin/claude
+  claude_model: sonnet
+  claude_effort: low
+  tighten_enabled: true
   timeout_seconds: 300
-  max_input_chars: 800000
 ```
 
-O Codex usa `gpt-5.5/medium`. A selecao editorial e uma etapa de qualidade do
-produto; trocar o modelo deve ser uma decisao baseada em avaliacoes editoriais,
-nao em disponibilidade ocasional.
+`claude_binary` é absoluto porque o `claude` do PATH interativo aponta para um
+diretório temporário do fnm, ausente no serviço systemd.
 
-## Execucao
+## Chamada
 
-Cada chamada cria um diretorio temporario vazio e executa `codex exec` com:
+Cada chamada roda em diretório temporário vazio, com o prompt no stdin:
 
-- `--ignore-user-config` e `--ignore-rules` para evitar instrucoes alheias;
-- `--ephemeral` para nao persistir a sessao;
-- `--sandbox read-only` e workspace vazio;
-- `--output-schema` com o schema editorial versionado;
-- `--output-last-message` para separar o JSON final dos logs;
-- prompt via stdin, timeout e cancelamento cooperativo.
+```text
+claude -p --output-format json --json-schema <schema> --model sonnet --effort low
+  --tools "" --strict-mcp-config --setting-sources "" --disable-slash-commands
+  --system-prompt <fixo curto> --no-session-persistence
+```
 
-A provenance registra `provider: codex_cli`, modelo, nivel de raciocinio,
-versao do binario, duracao e modo de autenticacao. Nao ha campos de fallback.
+- Nunca usar `--bare`: esse modo só aceita `ANTHROPIC_API_KEY` (cobrança por API).
+- O ambiente do processo remove `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `ANTHROPIC_BASE_URL` e as flags Bedrock/Vertex, garantindo o uso da assinatura.
+- Sem ferramentas, MCP, skills ou settings: overhead medido de ~1,2 mil tokens.
+- A resposta vem em `structured_output` e é validada de novo pelo schema local.
 
-## Contrato de seguranca e qualidade
+A provenance registra provider, modelo efetivo, esforço, versão do CLI, duração,
+`auth_mode: claude_subscription_cli` e uso de tokens (entrada, cache, saída).
 
-- nenhum texto produzido pela IA e executado como shell;
-- argumentos sao listas, sem interpolacao em comando;
-- toda resposta e revalidada por JSON Schema Draft 2020-12;
-- prompt, schema, transcript, brief e configuracao entram no hash de cache;
-- a IA escolhe intencao e regioes aproximadas, nao frames ou samples finais;
-- um artifact existente so e reutilizado quando todos os hashes coincidem;
-- erro de processo, timeout, cota, JSON invalido ou schema invalido falha o job
-  explicitamente e nunca aciona outro motor.
+## Etapas e custo
 
-## Eficiencia de contexto
+1. **Seleção** (`prompts/clip_selection.pt-BR.md`, schema v2): uma chamada por
+   episódio, cacheada pelo hash de transcript/prompt/schema/config. A transcrição
+   segue como `[segundo] texto`, sem hesitações puras nem análise de áudio. A saída
+   é enxuta (janela, título, headline, citações, nota 1–10, motivo). O backend
+   valida duração/sobreposição, ajusta a janela aos limites dos segmentos e
+   normaliza para o formato interno de clipe. Episódio de ~1h40 ≈ 30 mil tokens.
+2. **Enxugar** (`prompts/clip_tighten.pt-BR.md`): só para cortes exportados.
+   As palavras do corte viram frases numeradas; a IA devolve `keep_ids` e o
+   planner determinístico corta nas fronteiras dessas frases. ≈ 3–5 mil tokens
+   por corte, cacheado. Prévias nunca chamam a IA.
 
-O Codex recebe transcript compactado como `[inicio-fim] texto`, sem JSON de
-palavras. Waveform, VAD e metricas densas permanecem locais. Episodios acima de
-`max_input_chars` falham explicitamente ate existir analise em chunks com
-ranking global; truncamento silencioso nao e permitido.
+A IA propõe janelas e frases; fronteiras físicas, pausas e muletas continuam
+resolvidas pelo motor determinístico de edição.

@@ -12,7 +12,7 @@ servidor. Ainda falta avaliação editorial ampla com podcasts reais.
 1. Abrir a biblioteca, adicionar o link ou arquivo e preparar o episódio.
 2. Para focar em Dayon, separar vozes e confirmar sua amostra antes de gerar
    sugestões; [diarização opcional](docs/DIARIZATION.md).
-3. Processar com Codex CLI, revisar sugestões e escolher os cortes.
+3. Processar com Claude Code CLI (assinatura, sem API), revisar sugestões e escolher os cortes.
 4. Ajustar legendas, texto da headline por corte e enquadramento; gerar prévia
    curta real e exportar MP4/SRT. Resultados e mídia permanecem locais.
 
@@ -24,7 +24,7 @@ inteiro; fechar a aba não interrompe os próximos cortes.
 ## Edição disponível
 
 - Fonte única do YouTube, biblioteca e galeria dos renders persistidos.
-- Transcrição por palavra e seleção Codex com prompt PT-BR/saída validada.
+- Transcrição por palavra e seleção Claude com prompt PT-BR/saída validada.
 - Correção textual por corte preservando áudio/timestamps; tamanho, altura,
   fonte/peso, cores, outline, sombra, karaoke/pop e SRT.
 - Headline manual por corte, sugestão IA quando vazia e botão de restaurar sugestão.
@@ -40,7 +40,7 @@ inteiro; fechar a aba não interrompe os próximos cortes.
 ## Instalação
 
 Python 3.11–3.14 (3.12 recomendado para instalar a stack principal), Node instalado,
-FFmpeg/ffprobe e Codex CLI autenticado. A máquina atual tem GTX 1060 Max-Q 6 GB:
+FFmpeg/ffprobe e Claude Code CLI autenticado na assinatura. A máquina atual tem GTX 1060 Max-Q 6 GB:
 transcrição CUDA `int8`, encode H.264 NVENC. Visão/diarização usam CPU.
 
 ```bash
@@ -54,10 +54,12 @@ O lock reproduzível do backend é `uv.lock`; com `uv` instalado, valide sem
 alterar o ambiente com `uv sync --locked --dry-run`.
 
 Configuração em `config/cortex.yaml` e overrides `CORTEX__SECAO__CHAVE`.
-`render.remotion_browser` deve apontar para um `chrome-headless-shell` executável;
+Legendas usam libass no FFmpeg (`render.overlay_renderer: libass`, padrão); o FFmpeg
+precisa do filtro `subtitles`. Só no modo `remotion`, `render.remotion_browser` deve
+apontar para um `chrome-headless-shell` executável;
 o renderer não baixa browser nem troca silenciosamente para libass.
 O processo não carrega `.env` sozinho; o serviço systemd o carrega.
-Nunca versionar tokens, login Codex ou mídia.
+Nunca versionar tokens, login Claude ou mídia.
 
 ## Abrir sem terminal
 
@@ -115,6 +117,6 @@ três testes Remotion normalmente pulados. GPU smoke não comprova episódio E2E
 Leia [AGENTS](AGENTS.md), [handoff curto](docs/HANDOFF_FABLE_5.md) e o gate do
 [ROADMAP](docs/ROADMAP.md). O [mapa da arquitetura](docs/ARCHITECTURE.md) indica
 módulos e testes. Históricos ficam em `docs/history/`, fora da leitura inicial.
-Codex editorial usa exclusivamente `gpt-5.5`, medium, pelo CLI/login ChatGPT;
-[provenance e contrato](docs/AI_PROVIDERS.md). Isso exige rede e limites da conta,
-mas não exige API key. Não restaurar frontend PodCLI ou importar `mods/`.
+A IA editorial usa o Claude Code CLI (Sonnet) com o login da assinatura;
+[provenance e contrato](docs/AI_PROVIDERS.md). Isso exige rede e consome o limite
+de uso da assinatura, mas não exige API key nem créditos. Não restaurar frontend PodCLI ou importar `mods/`.

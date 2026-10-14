@@ -16,6 +16,7 @@ from cortex.domain.store import DomainStore
 from cortex.ingest.ffprobe import probe_media
 from cortex.jobs import JobStore
 from cortex.suggest.provider import SuggestionProviderResult
+from cortex.transcribe.schemas import TranscriptSegment
 from cortex.worker import process_next
 
 from conftest import FakeTranscriptionEngine
@@ -39,33 +40,19 @@ class _SuggestionProvider:
         del prompt, schema
         assert not should_cancel()
         clip = {
-            "rank": 1,
             "title": "Ideia principal",
             "headline": "Uma ideia que vale o corte",
-            "start_second": 0,
-            "end_second": 40,
-            "estimated_duration": 40,
-            "primary_speaker": "Pessoa principal",
-            "topic": "Teste",
-            "pacing": "balanced",
-            "hook": {"start_second": 0, "end_second": 5, "summary": "Gancho", "evidence": "Gancho"},
-            "context": {"start_second": 5, "end_second": 30, "summary": "Contexto", "evidence": "Contexto"},
-            "payoff": {"start_second": 30, "end_second": 40, "summary": "Conclusão", "evidence": "Conclusão"},
-            "approximate_edl": [{
-                "order": 0, "source_start": 0, "source_end": 40, "purpose": "development",
-                "preferred_visual": "auto", "audio_mode": "source", "transition_in": "hard_cut",
-                "mask_jump_with": "none", "confidence": 0.9, "notes": "Trecho contínuo",
-            }],
-            "scores": {
-                "spoken_hook": 4, "standalone_clarity": 4, "emotion": 3, "quotability": 4,
-                "payoff": 4, "compression_safety": 4, "audience_relevance": 4, "total": 27,
-            },
-            "reasoning": "Trecho autocontido.",
+            "pieces": [{"from_id": 0, "to_id": 0}],
+            "connective_logic": "Trecho único.",
+            "hook_quote": "Gancho",
+            "payoff_quote": "Conclusão",
+            "score": 8,
+            "reason": "Trecho autocontido.",
             "warnings": [],
         }
         return SuggestionProviderResult(
-            document={"schema_version": "1.0", "selection_notes": "Teste", "clips": [clip]},
-            provenance={"provider": "codex_cli", "model": "fixture"},
+            document={"selection_notes": "Teste", "clips": [clip]},
+            provenance={"provider": "claude_code_cli", "model": "fixture"},
         )
 
 
@@ -107,14 +94,16 @@ def test_one_action_persists_and_advances_to_review(
     run_id = response.json()["id"]
     jobs = JobStore(config.paths.database)
 
-    assert process_next(config, jobs, domain, FakeTranscriptionEngine(duration_seconds=40), _SuggestionProvider())
+    assert process_next(config, jobs, domain, FakeTranscriptionEngine(duration_seconds=40, segments=[
+        TranscriptSegment(id=0, start=0.0, end=40.0, text="ola mundo", avg_logprob=-0.1, no_speech_prob=0.0, words=[]),
+    ]), _SuggestionProvider())
     assert domain.get_workflow_run(run_id).stage == "analyze"
     assert process_next(config, jobs, domain, FakeTranscriptionEngine(), _SuggestionProvider())
     assert domain.get_workflow_run(run_id).stage == "suggest"
     assert process_next(config, jobs, domain, FakeTranscriptionEngine(), _SuggestionProvider())
 
     run = domain.get_workflow_run(run_id)
-    assert run.status == "ready_for_review"
+    assert run.status == "ready_for_review", run.error or run.message
     assert set(run.artifacts) == {"transcript", "analysis", "suggestion"}
     assert client.get(f"/api/v1/projects/{project.id}/runs/{run_id}").status_code == 200
     assert client.get(f"/api/v1/projects/{project.id}/sources").json()[0]["id"] == source.id

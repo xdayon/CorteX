@@ -23,7 +23,7 @@ transcription:
 ingest:
   max_upload_bytes: 10737418240
   allowed_extensions: [mp4, mov, mkv, webm, mp3, wav, m4a, aac, flac]
-  youtube_format: "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+  youtube_format: "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
 
 render:
   ffmpeg: /usr/bin/ffmpeg
@@ -31,6 +31,8 @@ render:
   remotion_node: node
   remotion_browser: /var/home/dx/.cache/puppeteer/chrome-headless-shell/linux-147.0.7727.57/chrome-headless-shell-linux64/chrome-headless-shell
   remotion_app_dir: apps/remotion
+  overlay_renderer: libass
+  fonts_dir: assets/fonts
   encoder: h264_nvenc
   allow_cpu_fallback: false
   width: 1080
@@ -81,8 +83,14 @@ edit:
   scene_snap_tolerance_seconds: 0.5
 
 ai:
+  provider: claude_code_cli
+  claude_binary: /home/dx/.local/share/fnm/node-versions/v26.8.1/installation/bin/claude
+  claude_model: claude-sonnet-5-5
+  claude_effort: medium
+  tighten_enabled: true
   codex_binary: codex
   codex_model: gpt-5.5
   codex_reasoning_effort: medium
-  timeout_seconds: 300
+  timeout_seconds: 900
   max_input_chars: 800000
+  selection_max_envelope_seconds: 240.0

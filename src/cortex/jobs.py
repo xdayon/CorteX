@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from datetime import timedelta
 from pathlib import Path
 
 from cortex.schemas import Job, JobCreate, JobStatus, JobUpdate, utc_now
@@ -235,6 +236,50 @@ class JobStore:
                 recovered.append(requeued)
             connection.commit()
             return recovered
+        finally:
+            connection.close()
+
+    def fail_stalled_jobs(self, *, stale_after_seconds: float) -> list[Job]:
+        """Fail jobs that claim to be running but stopped reporting progress.
+
+        This is deliberately invoked by the single local worker only while it
+        is between jobs.  It catches the failure mode where a handler returns
+        or a child disappears without committing a terminal job status.
+        """
+        if stale_after_seconds <= 0:
+            raise ValueError("stale_after_seconds must be positive")
+        now = utc_now()
+        cutoff = now - timedelta(seconds=stale_after_seconds)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, data FROM jobs WHERE status = 'running' AND updated_at < ? "
+                "ORDER BY created_at ASC", (cutoff.isoformat(),),
+            ).fetchall()
+            failed: list[Job] = []
+            for row in rows:
+                job = Job.model_validate_json(row["data"])
+                inactive_seconds = max(0, round((now - job.updated_at).total_seconds()))
+                message = f"Interrompida: sem atualização há {inactive_seconds}s"
+                updated = job.model_copy(update={
+                    "status": JobStatus.FAILED,
+                    "message": message,
+                    "error": (
+                        "O worker não registrou atividade dentro do prazo de segurança. "
+                        "Repita o processamento para tentar novamente."
+                    ),
+                    "finished_at": now,
+                    "elapsed_seconds": (
+                        max(0.0, (now - job.started_at).total_seconds())
+                        if job.started_at is not None else None
+                    ),
+                    "updated_at": now,
+                })
+                self._save(updated, connection=connection)
+                failed.append(updated)
+            connection.commit()
+            return failed
         finally:
             connection.close()
 

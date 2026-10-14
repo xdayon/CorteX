@@ -50,9 +50,15 @@ from cortex.render.technical_quality import (
     TechnicalQualityCancelled,
     measure_technical_quality,
 )
+from cortex.diarize.attribution import ConfirmedVoice
 from cortex.render.face_crop import resolve_static_face_crop
 from cortex.render.auto_framing import (
     AUTO_FRAMING_VERSION, AutoFramingSpan, load_framing_inputs, resolve_auto_framing,
+)
+from cortex.render.ass_overlay import (
+    AssOverlayError,
+    AssOverlayResult,
+    build_ass_overlay,
 )
 from cortex.render.captions import build_caption_cues, render_srt
 from cortex.render.remotion import (
@@ -71,6 +77,11 @@ from cortex.transcribe.schemas import TranscriptDocument
 # splice. 20ms is comfortably under a single video frame at any supported
 # fps and short enough that it can never be mistaken for a dissolve.
 _JL_AUDIO_MICROFADE_SECONDS = 0.02
+# Declick fade applied to a hard dry-cut join's audio (Requirement R6). Unlike
+# acrossfade/the j/l micro-crossfade above, this never shortens total audio:
+# fade-out + fade-in + concat sums to exactly the two parts' durations, so a
+# clip with many dynamic-profile hard cuts never accumulates A/V drift.
+_HARD_CUT_DECLICK_SECONDS = 0.008
 _AAC_TRUE_PEAK_HEADROOM_DB = 0.5
 _INPUT_WINDOW_VERSION = 1
 
@@ -85,6 +96,26 @@ class RenderPreconditionError(ValueError):
 
 class RenderExecutionError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class _OverlaySummary:
+    """Normaliza o resultado do overlay tipográfico (Remotion webm ou libass
+    .ass) num único formato consumido pelo resto do pipeline, para que trocar
+    overlay_renderer não exija ramificar cada consumidor a jusante."""
+
+    renderer: str
+    output_path: str
+    output_sha256: str
+    output_size_bytes: int
+    cache_key: str
+    codec: str | None = None
+    pixel_format: str | None = None
+    node_executable: str | None = None
+    node_version: str | None = None
+    remotion_version: str | None = None
+    font_files: dict[str, str] | None = None
+    generator_version: int | None = None
 
 
 # Documented ceiling on how far a face_static_crop punch-in may shrink the
@@ -469,15 +500,9 @@ def _filtergraph(
     fps: int,
     loudness_target_lufs: float,
     true_peak_limit_dbfs: float,
-    subtitles_path: Path | None = None,
-    caption_font: str = "Montserrat",
-    caption_font_size: int = 32,
-    caption_outline: bool = True,
-    headline_path: Path | None = None,
-    headline_font: str = "Montserrat",
-    headline_font_size: int = 42,
-    headline_duration_seconds: float = 3.4,
     overlay_input_index: int | None = None,
+    ass_overlay_path: Path | None = None,
+    ass_fonts_dir: Path | None = None,
     camera_plan: CameraEditPlanDocument | None = None,
     source_input_indices: dict[str, int] | None = None,
     framing_mode: str = "vertical_crop",
@@ -512,7 +537,7 @@ def _filtergraph(
         if punch is not None and not punch.applied:
             punch = None
         effective_mode = framing_mode
-        if framing_mode == "speaker_auto":
+        if framing_mode in {"speaker_auto", "speaker_face"}:
             if auto_span is None:
                 raise RenderPreconditionError("enquadramento automático ausente para plano")
             punch = None  # Geometry/zoom were resolved per shot, not per EDL segment.
@@ -592,7 +617,7 @@ def _filtergraph(
         durations.append(video_duration)
         audio_durations.append(audio_duration)
         segment_shots = shots_by_segment.get(segment.timeline_order)
-        if framing_mode == "speaker_auto":
+        if framing_mode in {"speaker_auto", "speaker_face"}:
             spans = [span for span in (auto_framing or [])
                      if span.segment_order == segment.timeline_order]
             if not spans:
@@ -710,6 +735,35 @@ def _filtergraph(
                     f"c1=tri:c2=tri{audio_out}"
                 )
                 audio_duration_acc += audio_durations[index] - audio_fade
+            elif kind == "hard":
+                # A hard dry cut (dynamic profile) must not lose or gain
+                # audio at the join: an acrossfade here would shorten total
+                # audio and, across many cuts in one clip, accumulate visible
+                # A/V drift. Instead we declick with a short (~8ms) fade-out
+                # on the outgoing tail and fade-in on the incoming head, then
+                # concat — total audio duration stays exactly the sum of the
+                # two parts, matching the video concat above.
+                declick = min(
+                    _HARD_CUT_DECLICK_SECONDS, audio_durations[index - 1] / 2,
+                    audio_durations[index] / 2,
+                )
+                if declick > 0:
+                    fade_out_label = f"[adeclickout{index}]"
+                    fade_in_label = f"[adeclickin{index}]"
+                    fade_start = max(0.0, audio_duration_acc - declick)
+                    transitions.append(
+                        f"{previous_audio}afade=t=out:st={fade_start:.6f}:"
+                        f"d={declick:.6f}{fade_out_label}"
+                    )
+                    transitions.append(
+                        f"[a{index}]afade=t=in:st=0:d={declick:.6f}{fade_in_label}"
+                    )
+                    transitions.append(
+                        f"{fade_out_label}{fade_in_label}concat=n=2:v=0:a=1{audio_out}"
+                    )
+                else:
+                    transitions.append(f"{previous_audio}[a{index}]concat=n=2:v=0:a=1{audio_out}")
+                audio_duration_acc += audio_durations[index]
             else:
                 transitions.append(f"{previous_audio}[a{index}]concat=n=2:v=0:a=1{audio_out}")
                 audio_duration_acc += audio_durations[index]
@@ -728,22 +782,6 @@ def _filtergraph(
             value = value.replace(character, f"\\{character}")
         return value
 
-    if subtitles_path is not None:
-        filters.append(
-            f"{video_label}subtitles=filename='{escaped(subtitles_path)}':"
-            f"force_style='FontName={caption_font},FontSize={caption_font_size},"
-            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00101719,BorderStyle=1,"
-            f"Outline={3 if caption_outline else 0},Shadow=1,Alignment=2,MarginV=70'[vcaption]"
-        )
-        video_label = "[vcaption]"
-    if headline_path is not None:
-        filters.append(
-            f"{video_label}drawtext=textfile='{escaped(headline_path)}':font='{headline_font}':"
-            f"fontsize={headline_font_size}:fontcolor=0x101719:box=1:boxcolor=white@0.92:"
-            "boxborderw=14:x=(w-text_w)/2:y=h*0.14:"
-            f"enable='between(t,0,{headline_duration_seconds:.3f})'[voverlay]"
-        )
-        video_label = "[voverlay]"
     if overlay_input_index is not None:
         filters.append(
             f"[{overlay_input_index}:v]setpts=PTS-STARTPTS,format=rgba[alphaoverlay]"
@@ -753,6 +791,13 @@ def _filtergraph(
             "[vremotion]"
         )
         video_label = "[vremotion]"
+    if ass_overlay_path is not None:
+        assert ass_fonts_dir is not None
+        filters.append(
+            f"{video_label}subtitles=filename='{escaped(ass_overlay_path)}':"
+            f"fontsdir='{escaped(ass_fonts_dir)}'[vass]"
+        )
+        video_label = "[vass]"
     # Remotion rounds its transparent composition up to whole frames. Trim
     # after the overlay so that this padding cannot extend the encoded video
     # beyond the physical EDL (and be mistaken for A/V drift by the gate).
@@ -1158,6 +1203,39 @@ class RenderService:
 
         return issues
 
+    def _safe_zone_issues_libass(
+        self,
+        *,
+        caption_bbox: tuple[float, float, float, float] | None,
+        headline_bbox: tuple[float, float, float, float] | None,
+        width: int,
+        height: int,
+        safe_zone,
+    ) -> list[str]:
+        """Equivalente geométrico de _safe_zone_issues para o libass: a bounding
+        box já foi calculada a partir da mesma geometria usada para escrever o
+        .ass (cortex.render.ass_overlay), então não há necessidade de amostrar
+        pixels de um WebM alpha."""
+        if safe_zone is None:
+            return ["safe_zone_missing"]
+        left_px = safe_zone.left * width
+        right_limit = (1.0 - safe_zone.right) * width
+        top_px = safe_zone.top * height
+        bottom_limit = (1.0 - safe_zone.bottom) * height
+        tol = _SAFE_ZONE_TOLERANCE_PX
+        issues: list[str] = []
+        if headline_bbox is not None:
+            hx1, hy1, hx2, hy2 = headline_bbox
+            if (hx1 < left_px - tol or hx2 > right_limit + tol
+                    or hy1 < top_px - tol or hy2 > bottom_limit + tol):
+                issues.append("headline_outside_safe_zone")
+        if caption_bbox is not None:
+            cx1, cy1, cx2, cy2 = caption_bbox
+            if (cx1 < left_px - tol or cx2 > right_limit + tol
+                    or cy1 < top_px - tol or cy2 > bottom_limit + tol):
+                issues.append("caption_outside_safe_zone")
+        return issues
+
     def run(
         self,
         *,
@@ -1173,6 +1251,7 @@ class RenderService:
         render_settings: RenderSettings | None = None,
         render_settings_override: RenderSettingsPatch | None = None,
         export_directory: str | None = None,
+        confirmed_voice: dict | None = None,
     ) -> dict:
         total_started = time.monotonic()
         timings: dict[str, float] = {}
@@ -1336,6 +1415,23 @@ class RenderService:
                 ),
             }),
         })
+        requested_renderer = self._config.render.overlay_renderer
+        fonts_dir = Path(self._config.render.fonts_dir)
+        if not fonts_dir.is_absolute():
+            fonts_dir = Path(__file__).resolve().parents[3] / fonts_dir
+        if requested_renderer == "libass":
+            try:
+                if effective_settings.captions.enabled:
+                    from cortex.render.ass_overlay import resolve_caption_font
+                    resolve_caption_font(
+                        fonts_dir, effective_settings.captions.font_family,
+                        effective_settings.captions.font_weight,
+                    )
+                if effective_settings.headline.enabled and headline_text:
+                    from cortex.render.ass_overlay import resolve_headline_font
+                    resolve_headline_font(fonts_dir, effective_settings.headline.font_family)
+            except AssOverlayError as exc:
+                raise RenderPreconditionError(str(exc)) from exc
         static_face_crops: list[dict[str, object]] = []
         static_face_crop_map: dict[int, dict[str, int]] = {}
         if effective_settings.framing.mode == "face_static_crop":
@@ -1382,15 +1478,28 @@ class RenderService:
                                           "provenance": resolved.provenance})
         auto_framing: list[AutoFramingSpan] = []
         auto_framing_inputs: dict[str, str] = {}
-        if effective_settings.framing.mode == "speaker_auto":
+        framing_mode_name = effective_settings.framing.mode
+        if framing_mode_name in {"speaker_auto", "speaker_face"}:
             if camera_plan is None:
-                raise RenderPreconditionError("speaker_auto exige análise e plano de câmeras")
+                raise RenderPreconditionError(f"{framing_mode_name} exige análise e plano de câmeras")
             if any(segment.video_start != segment.start or segment.video_end != segment.end
                    for segment in plan.segments):
-                raise RenderPreconditionError("speaker_auto exige vídeo alinhado ao plano de câmeras")
+                raise RenderPreconditionError(f"{framing_mode_name} exige vídeo alinhado ao plano de câmeras")
             faces, speakers, auto_framing_inputs = load_framing_inputs(self._domain, camera_plan, source)
             stream = next(item for item in source_probe["streams"] if item.get("codec_type") == "video")
             auto_framing_inputs["algorithm_version"] = AUTO_FRAMING_VERSION
+            face_first_kwargs: dict = {}
+            if framing_mode_name == "speaker_face":
+                voice = ConfirmedVoice.model_validate(confirmed_voice) if confirmed_voice else None
+                face_first_kwargs = {
+                    "policy": "face_first", "confirmed_voice": voice,
+                    "primary_side": effective_settings.framing.primary_side,
+                }
+                auto_framing_inputs["policy"] = "face_first"
+                auto_framing_inputs["primary_side"] = str(effective_settings.framing.primary_side)
+                auto_framing_inputs["confirmed_voice"] = (
+                    hashlib.sha256(voice.model_dump_json().encode()).hexdigest() if voice else "none"
+                )
             auto_framing = resolve_auto_framing(
                 camera_plan, faces, speakers,
                 source_width=int(stream["width"]), source_height=int(stream["height"]),
@@ -1400,6 +1509,7 @@ class RenderService:
                       if effective_settings.framing.punch_in.enabled else 1.0),
                 alternate=effective_settings.framing.punch_in.alternate_on_jump_cuts,
                 overrides=effective_settings.framing.scene_overrides,
+                **face_first_kwargs,
             )
         # Punch-in (Gate 5): resolved once, up front, so an invalid crop or
         # an unsafe upscale fails closed before any ffmpeg process starts.
@@ -1446,7 +1556,10 @@ class RenderService:
         )
         overlay_artifact: StageArtifact | None = None
         overlay_manifest: RemotionOverlayManifest | None = None
-        if overlay_enabled:
+        overlay_summary: _OverlaySummary | None = None
+        ass_path: Path | None = None
+        ass_result: AssOverlayResult | None = None
+        if overlay_enabled and requested_renderer == "remotion":
             progress_cb(10.0, "Gerando overlay tipográfico com Remotion")
             overlay_started = time.monotonic()
             try:
@@ -1465,6 +1578,45 @@ class RenderService:
                 raise RenderJobCancelled() from exc
             except RemotionOverlayError as exc:
                 raise RenderExecutionError(str(exc)) from exc
+            timings["overlay_seconds"] = round(time.monotonic() - overlay_started, 4)
+            overlay_summary = _OverlaySummary(
+                renderer="remotion", output_path=overlay_manifest.output_path,
+                output_sha256=overlay_manifest.output_sha256,
+                output_size_bytes=overlay_manifest.output_size_bytes,
+                cache_key=overlay_artifact.input_hash,
+                codec=overlay_manifest.codec, pixel_format=overlay_manifest.pixel_format,
+                node_executable=overlay_manifest.node_executable,
+                node_version=overlay_manifest.node_version,
+                remotion_version=overlay_manifest.remotion_version,
+            )
+        elif overlay_enabled and requested_renderer == "libass":
+            progress_cb(10.0, "Gerando legendas")
+            overlay_started = time.monotonic()
+            try:
+                ass_result = build_ass_overlay(
+                    effective_settings, cues, fonts_dir=fonts_dir, headline_text=headline_text,
+                )
+            except AssOverlayError as exc:
+                raise RenderPreconditionError(str(exc)) from exc
+            ass_path = output_dir / f"ass-{ass_result.content_hash[:16]}.ass"
+            if not ass_path.is_file():
+                with tempfile.NamedTemporaryFile(
+                    "w", encoding="utf-8", dir=output_dir, prefix=".ass-", suffix=".tmp", delete=False,
+                ) as handle:
+                    handle.write(ass_result.ass_text)
+                    ass_tmp_path = Path(handle.name)
+                ass_tmp_path.replace(ass_path)
+            font_files = {
+                font.filename: font.sha256
+                for font in (ass_result.caption_font, ass_result.headline_font)
+                if font is not None
+            }
+            overlay_summary = _OverlaySummary(
+                renderer="libass", output_path=str(ass_path), output_sha256=_sha256(ass_path),
+                output_size_bytes=ass_path.stat().st_size, cache_key=ass_result.content_hash,
+                codec="ass", font_files=font_files or None,
+                generator_version=ass_result.generator_version,
+            )
             timings["overlay_seconds"] = round(time.monotonic() - overlay_started, 4)
         input_start, input_end = _source_input_window(plan, camera_plan, auto_framing)
         input_payload = {
@@ -1496,8 +1648,9 @@ class RenderService:
             "black_threshold_seconds": self._config.render.black_threshold_seconds,
             "freeze_threshold_seconds": self._config.render.freeze_threshold_seconds,
             "transcript_sha256": _sha256(transcript_path),
-            "overlay_input_hash": overlay_artifact.input_hash if overlay_artifact else None,
-            "overlay_sha256": overlay_manifest.output_sha256 if overlay_manifest else None,
+            "overlay_renderer": requested_renderer if overlay_enabled else "none",
+            "overlay_input_hash": overlay_summary.cache_key if overlay_summary else None,
+            "overlay_sha256": overlay_summary.output_sha256 if overlay_summary else None,
             "safe_zone_version": SAFE_ZONES_VERSION,
             "composition_version": 2,
             "safe_zone_canvas": canvas_key,
@@ -1517,11 +1670,11 @@ class RenderService:
                 or (cached_doc.subtitles_path is not None and Path(cached_doc.subtitles_path).is_file())
             )
             overlay_available = (
-                overlay_manifest is None
+                overlay_summary is None
                 or (
                     cached_doc.overlays is not None
-                    and cached_doc.overlays.artifact_sha256 == overlay_manifest.output_sha256
-                    and Path(overlay_manifest.output_path).is_file()
+                    and cached_doc.overlays.artifact_sha256 == overlay_summary.output_sha256
+                    and Path(overlay_summary.output_path).is_file()
                 )
             )
             if Path(cached_doc.output_path).exists() and subtitles_available and overlay_available:
@@ -1581,6 +1734,8 @@ class RenderService:
             auto_framing=auto_framing,
             punch_ins=punch_in_by_segment,
             overlay_input_index=(len(ordered_source_ids) if overlay_manifest is not None else None),
+            ass_overlay_path=ass_path,
+            ass_fonts_dir=(fonts_dir if ass_path is not None else None),
             camera_plan=camera_plan,
             source_input_indices=source_input_indices,
             source_time_offset=input_start,
@@ -1620,6 +1775,9 @@ class RenderService:
                              and span.reason != "manual_full_frame"]
             if context_spans:
                 warnings.append("auto_framing_context_preserved")
+            if any(item.get("provenance", {}).get("fallback") == "center_crop"
+                   for item in static_face_crops):
+                warnings.append("face_crop_center_fallback")
             integrated_loudness: float | None = None
             true_peak: float | None = None
             loudness_delta: float | None = None
@@ -1723,6 +1881,14 @@ class RenderService:
                     height=effective_settings.canvas.height,
                     safe_zone=safe_zone,
                 ))
+            elif ass_result is not None:
+                issues.extend(self._safe_zone_issues_libass(
+                    caption_bbox=ass_result.caption_bbox,
+                    headline_bbox=ass_result.headline_bbox,
+                    width=effective_settings.canvas.width,
+                    height=effective_settings.canvas.height,
+                    safe_zone=safe_zone,
+                ))
             check_evidence: dict[
                 str, dict[str, bool | float | int | str | None]
             ] = {
@@ -1753,8 +1919,8 @@ class RenderService:
                     "interval_count": int(visual_metrics["freeze_interval_count"]),
                     "maximum_seconds": float(visual_metrics["freeze_max_duration_seconds"]),
                 },
-                "caption_outside_safe_zone": {"overlay_present": overlay_manifest is not None},
-                "headline_outside_safe_zone": {"overlay_present": overlay_manifest is not None},
+                "caption_outside_safe_zone": {"overlay_present": overlay_summary is not None},
+                "headline_outside_safe_zone": {"overlay_present": overlay_summary is not None},
                 "safe_zone_missing": {"canvas": canvas_key, "defined": safe_zone is not None},
                 "full_decode_failed": {"passed": technical.full_decode_passed},
                 "faststart_missing": {
@@ -1847,7 +2013,7 @@ class RenderService:
                 caption_cue_count=len(cues),
                 subtitles_present=bool(cues and effective_settings.subtitles.sidecar_srt),
                 headline_present=bool(
-                    overlay_manifest is not None
+                    overlay_summary is not None
                     and effective_settings.headline.enabled
                     and headline_text
                 ),
@@ -1879,7 +2045,7 @@ class RenderService:
                     "cue_count": len(cues),
                     "subtitles_present": bool(cues and effective_settings.subtitles.sidecar_srt),
                     "headline_present": bool(
-                        overlay_manifest is not None
+                        overlay_summary is not None
                         and effective_settings.headline.enabled
                         and headline_text
                     ),
@@ -1901,7 +2067,7 @@ class RenderService:
                 },
                 hashes={
                     "input_hash": input_hash,
-                    "overlay_hash": overlay_artifact.input_hash if overlay_artifact else None,
+                    "overlay_hash": overlay_summary.cache_key if overlay_summary else None,
                     "render_sha256": render_sha256,
                 },
                 provenance={
@@ -1910,9 +2076,11 @@ class RenderService:
                     "input_duration_seconds": f"{input_end - input_start:.6f}",
                     "ffmpeg": str(self._config.render.ffmpeg),
                     "ffprobe": str(self._config.render.ffprobe),
-                    "node": overlay_manifest.node_executable if overlay_manifest else None,
-                    "node_version": overlay_manifest.node_version if overlay_manifest else None,
-                    "remotion_version": overlay_manifest.remotion_version if overlay_manifest else None,
+                    "overlay_renderer_requested": requested_renderer,
+                    "overlay_renderer_effective": overlay_summary.renderer if overlay_summary else "none",
+                    "node": overlay_summary.node_executable if overlay_summary else None,
+                    "node_version": overlay_summary.node_version if overlay_summary else None,
+                    "remotion_version": overlay_summary.remotion_version if overlay_summary else None,
                 },
                 punch_in={
                     "enabled": punch_in_settings.enabled,
@@ -1970,7 +2138,12 @@ class RenderService:
                 requested_settings=requested_settings,
                 effective_settings=effective_settings,
                 overlays=RenderOverlayInfo(
-                    renderer="remotion" if overlay_manifest is not None else "none",
+                    renderer=overlay_summary.renderer if overlay_summary is not None else "none",
+                    requested_renderer=requested_renderer if overlay_enabled else "none",
+                    ass_generator_version=(
+                        overlay_summary.generator_version if overlay_summary is not None else None
+                    ),
+                    font_files=(overlay_summary.font_files if overlay_summary is not None else None),
                     captions_enabled=bool(cues and effective_settings.captions.enabled),
                     caption_font=caption_font if cues else None,
                     caption_text_color=effective_settings.captions.text_color if cues else None,
@@ -1991,32 +2164,32 @@ class RenderService:
                         and effective_settings.captions.enabled
                         and effective_settings.captions.karaoke
                     ),
-                    headline_enabled=bool(overlay_manifest is not None and headline_text),
-                    headline_text=headline_text if overlay_manifest is not None else None,
-                    headline_font=headline_font if overlay_manifest is not None else None,
+                    headline_enabled=bool(overlay_summary is not None and headline_text),
+                    headline_text=headline_text if overlay_summary is not None else None,
+                    headline_font=headline_font if overlay_summary is not None else None,
                     headline_font_size=(
                         effective_settings.headline.font_size
-                        if overlay_manifest is not None and headline_text else None
+                        if overlay_summary is not None and headline_text else None
                     ),
                     headline_duration_seconds=(
                         effective_settings.headline.duration_seconds
-                        if overlay_manifest is not None and headline_text else None
+                        if overlay_summary is not None and headline_text else None
                     ),
                     sidecar_srt=bool(cues and effective_settings.subtitles.sidecar_srt),
-                    artifact_path=(overlay_manifest.output_path if overlay_manifest else None),
-                    artifact_sha256=(overlay_manifest.output_sha256 if overlay_manifest else None),
+                    artifact_path=(overlay_summary.output_path if overlay_summary else None),
+                    artifact_sha256=(overlay_summary.output_sha256 if overlay_summary else None),
                     artifact_size_bytes=(
-                        overlay_manifest.output_size_bytes if overlay_manifest else None
+                        overlay_summary.output_size_bytes if overlay_summary else None
                     ),
-                    input_hash=(overlay_artifact.input_hash if overlay_artifact else None),
-                    codec=(overlay_manifest.codec if overlay_manifest else None),
-                    pixel_format=(overlay_manifest.pixel_format if overlay_manifest else None),
+                    input_hash=(overlay_summary.cache_key if overlay_summary else None),
+                    codec=(overlay_summary.codec if overlay_summary else None),
+                    pixel_format=(overlay_summary.pixel_format if overlay_summary else None),
                     node_executable=(
-                        overlay_manifest.node_executable if overlay_manifest else None
+                        overlay_summary.node_executable if overlay_summary else None
                     ),
-                    node_version=(overlay_manifest.node_version if overlay_manifest else None),
+                    node_version=(overlay_summary.node_version if overlay_summary else None),
                     remotion_version=(
-                        overlay_manifest.remotion_version if overlay_manifest else None
+                        overlay_summary.remotion_version if overlay_summary else None
                     ),
                 ),
                 quality=quality,
@@ -2072,4 +2245,8 @@ class RenderService:
         return {"cached": False, "render_artifact_id": artifact.id,
                 "render_path": str(output_path), "schema_version": artifact.schema_version,
                 "publish_ready": publication.publish_ready,
+                "context_shot_count": len([
+                    span for span in auto_framing
+                    if span.mode == "blurred_background" and span.reason != "manual_full_frame"
+                ]),
                 "timings": artifact.metadata.get("timings", {}), **exports}
