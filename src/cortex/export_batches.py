@@ -22,6 +22,8 @@ from cortex.schemas import Job, JobCreate, JobStatus, JobType
 def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> dict:
     """The one edit-plan payload for export items (first item, next items and
     retries alike), so every exported clip gets the same refine/duration rules."""
+    teaser = item.clip.get("teaser")
+    teaser_on = bool(((revision.render_settings or {}).get("transitions") or {}).get("teaser"))
     return {
         "transcript_artifact_id": run.artifacts["transcript"],
         "analysis_artifact_id": run.artifacts["analysis"],
@@ -38,6 +40,8 @@ def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> 
         "confirmed_voice": run.brief.get("confirmed_voice"),
         "primary_subject": run.brief.get("primary_subject"),
         "tighten": True,
+        **({"teaser": {"start": teaser["start"], "end": teaser["end"]}}
+           if teaser_on and teaser else {}),
         "export_batch_id": batch.id, "export_item_id": item.id,
     }
 

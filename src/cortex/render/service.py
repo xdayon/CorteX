@@ -36,6 +36,7 @@ from cortex.render.schemas import (
     RenderFaceFocusInfo,
     RenderOverlayInfo,
     RenderPunchInInfo,
+    RenderTeaserInfo,
     RenderPunchInSettings,
     RenderQualityCheck,
     RenderQualityReport,
@@ -595,11 +596,26 @@ def _source_input_window(plan: EditPlanDocument) -> tuple[float, float]:
 
     J/L cuts have independent audio boundaries. Keep all persisted clocks
     absolute; only the FFmpeg input and its trim expressions use this local origin.
+    Teaser segments are decoded from their own input (``_teaser_input_window``),
+    so they never stretch this window.
     """
-    intervals = [(segment.audio_start, segment.audio_end) for segment in plan.segments]
-    intervals.extend((segment.video_start, segment.video_end) for segment in plan.segments)
+    segments = [segment for segment in plan.segments if not segment.teaser]
+    intervals = [(segment.audio_start, segment.audio_end) for segment in segments]
+    intervals.extend((segment.video_start, segment.video_end) for segment in segments)
     if not intervals:
         raise RenderPreconditionError("plano sem intervalos de mídia para renderizar")
+    return round(min(start for start, _ in intervals), 6), round(max(end for _, end in intervals), 6)
+
+
+def _teaser_input_window(plan: EditPlanDocument) -> tuple[float, float] | None:
+    segments = [segment for segment in plan.segments if segment.teaser]
+    if not segments:
+        return None
+    first_body = next((i for i, segment in enumerate(plan.segments) if not segment.teaser), None)
+    if first_body is None or any(segment.teaser for segment in plan.segments[first_body:]):
+        raise RenderPreconditionError("segmentos de teaser devem vir antes do corpo do plano")
+    intervals = [(segment.audio_start, segment.audio_end) for segment in segments]
+    intervals.extend((segment.video_start, segment.video_end) for segment in segments)
     return round(min(start for start, _ in intervals), 6), round(max(end for _, end in intervals), 6)
 
 
@@ -615,6 +631,7 @@ def _filtergraph(
     framing_mode: str = "vertical_crop",
     punch_ins: dict[int, _PunchInResolution] | None = None,
     source_time_offset: float = 0.0,
+    teaser_time_offset: float = 0.0,
     framing_position_y: float = 0.5,
     source_size: tuple[int, int] | None = None,
     framing_zoom: float = 1.0,
@@ -735,6 +752,10 @@ def _filtergraph(
             raise RenderPreconditionError(f"segmento {index} possui duração inválida")
         durations.append(video_duration)
         audio_durations.append(audio_duration)
+        # Teaser segments break chronological order: they come from a second
+        # input with its own window, never from the shared decoder.
+        input_index = 1 if segment.teaser else 0
+        offset = teaser_time_offset if segment.teaser else source_time_offset
         if face_spans:
             indexed = [
                 position for position, span in enumerate(face_spans)
@@ -744,8 +765,8 @@ def _filtergraph(
                 raise RenderPreconditionError("foco nos rostos não cobre o segmento")
             if len(indexed) == 1:
                 video_parts.append(compose_video(
-                    f"[0:v]trim=start={segment.video_start - source_time_offset:.6f}:"
-                    f"end={segment.video_end - source_time_offset:.6f},setpts=PTS-STARTPTS",
+                    f"[{input_index}:v]trim=start={segment.video_start - offset:.6f}:"
+                    f"end={segment.video_end - offset:.6f},setpts=PTS-STARTPTS",
                     f"[v{index}]", segment.timeline_order, face_index=indexed[0],
                 ))
             else:
@@ -764,8 +785,8 @@ def _filtergraph(
                         continue
                     labels.append(label)
                     video_parts.append(compose_video(
-                        f"[0:v]trim=start={span.source_start - source_time_offset:.6f}:"
-                        f"end={span.source_end - source_time_offset:.6f},setpts=PTS-STARTPTS",
+                        f"[{input_index}:v]trim=start={span.source_start - offset:.6f}:"
+                        f"end={span.source_end - offset:.6f},setpts=PTS-STARTPTS",
                         raw_label, segment.timeline_order, face_index=position,
                     ))
                     video_parts.append(
@@ -775,16 +796,16 @@ def _filtergraph(
                 video_parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[v{index}]")
         else:
             video_parts.append(compose_video(
-                f"[0:v]trim=start={segment.video_start - source_time_offset:.6f}:"
-                f"end={segment.video_end - source_time_offset:.6f},"
+                f"[{input_index}:v]trim=start={segment.video_start - offset:.6f}:"
+                f"end={segment.video_end - offset:.6f},"
                 "setpts=PTS-STARTPTS",
                 f"[v{index}]", segment.timeline_order,
             ))
         # Audio always follows the segment's own audio clock: a jl_cut boundary
         # only ever shifts audio_start/audio_end.
         audio_parts.append(
-            f"[0:a]atrim=start={segment.audio_start - source_time_offset:.6f}:"
-            f"end={segment.audio_end - source_time_offset:.6f},"
+            f"[{input_index}:a]atrim=start={segment.audio_start - offset:.6f}:"
+            f"end={segment.audio_end - offset:.6f},"
             f"asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:"
             f"channel_layouts=stereo[a{index}]"
         )
@@ -1502,6 +1523,7 @@ class RenderService:
             )
             timings["overlay_seconds"] = round(time.monotonic() - overlay_started, 4)
         input_start, input_end = _source_input_window(plan)
+        teaser_window = _teaser_input_window(plan)
         input_payload = {
             "schema_version": RENDER_SCHEMA_VERSION,
             "input_window": {"version": _INPUT_WINDOW_VERSION, "start": input_start, "end": input_end},
@@ -1533,6 +1555,7 @@ class RenderService:
             "overlay_sha256": overlay_summary.output_sha256 if overlay_summary else None,
             "safe_zone_version": SAFE_ZONES_VERSION,
             "composition_version": 2,
+            **({"teaser_window": list(teaser_window)} if teaser_window else {}),
             "safe_zone_canvas": canvas_key,
             "technical_quality_version": TECHNICAL_QUALITY_VERSION,
         }
@@ -1606,6 +1629,7 @@ class RenderService:
             ass_overlay_path=ass_path,
             ass_fonts_dir=(fonts_dir if ass_path is not None else None),
             source_time_offset=input_start,
+            teaser_time_offset=teaser_window[0] if teaser_window else 0.0,
             framing_position_y=effective_settings.framing.position_y,
             source_size=source_size,
             framing_zoom=effective_settings.framing.zoom,
@@ -1619,6 +1643,11 @@ class RenderService:
             "-ss", f"{input_start:.6f}", "-t", f"{input_end - input_start:.6f}",
             "-i", str(source_path),
         ])
+        if teaser_window is not None:
+            command.extend([
+                "-ss", f"{teaser_window[0]:.6f}", "-t", f"{teaser_window[1] - teaser_window[0]:.6f}",
+                "-i", str(source_path),
+            ])
         command.extend([
             "-filter_complex", filtergraph, "-map", video_label, "-map", audio_label,
             *_encoder_args(requested_encoder, draft=draft), "-c:a", "aac", "-b:a", "192k",
@@ -1988,6 +2017,16 @@ class RenderService:
                 segment_count=len(plan.segments),
                 transitions=_render_transitions(plan),
                 punch_ins=punch_ins_manifest,
+                teaser=(
+                    RenderTeaserInfo(
+                        applied=True,
+                        source_start=min(s.video_start for s in plan.segments if s.teaser),
+                        source_end=max(s.video_end for s in plan.segments if s.teaser),
+                        segment_count=sum(1 for s in plan.segments if s.teaser),
+                        input_seek_seconds=teaser_window[0],
+                        input_duration_seconds=teaser_window[1] - teaser_window[0],
+                    ) if teaser_window else None
+                ),
                 engine=RenderEngineInfo(
                     ffmpeg=str(self._config.render.ffmpeg), ffprobe=str(self._config.render.ffprobe),
                     requested_encoder=requested_encoder, effective_encoder=requested_encoder,

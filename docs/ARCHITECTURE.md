@@ -35,7 +35,7 @@ ficam em `data/` (fora do Git).
 - **Claude (refino)**: quais frases ficam em cada corte exportado (gancho mais forte,
   sem gordura), nunca atravessando peças nem ficando abaixo do mínimo.
 - **Código determinístico**: fronteiras físicas por palavras/energia, cortes de pausa
-  ≥ 0,25 s, muletas, muletas iniciais, `piece_index`, limite de duração, J/L-cut.
+  ≥ 0,25 s, muletas, muletas iniciais, `piece_index`, teaser de abertura (`teaser`, decodificado de uma segunda entrada), limite de duração, J/L-cut.
 - **Render**: enquadramento (fundo desfocado com zoom/foco ou tela cheia), zoom
   alternado nos cortes, flash/zoom nas junções entre peças, legenda e manchete
   libass no mesmo encode, loudness −14 LUFS/−1 dBTP, QA com faixas do Reels/TikTok.

@@ -51,6 +51,10 @@ class EditSegment(BaseModel):
     # jump between pieces of a composed clip; equal or missing values are jump
     # cuts inside the same speech (pause/filler/tighten removals).
     piece_index: int | None = Field(default=None, ge=0)
+    # Opening teaser: a literal repetition of a phrase that also plays later in
+    # the body. Teaser segments come first in timeline order and are the only
+    # ones allowed to break chronological source order.
+    teaser: bool = False
 
     @model_validator(mode="after")
     def _fill_and_check_clocks(self) -> "EditSegment":
@@ -88,6 +92,9 @@ class EditPlanDiagnostics(BaseModel):
     # Fillers removed by the dry-cut ("dynamic") profile's filler pass
     # (Requirement R4). Always zero for other profiles.
     fillers_removed: int = Field(default=0, ge=0)
+    # Why a requested opening teaser was not applied (e.g. "max_duration");
+    # None when it was applied or never requested.
+    teaser_dropped: str | None = None
 
 
 class EditQualityIssue(BaseModel):

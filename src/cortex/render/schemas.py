@@ -259,6 +259,8 @@ class RenderTransitionStyleSettings(BaseModel):
     piece_junction: Literal["cut", "flash", "zoom"] = "flash"
     flash_opacity: float = Field(default=0.55, ge=0.1, le=1.0, allow_inf_nan=False)
     flash_seconds: float = Field(default=0.12, ge=0.04, le=0.4, allow_inf_nan=False)
+    # Open the clip with a repeated key phrase (flash-forward) when the plan has one.
+    teaser: bool = False
 
 
 class RenderSettings(BaseModel):
@@ -360,6 +362,7 @@ class RenderTransitionStyleSettingsPatch(BaseModel):
     piece_junction: Literal["cut", "flash", "zoom"] | None = None
     flash_opacity: float | None = Field(default=None, ge=0.1, le=1.0, allow_inf_nan=False)
     flash_seconds: float | None = Field(default=None, ge=0.04, le=0.4, allow_inf_nan=False)
+    teaser: bool | None = None
 
 
 class RenderSettingsPatch(BaseModel):
@@ -571,6 +574,20 @@ class RenderFaceFocusInfo(BaseModel):
     spans: list[FaceFocusSpan] = Field(default_factory=list)
 
 
+class RenderTeaserInfo(BaseModel):
+    """Opening teaser actually rendered: a repeated phrase decoded from its own
+    input window, placed before the chronological body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    applied: bool
+    source_start: float = Field(ge=0)
+    source_end: float = Field(ge=0)
+    segment_count: int = Field(ge=1)
+    input_seek_seconds: float = Field(ge=0)
+    input_duration_seconds: float = Field(gt=0)
+
+
 class RenderDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -599,6 +616,7 @@ class RenderDocument(BaseModel):
     segment_count: int = Field(ge=1)
     transitions: list[RenderTransitionInfo] = Field(default_factory=list)
     punch_ins: list[RenderPunchInInfo] = Field(default_factory=list)
+    teaser: RenderTeaserInfo | None = None
     engine: RenderEngineInfo
     requested_settings: RenderSettings | None = None
     effective_settings: RenderSettings | None = None

@@ -136,6 +136,7 @@ def _segment_to_schema(segment: dict) -> EditSegment:
         timeline_order=segment.get("timeline_order", 0),
         transition=EditTransition(**transition) if transition else None,
         piece_index=segment.get("piece_index"),
+        teaser=bool(segment.get("teaser", False)),
     )
 
 
@@ -143,6 +144,30 @@ class EditPlanService:
     def __init__(self, config: CortexConfig, domain: DomainStore) -> None:
         self._config = config
         self._domain = domain
+
+    @staticmethod
+    def _plan_teaser(
+        words: list[TranscriptWord], start: float, end: float, profile, energy,
+        analysis: AnalysisDocument,
+    ) -> list[dict]:
+        """Word-safe keep ranges for the teaser phrase, planned like a body piece."""
+        planned, _diag = plan_safe_segments(
+            words, start, end, profile, energy, vad_intervals=analysis.vad_intervals,
+        )
+        segments = protect_segment_boundaries(planned, words, profile)
+        if len(segments) > 1:
+            segments = absorb_short_segments(merge_touching_segments(segments))
+        validated: list[dict] = []
+        for segment in segments:
+            checked, _report = validate_edit_plan(
+                [segment], words, profile, float(segment["start"]), float(segment["end"]),
+                energy, vad_intervals=analysis.vad_intervals,
+            )
+            validated.extend(checked)
+        for index, segment in enumerate(validated):
+            if index < len(validated) - 1:
+                segment.setdefault("transition", build_transition(profile))
+        return validated
 
     def run(
         self,
@@ -161,8 +186,12 @@ class EditPlanService:
         approximate_edl: list[dict] | None = None,
         confirmed_voice: dict | None = None,
         minimum_seconds: float | None = None,
+        teaser_range: tuple[float, float] | None = None,
     ) -> dict:
-        """``minimum_seconds`` never changes the plan (cutting dead time wins);
+        """``teaser_range`` prepends a repeated phrase (flash-forward) planned like
+        a body piece; it is dropped, with the reason recorded in
+        ``diagnostics.teaser_dropped``, when it would break the duration ceiling.
+        ``minimum_seconds`` never changes the plan (cutting dead time wins);
         a final timeline shorter than it is reported as ``below_minimum``."""
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -175,6 +204,12 @@ class EditPlanService:
             raise EditPlanPreconditionError("maximum_seconds deve ser positivo e finito")
         if maximum_seconds is not None:
             maximum_seconds = float(maximum_seconds)
+        if teaser_range is not None:
+            teaser_range = (float(teaser_range[0]), float(teaser_range[1]))
+            if not all(math.isfinite(v) for v in teaser_range) or not (
+                0 <= teaser_range[0] < teaser_range[1]
+            ):
+                raise EditPlanPreconditionError("teaser inválido: início deve ser menor que o fim")
         semantic_pieces = resolve_semantic_pieces(approximate_edl, start, end)
         semantic_ranges = [(a, b) for a, b, _piece in semantic_pieces]
         voice = ConfirmedVoice.model_validate(confirmed_voice) if confirmed_voice else None
@@ -272,6 +307,9 @@ class EditPlanService:
             hash_payload["semantic_ranges"] = semantic_ranges
             hash_payload["semantic_pieces"] = [piece for _a, _b, piece in semantic_pieces]
             hash_payload["semantic_planner_version"] = 3
+        if teaser_range is not None:
+            hash_payload["teaser"] = [round(teaser_range[0], 4), round(teaser_range[1], 4)]
+            hash_payload["teaser_planner_version"] = 1
         if voice is not None:
             hash_payload["confirmed_voice"] = {
                 "speaker": voice.speaker,
@@ -303,7 +341,9 @@ class EditPlanService:
                     "duration_limit_applied": cached.metadata.get("duration_limit_applied", False),
                     "timeline_duration_seconds": cached_duration,
                     "below_minimum": _below_minimum(cached_duration, minimum_seconds),
-                    "voice_validation": cached.metadata.get("voice_validation")}
+                    "voice_validation": cached.metadata.get("voice_validation"),
+                    "teaser_applied": cached.metadata.get("teaser_applied", False),
+                    "teaser_dropped": cached.metadata.get("teaser_dropped")}
 
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -448,6 +488,41 @@ class EditPlanService:
         if clamped_issues:
             quality = {**quality, "issues": [*quality["issues"], *clamped_issues]}
 
+        teaser_applied = False
+        teaser_dropped: str | None = None
+        if teaser_range is not None:
+            teaser_dropped = "outside_source"
+            teaser_end = min(teaser_range[1], source_duration)
+            if teaser_range[0] < teaser_end:
+                teaser_dropped = None
+                teaser_segments = self._plan_teaser(
+                    words, teaser_range[0], teaser_end, resolved_profile, energy, analysis,
+                )
+                if not teaser_segments:
+                    teaser_dropped = "no_speech"
+                else:
+                    known = [s["piece_index"] for s in segments if s.get("piece_index") is not None]
+                    if not known:
+                        for segment in segments:
+                            segment["piece_index"] = 0
+                    teaser_piece = max(known, default=0) + 1
+                    for segment in teaser_segments:
+                        segment["teaser"] = True
+                        segment["piece_index"] = teaser_piece
+                    teaser_segments[-1]["transition"] = {
+                        "video": "cut", "audio": "hard_concat", "duration": 0.0, "kind": "hard",
+                    }
+                    combined = [*teaser_segments, *segments]
+                    if maximum_seconds is not None and timeline_duration(
+                        combined, resolved_profile.crossfade,
+                    ) > maximum_seconds + 1e-6:
+                        teaser_dropped = "max_duration"
+                    else:
+                        segments = combined
+                        teaser_applied = True
+                        for index, segment in enumerate(segments):
+                            segment["timeline_order"] = index
+
         # Validate the confirmed voice only after every duration, J/L-cut, and
         # physical-source adjustment.  This is the audio timeline that render
         # will actually consume, rather than the earlier semantic proposal.
@@ -477,8 +552,11 @@ class EditPlanService:
             **diagnostics,
             "cuts": max(0, len(segments) - 1),
             "saved_seconds": max(0.0, round(
-                (end - start) - sum(float(s["end"]) - float(s["start"]) for s in segments), 3,
+                (end - start) - sum(
+                    float(s["end"]) - float(s["start"]) for s in segments if not s.get("teaser")
+                ), 3,
             )),
+            "teaser_dropped": teaser_dropped,
             "scene_snap_count": scene_snap_count,
             "j_cuts": jl_counts["j_cuts"],
             "l_cuts": jl_counts["l_cuts"],
@@ -538,10 +616,13 @@ class EditPlanService:
                 "timeline_duration_seconds": document.timeline_duration_seconds,
                 "semantic_range_count": len(semantic_ranges),
                 "voice_validation": voice_validation,
+                "teaser_applied": teaser_applied,
+                "teaser_dropped": teaser_dropped,
             },
         ))
         progress_cb(100.0, "Plano de edição concluído")
         return {"cached": False, "edit_plan_artifact_id": artifact.id, "edit_plan_path": artifact.path, "schema_version": artifact.schema_version,
                 "duration_limit_applied": bool(duration_issues), "timeline_duration_seconds": document.timeline_duration_seconds,
                 "below_minimum": _below_minimum(document.timeline_duration_seconds, minimum_seconds),
-                "voice_validation": voice_validation}
+                "voice_validation": voice_validation,
+                "teaser_applied": teaser_applied, "teaser_dropped": teaser_dropped}

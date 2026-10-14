@@ -358,6 +358,37 @@ def run_scene_analysis_job(
     )
 
 
+_TEASER_MIN_BODY_COVERAGE = 0.9
+
+
+def _resolve_teaser_payload(
+    teaser: object, approximate_edl: list[dict] | None,
+) -> tuple[tuple[float, float] | None, str | None]:
+    """The teaser repeats a phrase of the body, so it only survives the refine
+    pass if (almost) all of it is still inside the kept body ranges."""
+    if not isinstance(teaser, dict):
+        return None, None
+    try:
+        start, end = float(teaser["start"]), float(teaser["end"])
+    except (KeyError, TypeError, ValueError):
+        return None, "invalid_teaser"
+    if not end > start:
+        return None, "invalid_teaser"
+    if approximate_edl:
+        covered, cursor = 0.0, start
+        for entry in sorted(
+            (e for e in approximate_edl if e.get("audio_mode") != "room_tone"),
+            key=lambda e: float(e["source_start"]),
+        ):
+            low, high = max(cursor, float(entry["source_start"])), min(end, float(entry["source_end"]))
+            if high > low:
+                covered += high - low
+                cursor = high
+        if covered / (end - start) < _TEASER_MIN_BODY_COVERAGE:
+            return None, "teaser_removed_by_refine"
+    return (start, end), None
+
+
 def run_edit_plan_job(
     job: Job,
     config: CortexConfig,
@@ -426,6 +457,10 @@ def run_edit_plan_job(
         if tighten_result["status"] == "accepted":
             approximate_edl = tighten_result["ranges"]
 
+    teaser_range, teaser_dropped = _resolve_teaser_payload(
+        job.payload.get("teaser"), approximate_edl,
+    )
+
     try:
         result = service.run(
             transcript_artifact=transcript,
@@ -442,9 +477,13 @@ def run_edit_plan_job(
             approximate_edl=approximate_edl,
             confirmed_voice=job.payload.get("confirmed_voice"),
             minimum_seconds=minimum_seconds,
+            teaser_range=teaser_range,
         )
     except EditPlanJobCancelled:
         return
+    if teaser_dropped is not None:
+        result["teaser_applied"] = False
+        result["teaser_dropped"] = teaser_dropped
     if tighten_artifact_id is not None:
         result["tighten_artifact_id"] = tighten_artifact_id
         result["refine"] = refine

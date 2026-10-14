@@ -156,11 +156,17 @@ class EditPlanRequest(BaseModel):
     minimum_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     headline: str | None = Field(default=None, max_length=120)
     primary_subject: str | None = Field(default=None, max_length=100)
+    teaser_start: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    teaser_end: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def clip_order(self) -> "EditPlanRequest":
         if self.end <= self.start:
             raise ValueError("end must be greater than start")
+        if (self.teaser_start is None) != (self.teaser_end is None):
+            raise ValueError("teaser_start and teaser_end must be sent together")
+        if self.teaser_start is not None and self.teaser_end <= self.teaser_start:
+            raise ValueError("teaser_end must be greater than teaser_start")
         return self
 
 
@@ -792,6 +798,8 @@ def create_app(config: CortexConfig | None = None):
                 "minimum_seconds": request.minimum_seconds,
                 "headline": request.headline,
                 "primary_subject": request.primary_subject,
+                **({"teaser": {"start": request.teaser_start, "end": request.teaser_end}}
+                   if request.teaser_start is not None else {}),
             },
         ))
 

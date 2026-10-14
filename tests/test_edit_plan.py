@@ -779,3 +779,101 @@ def test_tighten_ranges_without_piece_leave_piece_index_empty(tmp_path: Path) ->
     )
     document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
     assert all(segment.piece_index is None for segment in document.segments)
+
+
+def _teaser_plan(tmp_path: Path, **kwargs):
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = [
+        _word("primeiro", 0.5, 1.0), _word("bloco.", 1.1, 1.5),
+        _word("segundo", 6.5, 7.0), _word("bloco.", 7.1, 7.5),
+    ]
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 8.0)
+    result = EditPlanService(config, domain).run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0, end=8, profile="balanced",
+        approximate_edl=[
+            {"order": 0, "source_start": 0, "source_end": 2, "audio_mode": "source"},
+            {"order": 1, "source_start": 6, "source_end": 8, "audio_mode": "source"},
+        ],
+        progress_cb=lambda *_args: None, should_cancel=lambda: False, **kwargs,
+    )
+    document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
+    return result, document
+
+
+def test_teaser_segments_come_first_and_junction_precedes_body(tmp_path: Path) -> None:
+    from cortex.render.captions import piece_junctions
+
+    result, document = _teaser_plan(tmp_path, teaser_range=(6.5, 7.5))
+    assert result["teaser_applied"] is True and result["teaser_dropped"] is None
+    flags = [segment.teaser for segment in document.segments]
+    assert flags == [True, False, False]
+    assert [segment.timeline_order for segment in document.segments] == [0, 1, 2]
+    teaser = document.segments[0]
+    assert 6.0 <= teaser.start <= 6.5 and 7.5 <= teaser.end <= 8.0
+    body_pieces = {segment.piece_index for segment in document.segments[1:]}
+    assert teaser.piece_index not in body_pieces
+    assert [index for index, _moment in piece_junctions(document)][0] == 1
+    assert document.diagnostics.teaser_dropped is None
+
+
+def test_teaser_none_leaves_plan_unchanged_and_hash_includes_teaser(tmp_path: Path) -> None:
+    _result, plain = _teaser_plan(tmp_path / "a")
+    _result, with_teaser = _teaser_plan(tmp_path / "b", teaser_range=(6.5, 7.5))
+    _result, other = _teaser_plan(tmp_path / "c", teaser_range=(6.5, 7.3))
+    assert not any(segment.teaser for segment in plain.segments)
+    assert len({plain.input_hash, with_teaser.input_hash, other.input_hash}) == 3
+
+
+def test_teaser_dropped_when_it_would_exceed_maximum_seconds(tmp_path: Path) -> None:
+    _result, plain = _teaser_plan(tmp_path / "a")
+    result, document = _teaser_plan(
+        tmp_path / "b", teaser_range=(6.5, 7.5),
+        maximum_seconds=plain.timeline_duration_seconds + 0.2,
+    )
+    assert result["teaser_applied"] is False and result["teaser_dropped"] == "max_duration"
+    assert document.diagnostics.teaser_dropped == "max_duration"
+    assert not any(segment.teaser for segment in document.segments)
+
+
+def test_teaser_cached_result_keeps_applied_flag(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = [_word("primeiro", 0.5, 1.0), _word("bloco.", 1.1, 1.5), _word("fim.", 6.5, 7.5)]
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 8.0)
+
+    def run():
+        return EditPlanService(config, domain).run(
+            transcript_artifact=transcript, analysis_artifact=analysis, start=0, end=8,
+            profile="balanced", teaser_range=(6.5, 7.5),
+            progress_cb=lambda *_args: None, should_cancel=lambda: False,
+        )
+
+    first, second = run(), run()
+    assert first["cached"] is False and second["cached"] is True
+    assert second["teaser_applied"] is True and second["teaser_dropped"] is None
+
+
+def test_edit_plan_endpoint_teaser_fields_pair_into_payload(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    project, _source, transcript, analysis = _fixture(
+        config, domain, [_word("isso", 0.5, 1.0)], 4.0,
+    )
+    client = TestClient(create_app(config))
+    base = {
+        "transcript_artifact_id": transcript.id, "analysis_artifact_id": analysis.id,
+        "start": 0.0, "end": 4.0,
+    }
+    url = f"/api/v1/projects/{project.id}/edit-plans"
+    assert client.post(url, json={**base, "teaser_start": 1.0}).status_code == 422
+    assert client.post(url, json={**base, "teaser_start": 2.0, "teaser_end": 1.0}).status_code == 422
+    response = client.post(url, json={**base, "teaser_start": 1.0, "teaser_end": 2.5})
+    assert response.status_code == 201, response.text
+    assert response.json()["payload"]["teaser"] == {"start": 1.0, "end": 2.5}
+    plain = client.post(url, json=base).json()
+    assert "teaser" not in plain["payload"]

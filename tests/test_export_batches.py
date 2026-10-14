@@ -251,3 +251,29 @@ def test_export_items_carry_emphasis_headline_and_minimum(tmp_path: Path) -> Non
     assert plan_job.payload["minimum_seconds"] == 40
     # Refine is keyed on the AI headline so editing the text never re-bills it.
     assert plan_job.payload["headline"] == "Sugestão A"
+
+
+def test_export_plan_payload_carries_teaser_only_when_toggled(tmp_path: Path) -> None:
+    config, _domain, project, run = _workflow(tmp_path)
+    client = TestClient(create_app(config))
+    clip = {"key": "a", "rank": 1, "title": "A", "headline": "A", "start_second": 0,
+            "end_second": 60, "pacing": "dynamic",
+            "teaser": {"start": 50.0, "end": 53.5, "text": "frase final"}}
+
+    def export(teaser_on: bool, key: str):
+        settings = {**_settings(), "transitions": {"teaser": teaser_on}}
+        revision = client.post(
+            f"/api/v1/projects/{project.id}/runs/{run.id}/revisions",
+            json={"selection_artifact_id": run.artifacts["suggestion"],
+                  "selected_clips": [clip], "render_settings": settings},
+        ).json()
+        client.post(
+            f"/api/v1/projects/{project.id}/runs/{run.id}/export-batches",
+            json={"revision_id": revision["id"], "idempotency_key": key},
+        )
+        return [job for job in JobStore(config.paths.database).list() if job.type == "edit_plan"]
+
+    off = export(False, "teaser-off")[0]
+    assert "teaser" not in off.payload
+    on = export(True, "teaser-on")[0]
+    assert on.payload["teaser"] == {"start": 50.0, "end": 53.5}

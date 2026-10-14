@@ -305,3 +305,55 @@ def test_refine_cache_key_ignores_int_vs_float_durations(tmp_path: Path):
     second = service.run(minimum_seconds=30.0, maximum_seconds=120.0, **kwargs)
     assert second["cached"] is True and second["tighten_artifact_id"] == first["tighten_artifact_id"]
     assert len(provider.calls) == 1
+
+
+def _run_teaser_job(tmp_path: Path, teaser: dict):
+    config = _edit_plan_config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    jobs = JobStore(config.paths.database)
+    words = [_word(text, start, end) for start, end, text in _WORDS]
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 8.0)
+    job = jobs.create(JobCreate(
+        type=JobType.EDIT_PLAN, project_id=transcript.project_id,
+        payload={
+            "transcript_artifact_id": transcript.id, "analysis_artifact_id": analysis.id,
+            "start": 0.0, "end": 7.0, "profile": "balanced", "tighten": True,
+            "teaser": teaser,
+        },
+    ))
+    provider = FakeSuggestionProvider({"keep_ids": [0, 2], "notes": "removi a tangente"})
+    assert process_next(config, jobs, domain, FakeTranscriptionEngine(), provider)
+    final = jobs.get(job.id)
+    assert final.status == JobStatus.SUCCEEDED, final.error
+    document = EditPlanDocument.model_validate_json(
+        Path(domain.get_stage_artifact(final.result["edit_plan_artifact_id"]).path).read_text()
+    )
+    return final.result, document
+
+
+def test_worker_applies_teaser_covered_by_refined_body(tmp_path: Path) -> None:
+    result, document = _run_teaser_job(tmp_path, {"start": 6.0, "end": 7.0})
+    assert result["teaser_applied"] is True
+    assert document.segments[0].teaser and not document.segments[-1].teaser
+
+
+def test_worker_drops_teaser_removed_by_refine(tmp_path: Path) -> None:
+    result, document = _run_teaser_job(tmp_path, {"start": 2.0, "end": 3.0})
+    assert result["teaser_applied"] is False
+    assert result["teaser_dropped"] == "teaser_removed_by_refine"
+    assert not any(segment.teaser for segment in document.segments)
+
+
+def test_teaser_payload_overlap_threshold() -> None:
+    from cortex.worker import _resolve_teaser_payload
+
+    edl = [{"source_start": 0.0, "source_end": 5.0}, {"source_start": 4.0, "source_end": 10.0}]
+    assert _resolve_teaser_payload({"start": 3.0, "end": 6.0}, edl) == ((3.0, 6.0), None)
+    kept = [{"source_start": 0.0, "source_end": 2.95}]
+    assert _resolve_teaser_payload({"start": 1.0, "end": 3.0}, kept)[0] == (1.0, 3.0)
+    assert _resolve_teaser_payload({"start": 1.0, "end": 4.0}, kept) == (
+        None, "teaser_removed_by_refine",
+    )
+    assert _resolve_teaser_payload(None, edl) == (None, None)
+    assert _resolve_teaser_payload({"start": 3.0}, edl) == (None, "invalid_teaser")
