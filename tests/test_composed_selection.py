@@ -62,9 +62,9 @@ def test_fine_units_sequential_ids_and_line_format():
         voice=None, primary_subject="Dayon",
     )
     assert [(u["id"], u["text"]) for u in units] == [(0, "a,"), (1, "b"), (2, "c")]
-    assert _transcript_lines(units).splitlines()[0] == "#0 [0.0|1.3] a,"
+    assert _transcript_lines(units).splitlines()[0] == "#0 [0.0] a,"
     labelled = [{**units[0], "speaker_label": "D"}, {**units[1], "speaker_label": "D"}]
-    assert _transcript_lines(labelled).splitlines() == ["#0 [0.0|1.3] D: a,", "#1 [1.3|0.3] b"]
+    assert _transcript_lines(labelled).splitlines() == ["#0 [0.0] D: a,", "#1 [1.3] b"]
 
 
 def test_pieces_resolution_discards_invalid_out_of_order_and_short():
@@ -171,7 +171,7 @@ def test_normalize_clip_single_piece_is_hook():
 def test_prompt_carries_rules_and_numbered_lines():
     provider = ScriptedProvider([{"selection_notes": "ok", "clips": [_valid_clip()]}])
     _run(provider, {"count": 1, "minimum_seconds": 10, "maximum_seconds": 60})
-    assert "#0 [0.0|10.0] Uma ideia completa" in provider.prompts[0]
+    assert "#0 [0.0] Uma ideia completa" in provider.prompts[0]
     assert '"selection_rules":{"max_envelope_seconds":240.0,"max_pieces":15,"min_piece_seconds":0.6}' in provider.prompts[0]
 
 

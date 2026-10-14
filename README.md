@@ -114,7 +114,7 @@ três testes Remotion normalmente pulados. GPU smoke não comprova episódio E2E
 
 ## Para agentes
 
-Leia [AGENTS](AGENTS.md), [handoff curto](docs/HANDOFF_FABLE_5.md) e o gate do
+Leia [AGENTS](AGENTS.md), [handoff curto](docs/HANDOFF.md) e o gate do
 [ROADMAP](docs/ROADMAP.md). O [mapa da arquitetura](docs/ARCHITECTURE.md) indica
 módulos e testes. Históricos ficam em `docs/history/`, fora da leitura inicial.
 A IA editorial usa o Claude Code CLI (Sonnet) com o login da assinatura;

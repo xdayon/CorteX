@@ -70,9 +70,10 @@ pensamento).
 
 ## Duração
 
-Cada linha traz `[início|duração]` em segundos. A duração do corte é a
-**soma das durações das linhas incluídas** e deve ficar entre
-`brief.minimum_seconds` e `brief.maximum_seconds`. Cortes fora da faixa são
+Cada linha traz o `[início]` em segundos. Uma peça dura do início do
+`from_id` até o início da linha seguinte ao `to_id`; a duração do corte é a
+**soma das peças** e deve ficar entre `brief.minimum_seconds` e
+`brief.maximum_seconds`. Cortes fora da faixa são
 descartados automaticamente: mire no meio da faixa, com folga dos dois lados.
 Temas profundos podem usar a faixa inteira; não encurte uma ideia a ponto de
 ela perder o sentido.
@@ -111,7 +112,7 @@ Nunca invente texto, IDs, tempos ou quem falou.
 
 ## Entrada
 
-- Transcrição: uma linha por frase, `#id [início|duração] texto`. Quando a voz
+- Transcrição: uma linha por frase, `#id [início] texto`. Quando a voz
   de Dayon foi identificada, `D:` marca o início de falas do protagonista
   (`brief.primary_subject`) e `O:` o entrevistador ou outra voz; o rótulo vale
   até a próxima troca. O corte deve ser dominado pela fala do protagonista.

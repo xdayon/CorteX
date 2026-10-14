@@ -121,9 +121,11 @@ def _selection_units(
 
 
 def _transcript_lines(units: list[dict[str, Any]]) -> str:
-    """One line per unit: ``#id [start|duration] text``. The duration is given so
-    the model sums seconds instead of subtracting timestamps, and the speaker
-    code (D/O) is written only when it changes, to save tokens."""
+    """One line per unit: ``#id [start] text``. A piece lasts from its first
+    line's start to the start of the line after it (one subtraction per piece;
+    per-line durations made the model sum dozens of numbers and doubled its
+    reasoning tokens in a real run). The speaker code (D/O) is written only when
+    it changes, to save tokens."""
     lines = []
     previous_label = None
     for unit in units:
@@ -131,9 +133,7 @@ def _transcript_lines(units: list[dict[str, Any]]) -> str:
         prefix = f"{label}: " if label and label != previous_label else ""
         if label:
             previous_label = label
-        start = float(unit["start"])
-        duration = float(unit["end"]) - start
-        lines.append(f"#{unit['id']} [{start:.1f}|{duration:.1f}] {prefix}{unit['text']}")
+        lines.append(f"#{unit['id']} [{float(unit['start']):.1f}] {prefix}{unit['text']}")
     return "\n".join(lines)
 
 

@@ -2,7 +2,7 @@
 
 Zero new Python dependencies: no PySceneDetect, no OpenCV. FFmpeg's scdet
 filter is a decoder-side scene-change detector that already ships with the
-system FFmpeg (see docs/HANDOFF_FABLE_5.md, 2026-07-12). scdet logs its
+system FFmpeg (see docs/HANDOFF.md, 2026-07-12). scdet logs its
 detections to stderr as INFO lines when a frame's score crosses the
 threshold — the same "parse stderr with -v info" pattern already used by
 blackdetect/freezedetect in cortex.render.service.

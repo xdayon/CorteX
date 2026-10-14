@@ -52,7 +52,7 @@ def test_units_fallback_without_words_and_hesitation_strip():
     assert units == [
         {"id": 0, "start": 1.0, "end": 9.0, "text": "uma frase", "speaker_label": None},
     ]
-    assert _transcript_lines(units) == "#0 [1.0|8.0] uma frase"
+    assert _transcript_lines(units) == "#0 [1.0] uma frase"
 
 
 def test_units_speaker_labels_from_confirmed_voice():
@@ -68,7 +68,7 @@ def test_units_speaker_labels_from_confirmed_voice():
     units = _units(segments, voice)
     assert [u["speaker_label"] for u in units] == ["O", "D", None]
     assert _transcript_lines(units).splitlines() == [
-        "#0 [0.0|4.0] O: Pergunta aqui", "#1 [5.0|4.0] D: Resposta aqui", "#2 [20.0|4.0] Sem turno",
+        "#0 [0.0] O: Pergunta aqui", "#1 [5.0] D: Resposta aqui", "#2 [20.0] Sem turno",
     ]
 
 
