@@ -13,6 +13,9 @@ class TimelineWord:
     end: float
     text: str
     segment: int
+    # Position in [w for s in transcript.segments for w in s.words]; the same
+    # convention as corrected_transcript / CaptionCorrection.word_index.
+    index: int = -1
 
 
 @dataclass(frozen=True)
@@ -33,7 +36,7 @@ def build_timeline_words(
         if index:
             previous_transition = plan.segments[index - 1].transition
             timeline_start -= previous_transition.duration if previous_transition else 0.0
-        for word in source_words:
+        for word_index, word in enumerate(source_words):
             start = max(word.start, segment.start)
             end = min(word.end, segment.end)
             text = re.sub(r"\s+", " ", word.word).strip()
@@ -43,6 +46,7 @@ def build_timeline_words(
                     end=round(timeline_start + end - segment.start, 3),
                     text=text,
                     segment=index,
+                    index=word_index,
                 ))
         timeline_start += segment.end - segment.start
     ordered = sorted(mapped, key=lambda item: (item.start, item.end, item.segment))
@@ -58,6 +62,25 @@ def build_timeline_words(
             seen.add(key)
             unique.append(word)
     return unique
+
+
+def piece_junctions(plan: EditPlanDocument) -> list[tuple[int, float]]:
+    """(segment position, timeline second) of every junction between two
+    different selection pieces. Timeline math matches build_timeline_words."""
+    junctions: list[tuple[int, float]] = []
+    timeline_start = 0.0
+    for index, segment in enumerate(plan.segments):
+        if index:
+            previous = plan.segments[index - 1]
+            timeline_start -= previous.transition.duration if previous.transition else 0.0
+            if (
+                segment.piece_index is not None
+                and previous.piece_index is not None
+                and segment.piece_index != previous.piece_index
+            ):
+                junctions.append((index, round(max(0.0, timeline_start), 3)))
+        timeline_start += segment.end - segment.start
+    return junctions
 
 
 def build_caption_cues(

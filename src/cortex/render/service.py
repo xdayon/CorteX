@@ -44,7 +44,7 @@ from cortex.render.schemas import (
     RenderTemplateSettings,
     RenderTransitionInfo,
 )
-from cortex.render.safe_zones import SAFE_ZONES, SAFE_ZONES_VERSION
+from cortex.render.safe_zones import SAFE_ZONES, SAFE_ZONES_VERSION, canvas_key, occlusion_issues
 from cortex.render.technical_quality import (
     TECHNICAL_QUALITY_VERSION,
     TechnicalQualityCancelled,
@@ -60,7 +60,13 @@ from cortex.render.ass_overlay import (
     AssOverlayResult,
     build_ass_overlay,
 )
-from cortex.render.captions import build_caption_cues, render_srt
+from cortex.render.captions import (
+    CaptionCue,
+    build_caption_cues,
+    corrected_transcript,
+    piece_junctions,
+    render_srt,
+)
 from cortex.render.remotion import (
     RemotionOverlayCancelled,
     RemotionOverlayError,
@@ -393,12 +399,7 @@ def _default_render_settings(
 
 
 def _safe_zone_key(width: int, height: int) -> str:
-    ratio = width / max(1, height)
-    if ratio > 1.35:
-        return "16:9"
-    if ratio < 0.8:
-        return "9:16"
-    return "1:1"
+    return canvas_key(width, height)
 
 
 def _merge_render_settings(base: RenderSettings, patch: RenderSettingsPatch | None) -> RenderSettings:
@@ -411,7 +412,69 @@ def _merge_render_settings(base: RenderSettings, patch: RenderSettingsPatch | No
             data[key].update(value)
         elif value is not None:
             data[key] = value
+    captions_patch = patch_data.get("captions") or {}
+    if (
+        "style" not in captions_patch
+        and (captions_patch.get("animation") or {}).get("style") == "pop"
+    ):
+        # Back-compat with patches written before caption `style` existed.
+        data["captions"]["style"] = "pop"
     return RenderSettings.model_validate(data)
+
+
+def normalize_headline_text(text: str) -> str | None:
+    value = "\n".join(
+        re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()
+    )[:120]
+    return value or None
+
+
+def effective_headline_settings(
+    headline: RenderHeadlineSettings, headline_text: str | None, timeline_seconds: float,
+    *, font_family: str | None = None,
+) -> RenderHeadlineSettings:
+    """Headline as it is actually drawn: persistent headlines span the whole
+    timeline, timed ones are capped by it."""
+    duration = (
+        timeline_seconds if headline.persistent
+        else min(headline.duration_seconds, timeline_seconds)
+    )
+    update: dict[str, object] = {"text": headline_text or "", "duration_seconds": duration}
+    if font_family is not None:
+        update["font_family"] = font_family
+    return headline.model_copy(update=update)
+
+
+@dataclass(frozen=True)
+class PlanOverlay:
+    cues: list[CaptionCue]
+    junctions: tuple[float, ...]
+    ass: AssOverlayResult | None
+
+
+def build_plan_overlay(
+    *, plan: EditPlanDocument, transcript: TranscriptDocument, settings: RenderSettings,
+    fonts_dir: Path, headline_text: str | None, needs_cues: bool, build_ass: bool,
+) -> PlanOverlay:
+    """Single path from plan + transcript to cues and .ass, used by the render
+    job and by the overlay preview API so both burn/draw identical text.
+    Raises ValueError (corrections) or AssOverlayError (fonts)."""
+    transcript = corrected_transcript(transcript, settings.captions.corrections)
+    cues = build_caption_cues(
+        plan, transcript, max_words=settings.captions.words_per_cue
+    ) if needs_cues else []
+    junctions = tuple(moment for _index, moment in piece_junctions(plan))
+    ass: AssOverlayResult | None = None
+    typography = bool(
+        (settings.captions.enabled and cues)
+        or (settings.headline.enabled and headline_text)
+    )
+    flashes = bool(junctions) and settings.transitions.piece_junction == "flash"
+    if build_ass and (typography or flashes):
+        ass = build_ass_overlay(
+            settings, cues, fonts_dir=fonts_dir, headline_text=headline_text, junctions=junctions,
+        )
+    return PlanOverlay(cues=cues, junctions=junctions, ass=ass)
 
 
 def _render_transitions(plan: EditPlanDocument) -> list[RenderTransitionInfo]:
@@ -1234,6 +1297,13 @@ class RenderService:
             if (cx1 < left_px - tol or cx2 > right_limit + tol
                     or cy1 < top_px - tol or cy2 > bottom_limit + tol):
                 issues.append("caption_outside_safe_zone")
+        canvas = canvas_key(width, height)
+        issues.extend(occlusion_issues(
+            canvas=canvas, width=width, height=height, element="headline", bbox=headline_bbox,
+        ))
+        issues.extend(occlusion_issues(
+            canvas=canvas, width=width, height=height, element="caption", bbox=caption_bbox,
+        ))
         return issues
 
     def run(
@@ -1385,19 +1455,9 @@ class RenderService:
         ):
             raise RenderPreconditionError("transcript, fonte e plano não correspondem")
         transcript = TranscriptDocument.model_validate_json(transcript_path.read_text(encoding="utf-8"))
-        from cortex.render.captions import corrected_transcript
-        try:
-            transcript = corrected_transcript(transcript, requested_settings.captions.corrections)
-        except ValueError as exc:
-            raise RenderPreconditionError(str(exc)) from exc
         caption_font = _resolve_font_family(requested_settings.captions.font_family)
         headline_font = _resolve_font_family(requested_settings.headline.font_family)
-        headline_text = "\n".join(
-            re.sub(r"\s+", " ", line).strip()
-            for line in requested_settings.headline.text.splitlines()
-            if line.strip()
-        )[:120]
-        headline_text = headline_text or None
+        headline_text = normalize_headline_text(requested_settings.headline.text)
         effective_settings = requested_settings.model_copy(update={
             "encoder": requested_encoder,
             "framing": requested_settings.framing.model_copy(update={
@@ -1407,13 +1467,10 @@ class RenderService:
             "captions": requested_settings.captions.model_copy(update={
                 "font_family": caption_font,
             }),
-            "headline": requested_settings.headline.model_copy(update={
-                "text": headline_text or "", "font_family": headline_font,
-                "duration_seconds": min(
-                    requested_settings.headline.duration_seconds,
-                    plan.timeline_duration_seconds,
-                ),
-            }),
+            "headline": effective_headline_settings(
+                requested_settings.headline, headline_text, plan.timeline_duration_seconds,
+                font_family=headline_font,
+            ),
         })
         requested_renderer = self._config.render.overlay_renderer
         fonts_dir = Path(self._config.render.fonts_dir)
@@ -1545,14 +1602,21 @@ class RenderService:
         needs_cues = (
             effective_settings.captions.enabled or effective_settings.subtitles.sidecar_srt
         )
-        cues = build_caption_cues(
-            plan, transcript, max_words=effective_settings.captions.words_per_cue
-        ) if needs_cues else []
+        try:
+            plan_overlay = build_plan_overlay(
+                plan=plan, transcript=transcript, settings=effective_settings,
+                fonts_dir=fonts_dir, headline_text=headline_text, needs_cues=needs_cues,
+                build_ass=requested_renderer == "libass",
+            )
+        except ValueError as exc:
+            raise RenderPreconditionError(str(exc)) from exc
+        cues = plan_overlay.cues
         if needs_cues and not cues:
             raise RenderPreconditionError("nenhuma palavra do transcript coincide com a EDL")
         overlay_enabled = bool(
             effective_settings.captions.enabled
             or (effective_settings.headline.enabled and headline_text)
+            or plan_overlay.ass is not None
         )
         overlay_artifact: StageArtifact | None = None
         overlay_manifest: RemotionOverlayManifest | None = None
@@ -1592,12 +1656,8 @@ class RenderService:
         elif overlay_enabled and requested_renderer == "libass":
             progress_cb(10.0, "Gerando legendas")
             overlay_started = time.monotonic()
-            try:
-                ass_result = build_ass_overlay(
-                    effective_settings, cues, fonts_dir=fonts_dir, headline_text=headline_text,
-                )
-            except AssOverlayError as exc:
-                raise RenderPreconditionError(str(exc)) from exc
+            ass_result = plan_overlay.ass
+            assert ass_result is not None
             ass_path = output_dir / f"ass-{ass_result.content_hash[:16]}.ass"
             if not ass_path.is_file():
                 with tempfile.NamedTemporaryFile(
@@ -1648,6 +1708,7 @@ class RenderService:
             "black_threshold_seconds": self._config.render.black_threshold_seconds,
             "freeze_threshold_seconds": self._config.render.freeze_threshold_seconds,
             "transcript_sha256": _sha256(transcript_path),
+            "junction_times": list(plan_overlay.junctions),
             "overlay_renderer": requested_renderer if overlay_enabled else "none",
             "overlay_input_hash": overlay_summary.cache_key if overlay_summary else None,
             "overlay_sha256": overlay_summary.output_sha256 if overlay_summary else None,
@@ -2175,6 +2236,19 @@ class RenderService:
                         effective_settings.headline.duration_seconds
                         if overlay_summary is not None and headline_text else None
                     ),
+                    caption_style=(effective_settings.captions.style if cues else None),
+                    caption_emphasis_count=(
+                        len(effective_settings.captions.emphasis_word_indices) if cues else 0
+                    ),
+                    headline_persistent=bool(
+                        overlay_summary is not None and headline_text
+                        and effective_settings.headline.persistent
+                    ),
+                    requested_piece_junction=effective_settings.transitions.piece_junction,
+                    piece_junction=(
+                        "flash" if ass_result is not None and ass_result.flash_count else "cut"
+                    ),
+                    junction_times=list(plan_overlay.junctions),
                     sidecar_srt=bool(cues and effective_settings.subtitles.sidecar_srt),
                     artifact_path=(overlay_summary.output_path if overlay_summary else None),
                     artifact_sha256=(overlay_summary.output_sha256 if overlay_summary else None),

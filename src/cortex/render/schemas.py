@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -95,8 +95,8 @@ class RenderPunchInSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
-    scale: float = Field(default=1.15, ge=PUNCH_IN_MIN_SCALE, le=PUNCH_IN_MAX_SCALE)
+    enabled: bool = True
+    scale: float = Field(default=1.12, ge=PUNCH_IN_MIN_SCALE, le=PUNCH_IN_MAX_SCALE)
     anchor: Literal["center", "face"] = "center"
     # When true, punch-in alternates between consecutive segments of the same
     # scene (by scene_index when a camera plan is present, else by parity of
@@ -115,6 +115,10 @@ class RenderFramingSettings(BaseModel):
     mode: Literal["vertical_crop", "blurred_background", "face_static_crop", "speaker_auto", "speaker_face"] = "vertical_crop"
     position_y: float = Field(default=0.5, ge=0.0, le=1.0, allow_inf_nan=False)
     primary_side: Literal["left", "right"] | None = None
+    # blurred_background only: crop the source around focus_x before fitting
+    # it into the display window (1.0 = whole frame, today's behaviour).
+    zoom: float = Field(default=1.0, ge=1.0, le=3.2, allow_inf_nan=False)
+    focus_x: float = Field(default=0.5, ge=0.0, le=1.0, allow_inf_nan=False)
     punch_in: RenderPunchInSettings = Field(default_factory=RenderPunchInSettings)
     scene_overrides: list[SceneFramingOverride] = Field(default_factory=list, max_length=500)
 
@@ -165,11 +169,30 @@ class RenderCaptionSettings(BaseModel):
     animation: RenderAnimationSettings = Field(
         default_factory=lambda: RenderAnimationSettings(style="fade", duration_seconds=0.18)
     )
+    style: Literal["classic", "word_reveal", "pop", "box"] = "classic"
+    emphasis_word_indices: list[Annotated[int, Field(ge=0)]] = Field(
+        default_factory=list, max_length=2000
+    )
+    emphasis_color: str = Field(default="#FFD400")
+    box_text_color: str = Field(default="#071012")
 
-    @field_validator("text_color", "karaoke_color", "outline_color", "shadow_color")
+    @field_validator("text_color", "karaoke_color", "outline_color", "shadow_color", "emphasis_color", "box_text_color")
     @classmethod
     def normalize_hex(cls, value: str) -> str:
         return _hex_color(value)
+
+    @field_validator("emphasis_word_indices")
+    @classmethod
+    def normalize_emphasis(cls, values: list[int]) -> list[int]:
+        return sorted(set(values))
+
+    @model_validator(mode="after")
+    def _legacy_pop_animation(self) -> "RenderCaptionSettings":
+        # Back-compat: presets saved before `style` existed used animation.style
+        # "pop" to ask for the pop highlight.
+        if "style" not in self.model_fields_set and self.animation.style == "pop":
+            self.style = "pop"
+        return self
 
 
 class RenderHeadlineSettings(BaseModel):
@@ -179,7 +202,10 @@ class RenderHeadlineSettings(BaseModel):
     text: str = Field(default="", max_length=120)
     font_family: str = Field(min_length=1, max_length=80, pattern=r"^[\w .-]+$")
     font_size: int = Field(ge=12, le=160)
-    duration_seconds: float = Field(gt=0.0, le=15.0)
+    # Persistent headlines span the whole timeline, so the effective duration
+    # recorded in the manifest may exceed the 15 s cap of a timed headline.
+    duration_seconds: float = Field(gt=0.0, le=3600.0)
+    persistent: bool = False
     burst_color: str = Field(default="#11B9AD")
     strip_color: str = Field(default="#FFFFFFF5")
     text_color: str = Field(default="#071012")
@@ -194,11 +220,28 @@ class RenderHeadlineSettings(BaseModel):
     def normalize_hex(cls, value: str) -> str:
         return _hex_color(value)
 
+    @model_validator(mode="after")
+    def _timed_headline_cap(self) -> "RenderHeadlineSettings":
+        if not self.persistent and self.duration_seconds > 15.0:
+            raise ValueError("duration_seconds de uma headline temporizada deve ser no máximo 15")
+        return self
+
 
 class RenderSubtitleSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sidecar_srt: bool
+
+
+class RenderTransitionStyleSettings(BaseModel):
+    """Visual treatment at junctions between two selection pieces (not at the
+    pause/filler cuts inside one piece)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    piece_junction: Literal["cut", "flash", "zoom"] = "flash"
+    flash_opacity: float = Field(default=0.55, ge=0.1, le=1.0, allow_inf_nan=False)
+    flash_seconds: float = Field(default=0.12, ge=0.04, le=0.4, allow_inf_nan=False)
 
 
 class RenderSettings(BaseModel):
@@ -212,6 +255,7 @@ class RenderSettings(BaseModel):
     headline: RenderHeadlineSettings
     subtitles: RenderSubtitleSettings
     template: RenderTemplateSettings = Field(default_factory=RenderTemplateSettings)
+    transitions: RenderTransitionStyleSettings = Field(default_factory=RenderTransitionStyleSettings)
 
 
 class RenderCaptionSettingsPatch(BaseModel):
@@ -233,11 +277,20 @@ class RenderCaptionSettingsPatch(BaseModel):
     outline_color: str | None = None
     shadow_color: str | None = None
     animation: RenderAnimationSettings | None = None
+    style: Literal["classic", "word_reveal", "pop", "box"] | None = None
+    emphasis_word_indices: list[Annotated[int, Field(ge=0)]] | None = Field(default=None, max_length=2000)
+    emphasis_color: str | None = None
+    box_text_color: str | None = None
 
-    @field_validator("text_color", "karaoke_color", "outline_color", "shadow_color")
+    @field_validator("text_color", "karaoke_color", "outline_color", "shadow_color", "emphasis_color", "box_text_color")
     @classmethod
     def normalize_hex(cls, value: str | None) -> str | None:
         return _hex_color(value) if value is not None else None
+
+    @field_validator("emphasis_word_indices")
+    @classmethod
+    def normalize_emphasis(cls, values: list[int] | None) -> list[int] | None:
+        return sorted(set(values)) if values is not None else None
 
 
 class RenderHeadlineSettingsPatch(BaseModel):
@@ -248,6 +301,7 @@ class RenderHeadlineSettingsPatch(BaseModel):
     font_family: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"^[\w .-]+$")
     font_size: int | None = Field(default=None, ge=12, le=160)
     duration_seconds: float | None = Field(default=None, gt=0.0, le=15.0)
+    persistent: bool | None = None
     burst_color: str | None = None
     strip_color: str | None = None
     text_color: str | None = None
@@ -273,11 +327,21 @@ class RenderFramingSettingsPatch(BaseModel):
     mode: Literal["vertical_crop", "blurred_background", "face_static_crop", "speaker_auto", "speaker_face"] | None = None
     position_y: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
     primary_side: Literal["left", "right"] | None = None
+    zoom: float | None = Field(default=None, ge=1.0, le=3.2, allow_inf_nan=False)
+    focus_x: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
     # Whole-object override, matching how captions.animation / headline.animation
     # already behave in this patch model: no partial-field patch for nested
     # settings, the incoming object fully replaces punch_in when present.
     punch_in: RenderPunchInSettings | None = None
     scene_overrides: list[SceneFramingOverride] | None = Field(default=None, max_length=500)
+
+
+class RenderTransitionStyleSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    piece_junction: Literal["cut", "flash", "zoom"] | None = None
+    flash_opacity: float | None = Field(default=None, ge=0.1, le=1.0, allow_inf_nan=False)
+    flash_seconds: float | None = Field(default=None, ge=0.04, le=0.4, allow_inf_nan=False)
 
 
 class RenderSettingsPatch(BaseModel):
@@ -290,6 +354,7 @@ class RenderSettingsPatch(BaseModel):
     headline: RenderHeadlineSettingsPatch | None = None
     subtitles: RenderSubtitleSettings | None = None
     template: RenderTemplateSettingsPatch | None = None
+    transitions: RenderTransitionStyleSettingsPatch | None = None
 
 
 class RenderEngineInfo(BaseModel):
@@ -426,6 +491,12 @@ class RenderOverlayInfo(BaseModel):
     headline_animation_entrance: str | None = None
     headline_animation_exit: str | None = None
     headline_animation_duration_seconds: float | None = None
+    caption_style: str | None = None
+    caption_emphasis_count: int = Field(default=0, ge=0)
+    headline_persistent: bool = False
+    requested_piece_junction: str | None = None
+    piece_junction: str | None = None
+    junction_times: list[float] = Field(default_factory=list)
     sidecar_srt: bool = False
     artifact_path: str | None = None
     artifact_sha256: str | None = None
@@ -490,6 +561,7 @@ class RenderDocument(BaseModel):
     output_size_bytes: int = Field(ge=1)
     subtitles_path: str | None = None
     subtitles_sha256: str | None = None
+    purpose: Literal["export", "draft"] = "export"
     timeline_duration_seconds: float = Field(ge=0)
     segment_count: int = Field(ge=1)
     transitions: list[RenderTransitionInfo] = Field(default_factory=list)

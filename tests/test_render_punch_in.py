@@ -432,7 +432,9 @@ def test_punch_in_disabled_render_shows_the_stripe_unchanged(tmp_path: Path) -> 
     )
     settings = RenderSettings(
         encoder="libx264", canvas=RenderCanvasSettings(width=320, height=320, fps=30),
-        framing=RenderFramingSettings(mode="vertical_crop"),
+        framing=RenderFramingSettings(
+            mode="vertical_crop", punch_in=RenderPunchInSettings(enabled=False),
+        ),
         captions=RenderCaptionSettings(enabled=False, font_family="Montserrat", font_size=28,
                                        words_per_cue=3, outline=False),
         headline=RenderHeadlineSettings(enabled=False, font_family="Montserrat", font_size=36,

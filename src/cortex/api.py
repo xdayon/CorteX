@@ -1829,6 +1829,8 @@ def create_app(config: CortexConfig | None = None):
 
     from cortex.review_api import create_review_router
     app.include_router(create_review_router(router_prefix, domain, jobs))
+    from cortex.overlay_api import create_overlay_router
+    app.include_router(create_overlay_router(router_prefix, settings, domain))
 
     if settings.app.studio_dir is not None:
         from cortex.studio import mount_studio

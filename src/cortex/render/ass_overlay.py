@@ -17,9 +17,10 @@ from pathlib import Path
 from PIL import ImageFont
 
 from cortex.render.captions import CaptionCue, TimelineWord
+from cortex.render.safe_zones import CAPTION_ACTION_MARGIN_PX, canvas_key, right_actions_limit
 from cortex.render.schemas import RenderCaptionSettings, RenderHeadlineSettings, RenderSettings
 
-ASS_GENERATOR_VERSION = 4
+ASS_GENERATOR_VERSION = 5
 
 # B2: mapeamento explícito família+peso -> arquivo de fonte. Nunca substituímos
 # silenciosamente uma família desconhecida por outra.
@@ -100,6 +101,21 @@ def _measure_cached(font_path: str, text: str, size: int) -> float:
 
 def _measure(font_path: Path, text: str, size: float) -> float:
     return _measure_cached(str(font_path), text, max(1, round(size)))
+
+
+@lru_cache(maxsize=4096)
+def _advance_cached(font_path: str, text: str, size: int) -> float:
+    return float(ImageFont.truetype(font_path, size).getlength(text))
+
+
+def _advance(font_path: Path, text: str, size: float) -> float:
+    """Largura de avanço (inclui espaços), a que o libass usa para centralizar."""
+    return _advance_cached(str(font_path), text, max(1, round(size)))
+
+
+def allowed_font_files() -> frozenset[str]:
+    """Única lista de arquivos de fonte empacotados que a API pode servir."""
+    return frozenset({*_CAPTION_FONT_FILES.values(), *_HEADLINE_FONT_FILES.values()})
 
 
 @dataclass(frozen=True)
@@ -193,16 +209,20 @@ class CaptionPage:
     font_size: float
 
 
+_EMPHASIS_SCALE = 1.12
+
+
 def paginate_cue(
     cue: CaptionCue, *, max_width: float, font_size: float, gap: float,
-    font_path: Path, uppercase: bool,
+    font_path: Path, uppercase: bool, emphasis: frozenset[int] = frozenset(),
 ) -> list[CaptionPage]:
     words = cue.words
     if not words:
         return []
 
     def word_width(word: TimelineWord, size: float) -> float:
-        return _measure(font_path, _display_text(word.text, uppercase), size)
+        factor = _EMPHASIS_SCALE if word.index in emphasis else 1.0
+        return _measure(font_path, _display_text(word.text, uppercase), size) * factor
 
     longest = max(word_width(word, font_size) for word in words)
     effective = min(font_size, font_size * max_width / max(1.0, longest))
@@ -238,79 +258,289 @@ def paginate_cue(
 # cresce) por \\t dentro do próprio evento, com tempos relativos ao início da
 # página. Emitir um evento por palavra fazia o libass recriar a legenda a cada
 # troca, e o \\fad de cada evento a fazia piscar.
-_POP_MS = 80
+#
+# Sem \\r: ele devolveria o \\fs do estilo e desfaria o tamanho reduzido da
+# página. Cada palavra declara o estado completo (cor, escala, alfa) e o
+# separador volta a escala para 100% para que o espaço tenha largura fixa.
+_POP_PEAK = 116
+_POP_SETTLE = 108
+_POP_EMPHASIS_PEAK = 122
+_POP_EMPHASIS_SETTLE = 116
+_POP_PEAK_MS = 70
+_POP_SETTLE_MS = 140
+_REVEAL_MS = 60
+_EMPHASIS_PERCENT = 112
+
+
+def _scale_tags(percent: int) -> str:
+    return f"\\fscx{percent}\\fscy{percent}"
 
 
 def _caption_text(
-    page: CaptionPage, caption: RenderCaptionSettings, *, karaoke: bool, pop: bool,
+    page: CaptionPage, caption: RenderCaptionSettings, *, emphasis: frozenset[int],
 ) -> str:
+    style = caption.style
     highlight = hex_to_ass_bgr(caption.karaoke_color)
     base = hex_to_ass_bgr(caption.text_color)
+    emphasis_color = hex_to_ass_bgr(caption.emphasis_color)
+    box_text = hex_to_ass_bgr(caption.box_text_color)
+    colour_on = caption.karaoke or style == "box"
+    outline_px = 3 if caption.outline else 0
+    shadow_px = 4 if caption.shadow else 0
+
+    def timing(word: TimelineWord) -> tuple[int, int] | None:
+        start = max(page.start, word.start)
+        end = min(page.end, word.end)
+        if end <= start:
+            return None
+        on = max(0, round((start - page.start) * 1000))
+        return on, max(on + 1, round((end - page.start) * 1000))
+
+    needs_tags = any(
+        word.index in emphasis or (
+            timing(word) is not None and (colour_on or style in {"pop", "word_reveal"})
+        )
+        for line in page.lines for word in line
+    )
+    uses_scale = style == "pop" or any(
+        word.index in emphasis for line in page.lines for word in line
+    )
     line_strings = []
     for line in page.lines:
         parts = []
-        for word in line:
+        for position, word in enumerate(line):
             display = escape_ass_text(_display_text(word.text, caption.uppercase))
-            start = max(page.start, word.start)
-            end = min(page.end, word.end)
-            if not karaoke or end <= start:
+            if not needs_tags:
                 parts.append(display)
                 continue
-            on = max(0, round((start - page.start) * 1000))
-            off = max(on + 1, round((end - page.start) * 1000))
-            tags = f"\\c{base}\\t({on},{on + 1},\\c{highlight})\\t({off},{off + 1},\\c{base})"
-            if pop:
-                grow = min(on + _POP_MS, off)
-                tags += (
-                    f"\\t({on},{grow},\\fscx108\\fscy108)"
-                    f"\\t({off},{off + 1},\\fscx100\\fscy100)"
-                )
-            parts.append(f"{{{tags}}}{display}{{\\r}}")
-        line_strings.append(" ".join(parts))
+            emphasized = word.index in emphasis
+            rest_color = emphasis_color if emphasized else base
+            rest_scale = _EMPHASIS_PERCENT if emphasized else 100
+            window = timing(word)
+            tags = f"\\c{rest_color}"
+            if uses_scale:
+                tags += _scale_tags(rest_scale)
+            if style == "word_reveal":
+                tags += "\\alpha&HFF&" if window is not None else "\\alpha&H00&"
+            if window is not None:
+                on, off = window
+                if style == "word_reveal":
+                    tags += f"\\t({on},{on + _REVEAL_MS},\\alpha&H00&)"
+                if colour_on:
+                    if style == "box":
+                        active = box_text
+                    else:
+                        active = emphasis_color if emphasized else highlight
+                    on_tags, off_tags = f"\\c{active}", f"\\c{rest_color}"
+                    if style == "box":
+                        # Texto escuro sobre a caixa não leva contorno nem sombra.
+                        on_tags += "\\bord0\\shad0"
+                        off_tags += f"\\bord{outline_px}\\shad{shadow_px}"
+                    tags += f"\\t({on},{on + 1},{on_tags})\\t({off},{off + 1},{off_tags})"
+                if style == "pop":
+                    peak = _POP_EMPHASIS_PEAK if emphasized else _POP_PEAK
+                    settle = _POP_EMPHASIS_SETTLE if emphasized else _POP_SETTLE
+                    grow_end = min(on + _POP_PEAK_MS, off)
+                    settle_end = min(on + _POP_SETTLE_MS, off)
+                    tags += f"\\t({on},{grow_end},{_scale_tags(peak)})"
+                    if settle_end > grow_end:
+                        tags += f"\\t({grow_end},{settle_end},{_scale_tags(settle)})"
+                    tags += f"\\t({off},{off + 1},{_scale_tags(rest_scale)})"
+            separator = f"{{{_scale_tags(100)}}} " if position and uses_scale else (" " if position else "")
+            parts.append(f"{separator}{{{tags}}}{display}")
+        line_strings.append("".join(parts) if needs_tags else " ".join(parts))
     return "\\N".join(line_strings)
+
+
+# O libass empilha as linhas pela altura win da fonte (ascent+descent) e apoia a
+# linha de base em win_ascent; medido em frames reais (ver tests). A altura das
+# maiúsculas da Montserrat é ~0,70 em.
+_CAP_HEIGHT_EM = 0.70
+
+
+def _caption_span(width: int, height: int, font_size: int, position_y: float) -> tuple[float, float]:
+    scale = min(width / 1080, height / 1920)
+    box_height = (font_size * 2 * 1.14 + 8 + 20) * scale
+    center_y = height * position_y
+    return center_y - box_height / 2, center_y + box_height / 2
+
+
+def caption_max_width(
+    *, width: int, height: int, font_size: int, position_y: float,
+) -> tuple[float, bool]:
+    """Largura máxima de linha da legenda e se ela foi estreitada para fugir da
+    coluna de ações da plataforma. Única função usada pelo layout e pelo bbox."""
+    scale = min(width / 1080, height / 1920)
+    default = width * 0.85 - 100 * scale
+    top, bottom = _caption_span(width, height, font_size, position_y)
+    limit = right_actions_limit(canvas_key(width, height), top / height, bottom / height)
+    if limit is None:
+        return default, False
+    narrowed = 2 * (limit - 0.5) * width - CAPTION_ACTION_MARGIN_PX
+    if narrowed >= default:
+        return default, False
+    return narrowed, True
 
 
 def caption_bbox(*, width: int, height: int, font_size: int, position_y: float) -> tuple[float, float, float, float]:
     """Bounding box do bloco de legenda, nas mesmas coordenadas usadas para
-    posicionar o Dialogue no .ass (usado pelo QA de safe zone, B6)."""
+    posicionar o Dialogue no .ass (usado pelo QA de safe zone, B6). A largura é
+    a efetivamente usada pelo layout: a caixa histórica de 85% da tela, ou a
+    largura estreitada que evita a coluna de ações."""
+    top, bottom = _caption_span(width, height, font_size, position_y)
+    max_width, narrowed = caption_max_width(
+        width=width, height=height, font_size=font_size, position_y=position_y,
+    )
+    half = max_width / 2 if narrowed else width * 0.425
+    return (width / 2 - half, top, width / 2 + half, bottom)
+
+
+def caption_pages(
+    caption: RenderCaptionSettings, cues: list[CaptionCue], width: int, height: int, font: ResolvedFont,
+) -> list[CaptionPage]:
+    """Paginação única, compartilhada pelo .ass e pela API de prévia."""
     scale = min(width / 1080, height / 1920)
-    box_height = (font_size * 2 * 1.14 + 8 + 20) * scale
-    center_y = height * position_y
-    return (width * 0.075, center_y - box_height / 2, width * 0.925, center_y + box_height / 2)
+    max_width, _narrowed = caption_max_width(
+        width=width, height=height, font_size=caption.font_size, position_y=caption.position_y,
+    )
+    emphasis = frozenset(caption.emphasis_word_indices)
+    pages: list[CaptionPage] = []
+    for cue in cues:
+        pages.extend(paginate_cue(
+            cue, max_width=max_width, font_size=caption.font_size * scale, gap=14 * scale,
+            font_path=font.path, uppercase=caption.uppercase, emphasis=emphasis,
+        ))
+    return pages
+
+
+@dataclass(frozen=True)
+class _WordSlot:
+    word: TimelineWord
+    x0: float
+    x1: float
+    baseline: float
+    em: float
+
+
+def _layout_page(
+    page: CaptionPage, caption: RenderCaptionSettings, font: ResolvedFont,
+    center_x: float, center_y: float, emphasis: frozenset[int],
+) -> list[_WordSlot]:
+    """Posição de cada palavra, reproduzindo o bloco \\an5 centralizado do libass."""
+    em = page.font_size
+    space = _advance(font.path, " ", em)
+    line_scales = [
+        max((_EMPHASIS_SCALE if word.index in emphasis else 1.0) for word in line)
+        for line in page.lines
+    ]
+    metrics = font_metrics(font.path)
+    heights = [metrics.ass_scale * em * factor for factor in line_scales]
+    top = center_y - sum(heights) / 2
+    slots: list[_WordSlot] = []
+    for line, factor, height in zip(page.lines, line_scales, heights):
+        widths = [
+            _advance(font.path, _display_text(word.text, caption.uppercase), em)
+            * (_EMPHASIS_SCALE if word.index in emphasis else 1.0)
+            for word in line
+        ]
+        total = sum(widths) + space * (len(line) - 1)
+        cursor = center_x - total / 2
+        baseline = top + metrics.win_ascent * em * factor
+        for word, width in zip(line, widths):
+            slots.append(_WordSlot(
+                word, cursor, cursor + width, baseline,
+                em * (_EMPHASIS_SCALE if word.index in emphasis else 1.0),
+            ))
+            cursor += width + space
+        top += height
+    return slots
+
+
+def _rounded_rect_path(width: float, height: float, radius: float) -> str:
+    r = min(radius, width / 2, height / 2)
+    k = 0.5523 * r
+    return (
+        f"m {r:.1f} 0 l {width - r:.1f} 0 "
+        f"b {width - r + k:.1f} 0 {width:.1f} {r - k:.1f} {width:.1f} {r:.1f} "
+        f"l {width:.1f} {height - r:.1f} "
+        f"b {width:.1f} {height - r + k:.1f} {width - r + k:.1f} {height:.1f} {width - r:.1f} {height:.1f} "
+        f"l {r:.1f} {height:.1f} "
+        f"b {r - k:.1f} {height:.1f} 0 {height - r + k:.1f} 0 {height - r:.1f} "
+        f"l 0 {r:.1f} "
+        f"b 0 {r - k:.1f} {r - k:.1f} 0 {r:.1f} 0"
+    )
+
+
+def _box_events(
+    page: CaptionPage, caption: RenderCaptionSettings, font: ResolvedFont,
+    center_x: float, center_y: float, emphasis: frozenset[int],
+) -> list[str]:
+    events = []
+    for slot in _layout_page(page, caption, font, center_x, center_y, emphasis):
+        start = max(page.start, slot.word.start)
+        end = min(page.end, slot.word.end)
+        if end <= start:
+            continue
+        pad_x, pad_top, pad_bottom = 0.22 * slot.em, 0.20 * slot.em, 0.26 * slot.em
+        left = slot.x0 - pad_x
+        top = slot.baseline - _CAP_HEIGHT_EM * slot.em - pad_top
+        width = slot.x1 - slot.x0 + 2 * pad_x
+        height = _CAP_HEIGHT_EM * slot.em + pad_top + pad_bottom
+        colour = hex_to_ass_bgr(
+            caption.emphasis_color if slot.word.index in emphasis else caption.karaoke_color
+        )
+        events.append(_dialogue(
+            "Box", start, end,
+            f"{{\\an7\\pos({left:.2f},{top:.2f})\\1c{colour}\\p1}}"
+            f"{_rounded_rect_path(width, height, 0.30 * slot.em)}{{\\p0}}",
+            layer=1,
+        ))
+    return events
 
 
 def _build_caption_events(
-    caption: RenderCaptionSettings, cues: list[CaptionCue], width: int, height: int, font: ResolvedFont,
+    caption: RenderCaptionSettings, pages: list[CaptionPage], width: int, height: int, font: ResolvedFont,
 ) -> tuple[list[str], tuple[float, float, float, float]]:
-    scale = min(width / 1080, height / 1920)
-    max_width = width * 0.85 - 100 * scale
-    base_font_size = caption.font_size * scale
-    gap = 14 * scale
     center_x = width / 2
     center_y = height * caption.position_y
     fade_ms = round(caption.animation.duration_seconds * 1000) if caption.animation.style == "fade" else 0
-    pop = caption.animation.style == "pop"
+    emphasis = frozenset(caption.emphasis_word_indices)
+    text_layer = 2 if caption.style == "box" else 0
     events: list[str] = []
-    for cue in cues:
-        pages = paginate_cue(
-            cue, max_width=max_width, font_size=base_font_size, gap=gap,
-            font_path=font.path, uppercase=caption.uppercase,
+    for page in pages:
+        tags = (
+            f"{{\\q2\\an5\\pos({center_x:.2f},{center_y:.2f})"
+            f"\\fs{ass_font_size(page.font_size, font.path)}}}"
         )
-        for page in pages:
-            tags = (
-                f"{{\\q2\\an5\\pos({center_x:.2f},{center_y:.2f})"
-                f"\\fs{ass_font_size(page.font_size, font.path)}}}"
-            )
-            if fade_ms:
-                # Como no Remotion: só entrada. Um fade de saída faria a legenda
-                # apagar e acender entre páginas consecutivas.
-                tags += f"{{\\fad({fade_ms},0)}}"
-            text = _caption_text(page, caption, karaoke=caption.karaoke, pop=pop)
-            events.append(_dialogue("Caption", page.start, page.end, tags + text))
+        if fade_ms:
+            # Como no Remotion: só entrada. Um fade de saída faria a legenda
+            # apagar e acender entre páginas consecutivas.
+            tags += f"{{\\fad({fade_ms},0)}}"
+        text = _caption_text(page, caption, emphasis=emphasis)
+        events.append(_dialogue("Caption", page.start, page.end, tags + text, layer=text_layer))
+        if caption.style == "box":
+            events.extend(_box_events(page, caption, font, center_x, center_y, emphasis))
     bbox = caption_bbox(
         width=width, height=height, font_size=caption.font_size, position_y=caption.position_y,
     )
     return events, bbox
+
+
+def _flash_events(settings: RenderSettings, junctions: list[float], width: int, height: int) -> list[str]:
+    transitions = settings.transitions
+    if transitions.piece_junction != "flash":
+        return []
+    alpha = round((1 - transitions.flash_opacity) * 255)
+    fade_ms = round(transitions.flash_seconds * 1000)
+    path = f"m 0 0 l {width} 0 l {width} {height} l 0 {height}"
+    return [
+        _dialogue(
+            "Flash", moment, moment + transitions.flash_seconds,
+            f"{{\\an7\\pos(0,0)\\alpha&H{alpha:02X}&\\fad(0,{fade_ms})\\p1}}{path}{{\\p0}}",
+            layer=9,
+        )
+        for moment in junctions
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +596,9 @@ def _build_headline_events(
     animation = headline.animation
     anim_ms = min(round(animation.duration_seconds * 1000), duration_ms)
     fad_in = anim_ms if animation.entrance == "fade" else 0
-    fad_out = anim_ms if animation.exit == "fade" else 0
+    # Headline persistente fica até o fim da timeline: sem animação de saída.
+    exit_kind = "none" if headline.persistent else animation.exit
+    fad_out = anim_ms if exit_kind == "fade" else 0
     slide_offset = 28 * scale
 
     # Porta do CSS da prévia: line-height 1.65em, faixa = área de conteúdo
@@ -381,7 +613,7 @@ def _build_headline_events(
         tags = f"\\pos({x:.2f},{y:.2f})"
         if animation.entrance == "slide":
             tags = f"\\move({x:.2f},{y + slide_offset:.2f},{x:.2f},{y:.2f},0,{anim_ms})"
-        elif animation.exit == "slide":
+        elif exit_kind == "slide":
             tags = (
                 f"\\move({x:.2f},{y:.2f},{x:.2f},{y + slide_offset:.2f},"
                 f"{max(0, duration_ms - anim_ms)},{duration_ms})"
@@ -443,7 +675,7 @@ def _style_line(
 def _render_document(
     width: int, height: int, settings: RenderSettings,
     caption_font: ResolvedFont | None, headline_font: ResolvedFont | None,
-    caption_events: list[str], headline_events: list[str],
+    caption_events: list[str], headline_events: list[str], flash_events: list[str],
 ) -> str:
     scale = min(width / 1080, height / 1920)
     lines = [
@@ -464,6 +696,13 @@ def _render_document(
             outline=hex_to_ass(caption.outline_color), back=hex_to_ass(caption.shadow_color),
             border_style=1, outline_px=(3 if caption.outline else 0), shadow_px=(4 if caption.shadow else 0),
         ))
+        if caption.style == "box":
+            lines.append(_style_line(
+                "Box", caption_font.ass_name, 1,
+                primary=hex_to_ass(caption.karaoke_color), secondary=hex_to_ass(caption.karaoke_color),
+                outline=hex_to_ass(caption.karaoke_color), back=hex_to_ass(caption.karaoke_color),
+                border_style=1, outline_px=0, shadow_px=0, alignment=7,
+            ))
     headline = settings.headline
     if headline_font is not None:
         lines.append(_style_line(
@@ -489,12 +728,19 @@ def _render_document(
             primary="&H00FFFFFF", secondary="&H00FFFFFF", outline="&H00FFFFFF", back="&H00FFFFFF",
             border_style=1, outline_px=0, shadow_px=0, alignment=5,
         ))
+    if flash_events:
+        lines.append(_style_line(
+            "Flash", caption_font.ass_name if caption_font else "Montserrat", 1,
+            primary="&H00FFFFFF", secondary="&H00FFFFFF", outline="&H00FFFFFF", back="&H00FFFFFF",
+            border_style=1, outline_px=0, shadow_px=0, alignment=7,
+        ))
     lines.extend([
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ])
     lines.extend(caption_events)
     lines.extend(headline_events)
+    lines.extend(flash_events)
     return "\n".join(lines) + "\n"
 
 
@@ -507,10 +753,14 @@ class AssOverlayResult:
     headline_font: ResolvedFont | None
     caption_bbox: tuple[float, float, float, float] | None
     headline_bbox: tuple[float, float, float, float] | None
+    pages: tuple[CaptionPage, ...] = ()
+    junctions: tuple[float, ...] = ()
+    flash_count: int = 0
 
 
 def build_ass_overlay(
     settings: RenderSettings, cues: list[CaptionCue], *, fonts_dir: Path, headline_text: str | None,
+    junctions: tuple[float, ...] = (),
 ) -> AssOverlayResult:
     width, height = settings.canvas.width, settings.canvas.height
     caption_font: ResolvedFont | None = None
@@ -519,13 +769,15 @@ def build_ass_overlay(
     headline_events: list[str] = []
     caption_bbox_value: tuple[float, float, float, float] | None = None
     headline_bbox_value: tuple[float, float, float, float] | None = None
+    pages: list[CaptionPage] = []
 
     if settings.captions.enabled and cues:
         caption_font = resolve_caption_font(
             fonts_dir, settings.captions.font_family, settings.captions.font_weight
         )
+        pages = caption_pages(settings.captions, cues, width, height, caption_font)
         caption_events, caption_bbox_value = _build_caption_events(
-            settings.captions, cues, width, height, caption_font
+            settings.captions, pages, width, height, caption_font
         )
     if settings.headline.enabled and headline_text:
         headline_font = resolve_headline_font(fonts_dir, settings.headline.font_family)
@@ -533,17 +785,23 @@ def build_ass_overlay(
             settings.headline, headline_text, width, height, headline_font
         )
 
+    flash_events = _flash_events(settings, list(junctions), width, height)
     ass_text = _render_document(
-        width, height, settings, caption_font, headline_font, caption_events, headline_events,
+        width, height, settings, caption_font, headline_font,
+        caption_events, headline_events, flash_events,
     )
     payload = {
         "generator_version": ASS_GENERATOR_VERSION,
         "settings": settings.model_dump(mode="json"),
         "headline_text": headline_text,
+        "junctions": list(junctions),
         "cues": [
             {
                 "start": cue.start, "end": cue.end, "text": cue.text,
-                "words": [{"start": w.start, "end": w.end, "text": w.text} for w in cue.words],
+                "words": [
+                    {"start": w.start, "end": w.end, "text": w.text, "index": w.index}
+                    for w in cue.words
+                ],
             }
             for cue in cues
         ],
@@ -557,4 +815,5 @@ def build_ass_overlay(
         ass_text=ass_text, content_hash=content_hash, generator_version=ASS_GENERATOR_VERSION,
         caption_font=caption_font, headline_font=headline_font,
         caption_bbox=caption_bbox_value, headline_bbox=headline_bbox_value,
+        pages=tuple(pages), junctions=tuple(junctions), flash_count=len(flash_events),
     )
