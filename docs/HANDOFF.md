@@ -51,7 +51,9 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 
 ## Congelado (não evoluir)
 
-Diarização pyannote: 6 de 7 diarizações falharam. Mantida até a decisão do usuário.
+Diarização pyannote (opcional, CPU): ambiente verificado em 14/out (pyannote 4.0.6 +
+torch CPU respondem); as 6 falhas de 12/set foram antes da correção do interpretador
+do venv. Custa ~a duração do episódio em CPU. Mantida até a decisão do usuário.
 (Análise de câmera/identidade/falante e reações emprestadas já foram removidas.)
 
 ## Operação
