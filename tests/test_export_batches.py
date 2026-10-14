@@ -217,3 +217,36 @@ def test_confirmed_voice_reaches_render_job_payload(tmp_path: Path, monkeypatch)
     for _ in range(3):
         process_next(config, jobs, domain, FakeTranscriptionEngine())
     assert seen and seen[0]["confirmed_voice"] == voice
+
+
+def test_export_items_carry_emphasis_headline_and_minimum(tmp_path: Path) -> None:
+    config, _domain, project, run = _workflow(
+        tmp_path, brief={"maximum_seconds": 120, "minimum_seconds": 40},
+    )
+    client = TestClient(create_app(config))
+    clips = [
+        {"key": "a", "rank": 1, "title": "A", "headline": "Sugestão A", "start_second": 0,
+         "end_second": 60, "pacing": "dynamic", "emphasis_word_indices": [3, 4]},
+        {"key": "b", "rank": 2, "title": "B", "headline": "Sugestão B", "start_second": 70,
+         "end_second": 130, "pacing": "dynamic", "emphasis_word_indices": [9]},
+    ]
+    revision = client.post(
+        f"/api/v1/projects/{project.id}/runs/{run.id}/revisions",
+        json={
+            "selection_artifact_id": run.artifacts["suggestion"], "selected_clips": clips,
+            "render_settings": _settings(), "headlines": {"a": "Minha manchete"},
+            "emphasis": {"b": []},
+        },
+    ).json()
+    batch = client.post(
+        f"/api/v1/projects/{project.id}/runs/{run.id}/export-batches",
+        json={"revision_id": revision["id"], "idempotency_key": "emphasis"},
+    ).json()
+    settings = {item["clip_key"]: item["render_settings"] for item in batch["items"]}
+    assert settings["a"]["captions"]["emphasis_word_indices"] == [3, 4]
+    assert settings["b"]["captions"]["emphasis_word_indices"] == []
+    assert settings["a"]["headline"]["text"] == "Minha manchete"
+    plan_job = next(job for job in JobStore(config.paths.database).list() if job.type == "edit_plan")
+    assert plan_job.payload["tighten"] is True
+    assert plan_job.payload["minimum_seconds"] == 40
+    assert plan_job.payload["headline"] == "Minha manchete"

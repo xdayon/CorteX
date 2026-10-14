@@ -131,6 +131,9 @@ class ClipRevision(BaseModel):
     render_settings: dict[str, Any]
     caption_edits: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     headlines: dict[str, str] = Field(default_factory=dict)
+    # Caption emphasis per clip key (transcript word indices); absent keys use
+    # the AI suggestion stored in the clip.
+    emphasis: dict[str, list[int]] = Field(default_factory=dict)
     visual_artifacts: dict[str, str] = Field(default_factory=dict)
     interviewer_identity_id: str | None = None
     reuse_reactions: bool = False

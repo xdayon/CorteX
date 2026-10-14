@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -24,7 +24,7 @@ from cortex.domain.store import (
     StageArtifactNotFoundError,
     WorkflowRunNotFoundError,
 )
-from cortex.export_batches import advance_export_batch
+from cortex.export_batches import advance_export_batch, export_plan_payload
 from cortex.jobs import InvalidJobTransitionError, JobNotFoundError, JobStore
 from cortex.render.schemas import RenderSettings
 from cortex.schemas import JobCreate, JobType
@@ -55,6 +55,7 @@ class ClipRevisionCreate(BaseModel):
     render_settings: RenderSettings
     caption_edits: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     headlines: dict[str, str] = Field(default_factory=dict)
+    emphasis: dict[str, list[Annotated[int, Field(ge=0)]]] = Field(default_factory=dict)
     visual_artifacts: dict[str, str] = Field(default_factory=dict)
     interviewer_identity_id: str | None = None
     reuse_reactions: bool = False
@@ -78,20 +79,6 @@ def _run_and_revision(domain: DomainStore, project_id: str, run_id: str, revisio
     if run.project_id != project_id or revision.workflow_run_id != run.id:
         raise HTTPException(status_code=404, detail="Processamento ou revisão não encontrado")
     return run, revision
-
-
-def _plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> dict[str, Any]:
-    return {
-        "transcript_artifact_id": run.artifacts["transcript"],
-        "analysis_artifact_id": run.artifacts["analysis"],
-        "scene_index_artifact_id": revision.visual_artifacts.get("scene"),
-        "start": item.clip["start_second"], "end": item.clip["end_second"],
-        "profile": item.clip["pacing"],
-        "maximum_seconds": run.brief.get("maximum_seconds"),
-        "approximate_edl": item.clip.get("approximate_edl"),
-        "confirmed_voice": run.brief.get("confirmed_voice"),
-        "export_batch_id": batch.id, "export_item_id": item.id,
-    }
 
 
 def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> APIRouter:
@@ -119,6 +106,7 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
             selected_clips=[clip.model_dump(mode="json") for clip in request.selected_clips],
             render_settings=request.render_settings.model_dump(mode="json"),
             caption_edits=request.caption_edits, headlines=request.headlines,
+            emphasis=request.emphasis,
             visual_artifacts=request.visual_artifacts,
             interviewer_identity_id=request.interviewer_identity_id,
             reuse_reactions=request.reuse_reactions,
@@ -151,6 +139,10 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
             key = str(clip["key"])
             effective = json.loads(json.dumps(revision.render_settings))
             effective.setdefault("captions", {})["corrections"] = revision.caption_edits.get(key, [])
+            effective["captions"]["emphasis_word_indices"] = (
+                revision.emphasis[key] if key in revision.emphasis
+                else list(clip.get("emphasis_word_indices") or [])
+            )
             effective.setdefault("headline", {})["text"] = (
                 revision.headlines.get(key, "").strip() or clip.get("headline") or clip["title"]
             )
@@ -195,7 +187,7 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
                 first = items[0]
                 job = jobs.create(JobCreate(
                     type=JobType.EDIT_PLAN, project_id=project_id,
-                    payload=_plan_payload(batch, first, revision, run),
+                    payload=export_plan_payload(batch, first, revision, run),
                     idempotency_key=f"export:{batch.id}:item:{first.id}:plan:1",
                 ), connection=connection)
                 domain.update_export_item(
@@ -311,7 +303,7 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
             first = domain.get_export_item(failed[0].id, connection=connection)
             job = jobs.create(JobCreate(
                 type=JobType.EDIT_PLAN, project_id=project_id,
-                payload=_plan_payload(batch, first, revision, run),
+                payload=export_plan_payload(batch, first, revision, run),
                 idempotency_key=f"export:{batch.id}:item:{first.id}:plan:{first.attempt}",
             ), connection=connection)
             domain.update_export_item(

@@ -25,6 +25,26 @@ def _item_headline(item: ExportItem) -> str | None:
     return text or item.clip.get("headline") or None
 
 
+def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> dict:
+    """The one edit-plan payload for export items (first item, next items and
+    retries alike), so every exported clip gets the same refine/duration rules."""
+    return {
+        "transcript_artifact_id": run.artifacts["transcript"],
+        "analysis_artifact_id": run.artifacts["analysis"],
+        "scene_index_artifact_id": revision.visual_artifacts.get("scene"),
+        "start": item.clip["start_second"], "end": item.clip["end_second"],
+        "profile": item.clip["pacing"],
+        "maximum_seconds": run.brief.get("maximum_seconds"),
+        "minimum_seconds": run.brief.get("minimum_seconds"),
+        "headline": _item_headline(item),
+        "approximate_edl": item.clip.get("approximate_edl"),
+        "confirmed_voice": run.brief.get("confirmed_voice"),
+        "primary_subject": run.brief.get("primary_subject"),
+        "tighten": True,
+        "export_batch_id": batch.id, "export_item_id": item.id,
+    }
+
+
 def _queue_export_plan(
     *, batch: ExportBatch, item: ExportItem, revision, run, jobs: JobStore,
     domain: DomainStore, connection,
@@ -32,21 +52,7 @@ def _queue_export_plan(
     job = jobs.create(JobCreate(
         type=JobType.EDIT_PLAN,
         project_id=batch.project_id,
-        payload={
-            "transcript_artifact_id": run.artifacts["transcript"],
-            "analysis_artifact_id": run.artifacts["analysis"],
-            "scene_index_artifact_id": revision.visual_artifacts.get("scene"),
-            "start": item.clip["start_second"], "end": item.clip["end_second"],
-            "profile": item.clip["pacing"],
-            "maximum_seconds": run.brief.get("maximum_seconds"),
-            "minimum_seconds": run.brief.get("minimum_seconds"),
-            "headline": _item_headline(item),
-            "approximate_edl": item.clip.get("approximate_edl"),
-            "confirmed_voice": run.brief.get("confirmed_voice"),
-            "primary_subject": run.brief.get("primary_subject"),
-            "tighten": True,
-            "export_batch_id": batch.id, "export_item_id": item.id,
-        },
+        payload=export_plan_payload(batch, item, revision, run),
         idempotency_key=f"export:{batch.id}:item:{item.id}:plan:{item.attempt}",
     ), connection=connection)
     domain.update_export_item(
