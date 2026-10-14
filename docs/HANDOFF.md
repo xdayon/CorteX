@@ -1,91 +1,70 @@
 # CorteX — estado atual para agentes
 
-Atualizado em 2026-09-13. Este arquivo substitui o handoff histórico de 1.648
-linhas, preservado em [history](history/HANDOFF_FABLE_5-before-2026-09-10.md).
-O histórico não é uma fila de instruções. Não relê-lo inteiro por padrão.
+Atualizado em 2026-10-14. Histórico anterior em
+[history](history/HANDOFF_FABLE_5-before-2026-09-10.md) — não é fila de instruções.
 
 ## Produto e restrições
 
-Editor pessoal Dayon News/HiTechX para podcasts em um master único do YouTube
-ou arquivo local. Foco nas falas de Dayon, com contexto real dos participantes.
-Sem fontes ISO, PodCLI, Claude, API editorial paga ou fallback silencioso.
-Claude Code CLI (`claude -p`, Sonnet, esforço baixo) na assinatura Pro é o único editorial;
-sem créditos de API. O CLI usa o login OAuth e rede;
-transcrição/render e mídia ficam locais. Modelo do agente de desenvolvimento e
-modelo editorial são configurações independentes.
+Editor pessoal de cortes virais para @dayon.news (Instagram Reels/TikTok) a partir de
+entrevistas em que Dayon é convidado: master único do YouTube ou arquivo local,
+processamento local, revisão humana, publicação manual. Estilo: corte seco e
+dinâmico, legenda animada ligada, manchete, rosto grande com o estúdio visível;
+sem barra de progresso no vídeo, capa nunca como 1º frame. Modelos, esforços,
+durações e caminhos ficam em `config/cortex.yaml` (fonte da verdade).
 
-## Implementado
+## Pipeline atual
 
-- Biblioteca por ID YouTube, título/canal/capa via oEmbed, arquivar/restaurar e busca.
-  Oito links Dayon cadastrados no host; entradas antigas arquivadas, mídia preservada.
-- Ingestão YouTube/upload, WAV/transcript e
-  análise de áudio cacheados, seleção Claude validada por schema, jobs SQLite.
-- Workflow encadeia transcrição/análise/sugestão até revisão. `ClipRevision` e
-  `ExportBatch` persistem a edição; um POST idempotente mantém o lote no worker,
-  com retomada, cancelamento e retry de falhas independentes do navegador.
-- Prévia curta real, MP4/SRT/manifests, QA técnico, captions compartilhadas com
-  Remotion, correções por palavra, karaoke/pop, headline manual por corte.
-- Jornada em três etapas com Biblioteca separada, prévia lateral, headline/legenda
-  compartilhadas com export, posição vertical do vídeo e detalhes de tarefas reais.
-  Remotion reporta frames; FFmpeg reporta tempo codificado, ambos com IO limitado.
-- Revisões têm autosave versionado no servidor e restauração por run; draft no
-  navegador permanece como fallback para indisponibilidade temporária da API.
-- Quadro inteiro com Gaussian blur é default. Automático visual é opcional e
-  analisa apenas intervalos escolhidos + margem. Correção por cena e zoom estático;
-  cenas abertas/duplas são preservadas (auto v1.2). Reação de outro instante exige
-  opção explícita e entrevistador confirmado; um único ângulo não confirma identidade.
-- Render busca janela física antes de decodificar, preserva clocks absolutos da
-  EDL e inclui J/L-cut/reaction. Janela única ainda inclui gaps internos.
-- Pyannote community-1 CPU opcional em `.venv-diarization`; voz confirmada na
-  biblioteca participa da seleção. Voz/rosto ainda não têm identidade unificada.
-- Legenda medida em até duas linhas com área fixa; zoom mantém a janela do vídeo.
-  Teto do brief validado na seleção e na EDL; finais antecipados ficam explícitos.
-  Conclusão visual mantém 100%. Evidência e regressões em
-  [export-corrections](evidence/2026-09-11-export-corrections.md).
-- Planner consome `approximate_edl`, resolve fronteiras físicas deterministicamente
-  e revalida predominância da voz após limite, J/L-cut e clamp físico final.
-- Cache visual incremental reaproveita amostras por fonte/FFmpeg/largura/timestamp;
-  identidade usa busca indexada, amostragem limitada e cancelamento cooperativo.
-- `uv.lock`, telemetria de duração de jobs/render e manutenção segura de backup,
-  restauração e cache foram acrescentados. Tunnel/Access não foi implementado.
-- Endpoints de revisão/export estão em `review_api.py`; transições duráveis de
-  lote estão em `export_batches.py`, fora do API/worker monolíticos.
-- Build Studio servido pela API no loopback, serviço Linux e atalho instaláveis.
-  Não existe deploy Cloudflare; arquitetura escolhida: local + Tunnel/Access.
+```text
+YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
+→ analisa áudio → seleção Claude (1 chamada/episódio, transcrição em cache)
+→ revisão humana → editor de exportação (refino Claude por corte, prévia draft)
+→ plano de edição determinístico (corte seco, muletas, peças) → render libass
+→ QA técnico (loudness, sync, faixas do Reels/TikTok) → MP4/SRT/manifest
+```
 
-## Máquina e evidência
+## Entregue em 14/out (detalhes nas evidências)
 
-Dell G7, GTX 1060 Max-Q 6 GB/Pascal. Smoke host em 2026-09-10 confirmou
-H.264 NVENC e CTranslate2 CUDA com `int8`, `int8_float32`, `float32`.
-Não solicitar float16 nem AV1 NVENC. Encode NVENC não prova decode NVDEC.
-Amostra real de diarização: 90s → 6 turnos/2 vozes em 84,54s CPU; não comprova
-acurácia nem atribui Dayon. Token local habilitado; UI pede confirmação humana.
-Adapter 4.0.6 corrigido para batch gerador, contadores NumPy e Python do venv
-(não resolver symlink). Gate API/worker/cache em `tests/test_diarization_e2e.py`. Episódio inteiro e
-qualidade editorial continuam exigindo benchmark específico; confira
-[evidência](evidence/2026-09-10-architecture-review.md).
+- IA: seleção v4, refino v2, provider robusto e cache estável —
+  [ai-selection-v4](evidence/2026-10-14-ai-selection-v4.md), [AI_PROVIDERS](AI_PROVIDERS.md).
+- Visual: estilos de legenda, destaque por palavra, flash/zoom nas junções, zoom e
+  foco no fundo desfocado, zoom alternado padrão, faixas seguras v2, API de prévia
+  (`overlay-preview`, `overlay-fonts`, `safe-zones`, `render-defaults`), render draft.
+- Correções: primeiro item do lote sem refino, cortes abaixo do mínimo, hash de
+  cache instável, fallback batched silencioso, script de atualização inseguro.
+- Host: NVENC indisponível (FFmpeg 8.1.3 × driver 580 da GTX 1060) →
+  `render.encoder: libx264`; [host-nvenc](evidence/2026-10-14-host-nvenc.md).
+  Render real de 61 s: 43 s com x264, QA aprovado.
 
-## Próximo gate
+## Em andamento / próximo gate
 
-Os ajustes de UX estão em [evidência](evidence/2026-09-11-studio-experience.md).
-Trabalhar diretamente na `main`, conforme pedido do usuário. Branches anteriores
-devem permanecer integradas; não restaurar versões antigas de frontend/pipeline.
-O próximo gate aberto é medir o P1 do [ROADMAP](ROADMAP.md): benchmark comparável
-de decoder/cache/overlay e, só com evidência, consolidar decoder compartilhado.
-Também seguem abertos corpus real de voz e extração gradual de routers/UI. Antes de editar, leia
-`AGENTS.md`, este arquivo e somente o contrato do gate escolhido. O mapa está em
-[ARCHITECTURE](ARCHITECTURE.md); justificativas em [REVIEW_DAYON_NEWS](REVIEW_DAYON_NEWS.md).
+1. Editor de exportação com prévia real (draft + JASSUB) e revisão de legenda estilo
+   CapCut — Fase 1 do [ROADMAP](ROADMAP.md).
+2. Remover Remotion depois do editor (app, renderer opcional, configs, testes).
+3. Fase 2: foco automático por rostos por cena; então apagar os modos congelados
+   (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de câmera, reações).
+
+## Congelado (não evoluir)
+
+Análise de câmera/identidade/falante, reações emprestadas e diarização pyannote:
+6 de 7 diarizações falharam e os modos automáticos não foram usados nos últimos 80
+renders. Mantidos só até o foco por rostos substituí-los.
+
+## Operação
+
+- `systemctl --user restart cortex.service` só sem job ativo; agentes pedem ao
+  usuário. `./scripts/update_and_verify.sh` faz deps, Claude CLI, testes, build e
+  reinício seguro.
+- Validação real sem tocar o banco: copiar `data/cortex.sqlite3` para o scratchpad e
+  sobrescrever `paths.database`/`paths.projects_dir` (ver scripts em evidências).
+- Máquina: Dell G7, GTX 1060 Max-Q 6 GB, driver 580 (último para Pascal).
 
 ## Verificação
 
 ```bash
 .venv/bin/pytest -q
-(cd apps/web && npm test && npm run build)
-(cd apps/remotion && npm run build)
 .venv/bin/ruff check src/cortex scripts tests
+(cd apps/web && npm test && npm run build)
 git diff --check
 ```
 
-No host com browser configurado: `CORTEX_RUN_REMOTION_E2E=1 .venv/bin/pytest -q`.
-GPU: `./scripts/check_gpu.sh`. Não executar episódio inteiro como smoke test.
-Nunca apagar `data/`, `.env`, autenticação Claude ou worktree não commitado.
+Nunca apagar `data/`, `.env`, autenticação do Claude ou trabalho não commitado.

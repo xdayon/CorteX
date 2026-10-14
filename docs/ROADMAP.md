@@ -1,106 +1,62 @@
 # CorteX — contrato de entrega
 
-Atualizado em 2026-09-13. Objetivo: editor pessoal confiável para Dayon News,
-master único, processamento local, revisão humana e publicação manual.
-Gates anteriores estão em [history](history/ROADMAP-before-2026-09-10.md).
+Atualizado em 2026-10-14 (auditoria completa). Objetivo: o melhor editor pessoal de
+cortes virais para @dayon.news — master único, processamento local, revisão humana
+e publicação manual. Itens entregues antes de 14/out estão em
+[history](history/ROADMAP-before-2026-09-10.md) e no git log.
 
-## Entregue nesta consolidação
+## Fase 0 — base confiável (entregue em 14/out)
 
-- [x] preservar limpeza anterior de PodCLI e motores standalone;
-- [x] headline manual por corte, fallback para sugestão IA e mesmo texto na prévia/export;
-- [x] autosave versionado de ajustes no navegador e isolamento entre episódios;
-- [x] seek de entrada no render com clocks A/V, reactions, cache e regressão por pixels/áudio;
-- [x] verificar voz no envelope e nos trechos editoriais sem duplicar tempos;
-- [x] versões frontend fixadas, dependências de build fora das dependências runtime;
-- [x] Studio compilado na API local, serviço Linux e atalho;
-- [x] mapa de arquitetura, handoff curto, diagnóstico e proposta Cloudflare;
-- [x] preservar Gaussian blur real, captions karaoke/pop, correção textual e QA existentes.
+- [x] Provider Claude robusto: binário resolvido em ordem fixa, cache só com o que
+  muda o resultado, Codex mantido como alternativa explícita.
+- [x] Seleção v4: transcrição no system prompt cacheável, 3 manchetes, destaques,
+  muletas iniciais removidas, `piece` na EDL; medido em episódio real.
+- [x] Refino v2 para todos os cortes exportados (inclusive compostos), com piso de
+  duração; primeiro item do lote voltou a ser refinado (payload único).
+- [x] Transcrição registra modo batched efetivo; hotwords (config + por episódio).
+- [x] `update_and_verify.sh` seguro; instalador do serviço sem Codex obrigatório.
+- [x] NVENC: pré-checagem explícita; host em libx264 (ver evidência host-nvenc).
 
-## Ajustes da experiência — 2026-09-11
+## Fase 1 — edição viral e prévia fiel (em andamento)
 
-- [x] Biblioteca separada da jornada Novo episódio → Escolher cortes → Exportar.
-- [x] Episódio canônico pelo ID YouTube, título/canal/capa persistidos por oEmbed.
-- [x] Arquivar/restaurar entradas sem excluir mídia; busca por título/canal.
-- [x] Catálogo sem polling ocioso; consulta periódica somente com jobs ativos.
-- [x] Ajustes à esquerda e prévia fixa à direita; headline antes da exportação.
-- [x] Headline compartilhada entre preview/export com espaço para acentos e descendentes.
-- [x] Posição vertical do vídeo sobre Gaussian blur, separada da posição da legenda.
-- [x] Progresso real de frames Remotion e tempo codificado FFmpeg; detalhes das tarefas.
-- [x] Automático preserva planos abertos/duplos; diagnóstico explícito de identidade incerta.
-- [x] Legenda em até duas linhas e área fixa compartilhada; zoom preserva janela do vídeo.
-- [x] Teto de duração validado na seleção e na EDL; conclusão visual mostra 100%.
-- [x] Habilitação de voz explícita na UI; adapter CPU validado em amostra real de 90s.
+- [x] Estilos de legenda clássico/palavra a palavra/pop/caixa e destaque por palavra.
+- [x] Manchete persistente opcional; flash/zoom nas junções entre peças.
+- [x] Fundo desfocado com zoom e foco horizontal; zoom alternado nos cortes (padrão).
+- [x] Faixas seguras v2 (interface do Reels/TikTok) na QA e largura da legenda.
+- [x] API de prévia: `.ass` idêntico ao do render, fontes, faixas, render draft.
+- [ ] Editor de exportação: prévia real (draft + JASSUB), abas Legenda/Estilo/
+  Enquadramento/Manchete, revisão de legenda estilo CapCut, layout 390 px.
+- [ ] Remover Remotion (app, renderer opcional, configs e testes) após o editor.
 
-Regressões e limites: [export-corrections](evidence/2026-09-11-export-corrections.md).
+Aceite: prévia e export lado a lado sem diferença visível de legenda/manchete;
+corte real exportado pelo lote com refino, destaques e manchete editada.
 
-## P0 — confiabilidade antes de mais efeitos
+## Fase 2 — enquadramento e gancho
 
-### 1. Edição e export batch no servidor
+- [ ] Foco automático por cena: rostos (YuNet) em poucas amostras por cena do corte;
+  todos os rostos cabem → centraliza; senão → lado do Dayon. Um recorte estático por
+  cena, motivo registrado. Substitui `speaker_auto`/`speaker_face`/`face_static_crop`.
+- [ ] Depois de validado: apagar modos congelados (planos de câmera, reações
+  emprestadas, identidade) e decidir sobre a diarização (hoje 6 falhas em 7).
+- [ ] Teaser de abertura opcional (repete 2–4 s do payoff; nunca muda o sentido).
+- [ ] Capa JPG separada opcional (frame escolhido + manchete); nunca no 1º frame.
 
-- [x] `ClipRevision` salva seleção, headline, correções, framing e settings no SQLite.
-- [x] `ExportBatch`/itens com snapshot de revisão, estado e resultados persistidos.
-- [x] Um POST idempotente agenda o lote completo; worker serial cria EDL/render.
-- [x] UI apenas observa; GET restaura estado em outro navegador.
-- [x] Job seguinte + avanço de workflow na mesma transação ou reconciliados por chave.
-- [x] Cancelar item/lote, repetir somente falhas e preservar outputs concluídos.
+## Fase 3 — aprendizado e acesso
 
-Aceite: enviar três cortes, fechar a aba no primeiro, comprovar os três artefatos;
-reiniciar worker durante o segundo sem duplicar resultados nem perder seleção.
-Reabrir em outra sessão restaura revisão, falhas e downloads. Teste determinístico
-com interrupção entre job e avanço; um teste host de render curto por lote.
+- [ ] Registrar cortes publicados e métricas (retenção 3 s, compartilhamentos,
+  salvamentos) e usar exemplos aprovados/reprovados no prompt de seleção.
+- [ ] Imagens ilustrativas opcionais: IA sugere momentos e termos; imagem enviada
+  pelo usuário ou de acervo livre (ex.: Wikimedia), com licença registrada.
+- [ ] Acesso remoto privado (Tailscale ou Cloudflare Tunnel + Access), com o PC
+  ligado fazendo o processamento; uploads grandes exigem envio em partes no Cloudflare.
 
-### 2. Foco confiável em Dayon
+## Regras de aceite
 
-- [ ] Benchmark CPU de diarização com 2 e 3 vozes em amostra curta revisada.
-- [ ] Modelo/pesos com revisão fixa no hash; timeout configurável e erro limitado útil.
-- [ ] Transcript atribuído por palavra com unknown/overlap explícitos; correção manual.
-- [ ] Confirmar vínculo voz ↔ rosto por episódio, sem inferir falante pelo rosto visível.
-- [x] Integrar intenção de `approximate_edl` ao planner com fronteiras determinísticas.
-- [x] Revalidar predominância no plano de áudio final; mostrar motivo quando insuficiente.
+Feature concluída = artefato real persistido + verificação automatizada focada.
+Mudança visual = frames reais do FFmpeg inspecionados e Studio checado em 390 px e
+desktop. Não afirmar ganho de desempenho sem medida persistida em `docs/evidence/`.
 
-Aceite: corpus com Dayon, convidado e entrevistador; revisar atribuição manualmente;
-montagem em que envelope favorece Dayon mas EDL não favorece deve ser rejeitada.
-Nenhuma associação automática entre vozes de episódios diferentes.
-
-## P1 — custo previsível e revisão profissional
-
-- [ ] Medir e reduzir composição tipográfica: overlays restritos às regiões úteis,
-  estados estáticos reutilizados e paridade de animação/QA. Lote real anterior:
-  ~129min entre criação dos renders e persistência de overlays; não atribuir todo
-  esse tempo ao encode NVENC nem confundir identificação de voz com visão.
-- [ ] Decoder compartilhado por janela para faces/qualidade/speaker, frames reduzidos.
-- [x] Cache incremental de amostras; acrescentar corte reaproveita timestamps já decodificados.
-- [x] Limitar amostras de identidade, eliminar materialização O(n²) e permitir cancelamento.
-- [ ] Timeout/cancelamento para todas as leituras de decoder e subprocessos de QA.
-- [ ] Medir retenção de VRAM do Whisper; descarregar antes de render se o benefício for real.
-- [x] Preview rápido usando fonte real e headline; manter prévia final fiel opcional.
-- [ ] Paginar galeria e acrescentar filtros por tema e indicador de QA (capa/canal/busca já disponíveis).
-- [x] Catálogo resumido sem reconciliar todos os projetos/manifests a cada polling.
-- [ ] Exportar presets Dayon News; ajustes por corte e globais com alcance evidente.
-
-Aceite de desempenho: mesmo trecho no começo e no fim de um episódio, mediana de
-três runs, cache frio/quente, tempo por estágio, amostras, RAM/VRAM e engines.
-Separar transcrição integral (necessária para seleção global) de visão restrita.
-Não afirmar speedup sem benchmark comparável persistido.
-
-## P2 — organização e acesso privado
-
-- [ ] Extrair routers de API por domínio preservando contratos; handlers de worker separados.
-- [ ] Extrair telas/hooks UI e pacote visual compartilhado, com paridade de preview/export.
-- [x] Lock backend reproduzível (`uv.lock`), sem atualização simultânea da stack CUDA.
-- [x] Backup/restauração de SQLite e artefatos; retenção de cache com prévia do que será removido.
-- [ ] Tunnel/Access após definir hostname/identidade; autenticação cobre API/mídia/SSE.
-- [ ] E2E de acesso autorizado/negado, expiração, reconexão e upload/Range no proxy.
-
-## Avaliação editorial contínua
-
-- [ ] Curar exemplos aprovados/reprovados do perfil; qualidade técnica e editorial separadas.
-- [ ] Comparar contexto, começo/final de fala, lipsync, naturalidade de câmera e legibilidade.
-- [ ] Acompanhar retenção/compartilhamentos reais; score da IA não é promessa de viralização.
-- [ ] Matriz com estúdios distintos, fontes YouTube/local, 1/10/25 cortes e pausa/retomada.
-
-## Fora de escopo atual
+## Fora de escopo
 
 Câmeras ISO ausentes do master, multicam sintético, clonagem de voz, editor genérico
-com dezenas de tracks, plataformas de conteúdo/analytics, cloud GPU paga, APIs
-editoriais alternativas, auto-publicação em redes sociais e reconstruir PodCLI.
+de dezenas de tracks, auto-publicação, cloud GPU paga, APIs editoriais pagas.

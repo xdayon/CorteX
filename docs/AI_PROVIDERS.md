@@ -1,55 +1,53 @@
 # Provedor editorial
 
-O único motor editorial configurado é o **Claude Code CLI**, autenticado pelo
-login OAuth da assinatura Claude (Pro) do usuário. Não há API key, créditos de API
-nem fallback entre provedores: uma falha (inclusive limite de uso da assinatura)
-fica visível no job. `ai.provider: codex_cli` continua disponível apenas como
-escolha explícita.
+O CorteX usa um único provider editorial, escolhido em `ai.provider`
+(`config/cortex.yaml`, fonte da verdade para modelo e esforço):
 
-```yaml
-ai:
-  provider: claude_code_cli
-  claude_binary: /home/dx/.local/share/fnm/node-versions/v26.8.1/installation/bin/claude
-  claude_model: sonnet
-  claude_effort: low
-  tighten_enabled: true
-  timeout_seconds: 300
-```
+- `claude_code_cli` (ativo): Claude Code CLI no login da assinatura Claude.
+- `codex_cli` (configurado, desativado): Codex CLI no login ChatGPT.
 
-`claude_binary` é absoluto porque o `claude` do PATH interativo aponta para um
-diretório temporário do fnm, ausente no serviço systemd.
+Trocar de assinatura é trocar esse valor. Não há fallback entre providers, API
+key nem créditos de API; falhas (inclusive limite de uso) ficam visíveis no job.
 
-## Chamada
-
-Cada chamada roda em diretório temporário vazio, com o prompt no stdin:
+## Chamada ao Claude
 
 ```text
-claude -p --output-format json --json-schema <schema> --model sonnet --effort low
-  --tools "" --strict-mcp-config --setting-sources "" --disable-slash-commands
-  --system-prompt <fixo curto> --no-session-persistence
+claude -p --output-format json --json-schema <schema> --model <ai.claude_model>
+  --effort <esforço> --tools "" --strict-mcp-config --setting-sources ""
+  --disable-slash-commands --no-session-persistence
+  --system-prompt-file <template + transcrição>   # contexto estável, em cache
+  (stdin: pedido curto — brief, regras, rodada)
 ```
 
-- Nunca usar `--bare`: esse modo só aceita `ANTHROPIC_API_KEY` (cobrança por API).
-- O ambiente do processo remove `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-  `ANTHROPIC_BASE_URL` e as flags Bedrock/Vertex, garantindo o uso da assinatura.
-- Sem ferramentas, MCP, skills ou settings: overhead medido de ~1,2 mil tokens.
-- A resposta vem em `structured_output` e é validada de novo pelo schema local.
+- Nunca `--bare` (só aceita API key). O ambiente remove `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` e flags Bedrock/Vertex; as chamadas
+  auxiliares do CLI usam o mesmo modelo (nada de Haiku).
+- Binário: `ai.claude_binary` resolvido em ordem fixa (configurado/PATH,
+  `~/.local/bin`, alias default do fnm, extensão do editor); o caminho e a versão
+  usados ficam na provenance. Atualizações do npm já deixaram o binário do fnm sem
+  o executável nativo; a resolução evita esse ponto único de falha.
+- Toda resposta é revalidada pelo schema local. Provenance: provider, modelo,
+  esforço, versão, resolução do binário, duração e uso de tokens.
 
-A provenance registra provider, modelo efetivo, esforço, versão do CLI, duração,
-`auth_mode: claude_subscription_cli` e uso de tokens (entrada, cache, saída).
+## Etapas
 
-## Etapas e custo
+1. **Seleção** (`prompts/clip_selection.pt-BR.md`, `clip_selection.v4.schema.json`):
+   uma chamada por episódio. A transcrição vai como `#id [início] texto` (rótulo
+   D/O só na troca de voz) dentro do system prompt em arquivo, junto com o
+   template; o pedido (brief, regras) vai na mensagem. Assim a segunda rodada e
+   regerações do mesmo episódio leem a transcrição do cache. Saída: título, 3
+   manchetes, peças, palavras de destaque, nota, motivo, avisos. O backend valida
+   duração/sobreposição, remove muletas do começo, mapeia destaques para índices
+   de palavra e marca `piece` na EDL. Medido (76 min, Sonnet 5.5 medium): 58 mil
+   tokens de entrada, 29 mil de saída, ~200 s, 25/25 cortes válidos.
+2. **Refino** (`prompts/clip_tighten.pt-BR.md`): uma chamada pequena por corte
+   escolhido para exportar (o editor de exportação e o lote compartilham o mesmo
+   cache). Frases só dentro das peças, nunca une peças, recebe a manchete da IA e
+   o alvo de duração; esforço `ai.refine_effort`. Pula sem chamada quando o corte
+   já está no mínimo; rejeita (com motivo, em cache) se cortar demais ou ficar
+   abaixo do mínimo. Medido: ~4 mil tokens de entrada + 1,4 mil de saída, 12 s.
 
-1. **Seleção** (`prompts/clip_selection.pt-BR.md`, schema v2): uma chamada por
-   episódio, cacheada pelo hash de transcript/prompt/schema/config. A transcrição
-   segue como `[segundo] texto`, sem hesitações puras nem análise de áudio. A saída
-   é enxuta (janela, título, headline, citações, nota 1–10, motivo). O backend
-   valida duração/sobreposição, ajusta a janela aos limites dos segmentos e
-   normaliza para o formato interno de clipe. Episódio de ~1h40 ≈ 30 mil tokens.
-2. **Enxugar** (`prompts/clip_tighten.pt-BR.md`): só para cortes exportados.
-   As palavras do corte viram frases numeradas; a IA devolve `keep_ids` e o
-   planner determinístico corta nas fronteiras dessas frases. ≈ 3–5 mil tokens
-   por corte, cacheado. Prévias nunca chamam a IA.
-
-A IA propõe janelas e frases; fronteiras físicas, pausas e muletas continuam
-resolvidas pelo motor determinístico de edição.
+As chaves de cache contêm só o que muda o resultado (provider, modelo, esforço,
+prompt, schema e entradas): caminho do binário e timeout não invalidam caches.
+A IA propõe trechos e textos; fronteiras físicas, pausas e muletas continuam no
+motor determinístico de edição.
