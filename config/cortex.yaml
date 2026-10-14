@@ -44,12 +44,12 @@ render:
   true_peak_limit_dbfs: -1.0
   captions_enabled: true
   caption_font: Montserrat
-  caption_font_size: 32
+  caption_font_size: 56
   caption_max_words: 5
   headline_enabled: true
   headline_font: Montserrat
-  headline_font_size: 42
-  headline_duration_seconds: 3.4
+  headline_font_size: 48
+  headline_duration_seconds: 4.0
   visual_quality_enabled: true
   black_threshold_seconds: 0.5
   freeze_threshold_seconds: 1.5

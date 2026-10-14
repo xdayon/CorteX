@@ -158,7 +158,7 @@ class RenderCaptionSettings(BaseModel):
     uppercase: bool = True
     font_size: int = Field(ge=12, le=120)
     words_per_cue: int = Field(ge=1, le=12)
-    position_y: float = Field(default=0.78, ge=0.1, le=0.9)
+    position_y: float = Field(default=0.64, ge=0.1, le=0.9)
     outline: bool
     shadow: bool = True
     karaoke: bool = True
