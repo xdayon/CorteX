@@ -27,7 +27,7 @@ from conftest import FakeTranscriptionEngine
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CLIP_SELECTION_SCHEMA = json.loads(
-    (_PROJECT_ROOT / "prompts/clip_selection.v4.schema.json").read_text(encoding="utf-8")
+    (_PROJECT_ROOT / "prompts/clip_selection.v5.schema.json").read_text(encoding="utf-8")
 )
 
 
@@ -42,6 +42,7 @@ def _valid_clip(**overrides) -> dict:
         "emphasis": [],
         "score": 7,
         "reason": "Corte autocontido com abertura, desenvolvimento e conclusão claros.",
+        "teaser_ids": [],
         "warnings": [],
     }
     clip.update(overrides)
@@ -375,7 +376,7 @@ def test_suggestion_service_rejects_score_out_of_range():
         assert clips[0]["title"] == "Válido"
 
 
-def test_clip_selection_v4_schema_direct_validation():
+def test_clip_selection_v5_schema_direct_validation():
     valid_document = {"selection_notes": "notas", "clips": [_valid_clip()]}
     errors = list(Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(valid_document))
     assert errors == []

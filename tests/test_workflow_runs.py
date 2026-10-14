@@ -44,6 +44,7 @@ class _SuggestionProvider:
             "emphasis": [],
             "score": 8,
             "reason": "Trecho autocontido.",
+            "teaser_ids": [],
             "warnings": [],
         }
         return SuggestionProviderResult(

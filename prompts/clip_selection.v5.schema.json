@@ -1,0 +1,86 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "selection_notes",
+    "clips"
+  ],
+  "properties": {
+    "selection_notes": {
+      "type": "string"
+    },
+    "clips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "headlines",
+          "pieces",
+          "emphasis",
+          "score",
+          "reason",
+          "teaser_ids",
+          "warnings"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "headlines": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "pieces": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "from_id",
+                "to_id"
+              ],
+              "properties": {
+                "from_id": {
+                  "type": "integer"
+                },
+                "to_id": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "emphasis": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "score": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "teaser_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

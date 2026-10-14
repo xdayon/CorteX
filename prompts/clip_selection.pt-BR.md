@@ -68,6 +68,15 @@ pensamento).
 - Nenhuma peça se sobrepõe a `brief.exclude_ranges` (em segundos), e cortes
   diferentes não compartilham trechos.
 
+## Teaser de abertura
+
+Por corte, escolha opcionalmente 1 ou 2 linhas **consecutivas** (`teaser_ids`),
+dentro de uma única peça do corte, com 1,5 a 4 s no total: a frase mais
+marcante (em geral do payoff) que funciona fora de contexto e cria
+curiosidade. Ela será repetida nos primeiros segundos como prévia. Nunca
+escolha frase que engane sem o contexto ou que dependa de negação ou condição
+que ficou fora dela. Devolva `[]` quando nada servir.
+
 ## Duração
 
 Cada linha traz o `[início]` em segundos. Uma peça dura do início do
@@ -103,6 +112,7 @@ realmente faltar material, e explique em `selection_notes`.
   legenda. Nunca escolha muletas, artigos ou palavras genéricas.
 - `score`: de 1 a 10, calibrado em relação aos outros cortes **deste**
   episódio. Use a escala inteira; no máximo 3 cortes com nota 9 ou mais.
+- `teaser_ids`: IDs das linhas do teaser (ver "Teaser de abertura") ou `[]`.
 - `reason`: 1–2 frases sobre por que o corte funciona; em cortes com várias
   peças, diga por que as junções preservam o sentido.
 - `warnings`: incertezas (pode ser vazia): atribuição de fala duvidosa,

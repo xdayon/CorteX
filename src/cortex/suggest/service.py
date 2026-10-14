@@ -30,6 +30,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _HESITATION_PATTERN = re.compile(r"\b(?:eh|ah|hum|h[ãa]|uh|hmm)\b", re.IGNORECASE)
 _MAX_PIECES = 15
 _MIN_PIECE_SECONDS = 0.6
+_TEASER_MIN_SECONDS = 1.2
+_TEASER_MAX_SECONDS = 4.5
 
 
 class SuggestionJobCancelled(RuntimeError):
@@ -291,6 +293,37 @@ def _piece_warnings(clip: dict[str, Any], pieces: list[dict[str, Any]]) -> list[
     return warnings
 
 
+def _resolve_teaser(
+    raw_ids: Any, pieces: list[dict[str, Any]], units: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Map the model's teaser line ids to a timed phrase inside one piece. An
+    invalid teaser is dropped with a warning, never repaired."""
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return None, []
+    ids = raw_ids
+    if any(isinstance(item, bool) or not isinstance(item, int) for item in ids):
+        return None, ["Teaser descartado: IDs de linha inválidos."]
+    if any(not 0 <= item < len(units) for item in ids):
+        return None, ["Teaser descartado: IDs de linha fora da transcrição."]
+    if any(later != earlier + 1 for earlier, later in zip(ids, ids[1:])):
+        return None, ["Teaser descartado: as linhas não são consecutivas."]
+    if not any(piece["from_id"] <= ids[0] and ids[-1] <= piece["to_id"] for piece in pieces):
+        return None, ["Teaser descartado: as linhas não estão dentro de uma única peça do corte."]
+    start, end = float(units[ids[0]]["start"]), float(units[ids[-1]]["end"])
+    if not any(
+        start >= float(piece["start"]) - 0.01 and end <= float(piece["end"]) + 0.01
+        for piece in pieces
+    ):
+        return None, ["Teaser descartado: o trecho ficou fora das peças após o ajuste do início."]
+    duration = end - start
+    if duration < _TEASER_MIN_SECONDS:
+        return None, [f"Teaser descartado: {duration:.1f}s é curto demais (mínimo {_TEASER_MIN_SECONDS}s)."]
+    if duration > _TEASER_MAX_SECONDS:
+        return None, [f"Teaser descartado: {duration:.1f}s é longo demais (máximo {_TEASER_MAX_SECONDS}s)."]
+    text = " ".join(str(unit["text"]) for unit in units[ids[0]:ids[-1] + 1])
+    return {"start": start, "end": end, "text": text}, []
+
+
 def _headline_options(clip: dict[str, Any]) -> list[str]:
     raw = clip.get("headlines")
     if not isinstance(raw, list):
@@ -334,11 +367,12 @@ def _resolve_clip(
     if duration_seconds is not None and pieces[-1]["end"] > float(duration_seconds):
         return None
     emphasis = [str(item) for item in (clip.get("emphasis") or []) if str(item).strip()][:6]
+    teaser, teaser_warnings = _resolve_teaser(clip.get("teaser_ids"), pieces, units)
     return {
-        **clip, "pieces": pieces, "headlines": headlines, "emphasis": emphasis,
+        **clip, "pieces": pieces, "teaser": teaser, "headlines": headlines, "emphasis": emphasis,
         "emphasis_word_indices": _emphasis_indices(emphasis, pieces, words) if words else [],
         "lead_trimmed": " ".join(lead_trimmed),
-        "warnings": [*(clip.get("warnings") or []), *dropped, *_piece_warnings(clip, pieces)],
+        "warnings": [*(clip.get("warnings") or []), *dropped, *_piece_warnings(clip, pieces), *teaser_warnings],
     }
 
 
@@ -379,6 +413,7 @@ def _normalize_clip(rank: int, clip: dict[str, Any], brief: dict[str, Any]) -> d
         "emphasis": list(clip.get("emphasis") or []),
         "emphasis_word_indices": list(clip.get("emphasis_word_indices") or []),
         "lead_trimmed": clip.get("lead_trimmed") or "",
+        "teaser": clip.get("teaser"),
         "start_second": start,
         "end_second": end,
         "estimated_duration": sum(float(p["end"]) - float(p["start"]) for p in pieces),
@@ -630,7 +665,7 @@ class SuggestionService:
                 ) from exc
         transcript = json.loads(Path(transcript_artifact.path).read_text(encoding="utf-8"))
         prompt_path = _PROJECT_ROOT / "prompts/clip_selection.pt-BR.md"
-        schema_path = _PROJECT_ROOT / "prompts/clip_selection.v4.schema.json"
+        schema_path = _PROJECT_ROOT / "prompts/clip_selection.v5.schema.json"
         prompt_template = prompt_path.read_text(encoding="utf-8")
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         units = _selection_units(

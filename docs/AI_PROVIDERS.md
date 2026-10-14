@@ -31,7 +31,7 @@ claude -p --output-format json --json-schema <schema> --model <ai.claude_model>
 
 ## Etapas
 
-1. **Seleção** (`prompts/clip_selection.pt-BR.md`, `clip_selection.v4.schema.json`):
+1. **Seleção** (`prompts/clip_selection.pt-BR.md`, `clip_selection.v5.schema.json`):
    uma chamada por episódio. A transcrição vai como `#id [início] texto` (rótulo
    D/O só na troca de voz) dentro do system prompt em arquivo, junto com o
    template; o pedido (brief, regras) vai na mensagem. Assim a segunda rodada e

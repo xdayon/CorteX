@@ -40,7 +40,7 @@ def _clip(pieces, **overrides) -> dict:
     clip = {
         "title": "T", "headlines": ["H", "H2", "H3"],
         "pieces": [{"from_id": a, "to_id": b} for a, b in pieces], "emphasis": [],
-        "score": 7, "reason": "r", "warnings": [],
+        "score": 7, "reason": "r", "teaser_ids": [], "warnings": [],
     }
     clip.update(overrides)
     return clip
@@ -346,3 +346,41 @@ def test_cache_identity_ignores_binary_path_and_timeout(tmp_path):
     assert provider_identity(config) == before
     config.ai.claude_effort = "high"
     assert provider_identity(config) != before
+
+
+def _teaser_clip(ids, size=2.0):
+    units = _units(40, size)
+    clips = _validate([_clip([(0, 9), (20, 29)], teaser_ids=ids)], units=units)["clips"]
+    return clips[0]
+
+
+def test_teaser_maps_consecutive_lines_inside_one_piece():
+    clip = _teaser_clip([25, 26])
+    assert clip["teaser"] == {"start": 50.0, "end": 54.0, "text": "linha 25. linha 26."}
+    assert clip["warnings"] == []
+
+
+def test_teaser_empty_ids_is_none_without_warning():
+    clip = _teaser_clip([])
+    assert clip["teaser"] is None
+    assert clip["warnings"] == []
+
+
+@pytest.mark.parametrize("ids,reason", [
+    ([25, 27], "não são consecutivas"),
+    ([9, 10], "única peça"),
+    ([100], "fora da transcrição"),
+    ([-1], "fora da transcrição"),
+    (["a"], "inválidos"),
+    ([20, 21, 22], "longo demais"),
+])
+def test_teaser_invalid_is_dropped_with_warning(ids, reason):
+    clip = _teaser_clip(ids)
+    assert clip["teaser"] is None
+    assert any(w.startswith("Teaser descartado") and reason in w for w in clip["warnings"])
+
+
+def test_teaser_too_short_is_dropped_with_warning():
+    clip = _teaser_clip([25], size=1.0)
+    assert clip["teaser"] is None
+    assert any("curto demais" in w for w in clip["warnings"])
