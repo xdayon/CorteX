@@ -102,7 +102,9 @@
 - Full local update (deps, Claude CLI, tests, UI build, safe restart):
   `./scripts/update_and_verify.sh`
 - Visual changes: inspect real FFmpeg frames (PNG) of the affected styles, and
-  the Studio at 390 px and desktop width, before calling them done.
+  the Studio at 390 px and desktop width, before calling them done:
+  `.venv/bin/python scripts/studio_visual_check.py --url <studio url>` (real Google
+  Chrome via Flatpak; test-only Chromium builds cannot decode the H.264 previews).
 - GPU/NVENC host gate: `./scripts/check_gpu.sh` with host permission when needed.
 - Do not claim CUDA, NVENC, browser, or end-to-end media validation from a sandbox
   result that cannot access the relevant host resource.
