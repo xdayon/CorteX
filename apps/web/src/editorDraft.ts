@@ -1,4 +1,5 @@
 import type { CaptionCorrection, RenderSettings } from './api';
+import { normalizeSettings } from './editor/settings';
 
 export type VisualArtifacts = { scene: string; face: string; speaker: string; camera: string; quality: string; identity: string };
 export type EditorDraft = {
@@ -7,6 +8,7 @@ export type EditorDraft = {
   selectedKeys: string[];
   captionEdits: Record<string, CaptionCorrection[]>;
   headlines: Record<string, string>;
+  emphasisEdits: Record<string, number[]>;
   focusedKey: string;
   rendered: Array<{title: string; url: string; subtitles: string}>;
   reuseReactions: boolean;
@@ -14,16 +16,13 @@ export type EditorDraft = {
 };
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
-const matches = (value: unknown, template: unknown): boolean => {
-  if (object(template)) return object(value) && Object.entries(template).every(([key, item]) => matches(value[key], item));
-  return typeof value === typeof template && (typeof value !== 'number' || Number.isFinite(value));
-};
-function validSettings(value: unknown, defaults: RenderSettings): value is RenderSettings {
-  if (!matches(value, defaults)) return false;
-  const s = value as RenderSettings;
+function validSettings(s: RenderSettings): boolean {
   return s.schema_version === 1 && ['h264_nvenc', 'libx264'].includes(s.encoder)
     && [1080, 1920].includes(s.canvas.width) && [1080, 1920].includes(s.canvas.height) && s.canvas.fps === 30
-    && ['vertical_crop', 'blurred_background', 'face_static_crop', 'speaker_auto', 'speaker_face'].includes(s.framing.mode)
+    && ['vertical_crop', 'blurred_background'].includes(s.framing.mode)
+    && s.framing.zoom >= 1 && s.framing.zoom <= 3.2 && s.framing.focus_x >= 0 && s.framing.focus_x <= 1
+    && ['classic', 'word_reveal', 'pop', 'box'].includes(s.captions.style)
+    && ['cut', 'flash', 'zoom'].includes(s.transitions.piece_junction)
     && [undefined, null, 'left', 'right'].includes(s.framing.primary_side)
     && Number.isFinite(s.framing.position_y ?? .5) && (s.framing.position_y ?? .5) >= 0 && (s.framing.position_y ?? .5) <= 1
     && Number.isInteger(s.captions.words_per_cue) && s.captions.words_per_cue >= 1 && s.captions.words_per_cue <= 12
@@ -34,8 +33,11 @@ function validSettings(value: unknown, defaults: RenderSettings): value is Rende
       object(item) && Number.isInteger(item.scene_index) && Number(item.scene_index) >= 0 && ['left', 'right', 'full'].includes(String(item.target)))));
 }
 
-export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: string[], defaults: RenderSettings): EditorDraft {
-  const empty: EditorDraft = {schema_version: 1, settings: defaults, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, focusedKey: '', rendered: [], reuseReactions: false, visualArtifacts: null};
+export type RestoredDraft = EditorDraft & {legacyFraming: boolean};
+
+export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: string[], defaults: RenderSettings, encoder?: RenderSettings['encoder'] | null): RestoredDraft {
+  const fallback = normalizeSettings(defaults, defaults, encoder).settings;
+  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, emphasisEdits: {}, focusedKey: '', rendered: [], reuseReactions: false, visualArtifacts: null};
   try {
     const saved: unknown = JSON.parse(storage.getItem(`cortex-draft:${runKey}`) || 'null');
     if (saved !== null && (!object(saved) || (saved.schema_version !== undefined && saved.schema_version !== 1))) return empty;
@@ -48,10 +50,19 @@ export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: s
       const edits = corrections[key];
       if (Array.isArray(edits) && edits.every(edit => object(edit) && Number.isInteger(edit.word_index) && Number(edit.word_index) >= 0 && typeof edit.original === 'string' && typeof edit.text === 'string')) captionEdits[key] = edits;
     }
+    const normalized = normalizeSettings(draft.settings, defaults, encoder);
+    const validDraft = object(draft.settings) && validSettings(normalized.settings);
+    const emphasisEdits: Record<string, number[]> = {};
+    if (object(draft.emphasisEdits)) for (const key of clipKeys) {
+      const list = draft.emphasisEdits[key];
+      if (Array.isArray(list) && list.every(item => Number.isInteger(item) && item >= 0)) emphasisEdits[key] = list as number[];
+    }
     const visual = draft.visualArtifacts;
     const selected = draft.selectedKeys;
     return {...empty,
-      settings: validSettings(draft.settings, defaults) ? draft.settings : defaults,
+      settings: validDraft ? normalized.settings : fallback,
+      legacyFraming: validDraft && normalized.legacyFraming,
+      emphasisEdits,
       selectedKeys: Array.isArray(selected) ? clipKeys.filter(key => selected.includes(key)) : clipKeys,
       captionEdits,
       headlines: object(draft.headlines) ? Object.fromEntries(Object.entries(draft.headlines).filter(([key, value]) => clipKeys.includes(key) && typeof value === 'string')) as Record<string, string> : {},

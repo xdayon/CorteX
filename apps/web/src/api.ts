@@ -120,6 +120,10 @@ export type SuggestedClip = {
   scores: ClipScores;
   approximate_edl?: Array<Record<string, unknown>>;
   pieces?: ClipPiece[];
+  headline_options?: string[];
+  emphasis?: string[];
+  emphasis_word_indices?: number[];
+  lead_trimmed?: string;
   transcript_text?: string;
   connective_logic?: string;
 };
@@ -133,6 +137,7 @@ export type ClipRevision = {
   render_settings: RenderSettings;
   caption_edits: Record<string, CaptionCorrection[]>;
   headlines: Record<string, string>;
+  emphasis?: Record<string, number[]>;
   visual_artifacts: Record<string, string>;
   interviewer_identity_id?: string | null;
   reuse_reactions: boolean;
@@ -194,6 +199,8 @@ export type RenderSettings = {
     position_y?: number;
     primary_side?: "left" | "right" | null;
     scene_overrides?: SceneFramingOverride[];
+    zoom: number;
+    focus_x: number;
     punch_in: {
       enabled: boolean;
       scale: number;
@@ -218,6 +225,10 @@ export type RenderSettings = {
     outline_color: string;
     shadow_color: string;
     animation: { style: "none" | "fade" | "pop"; duration_seconds: number };
+    style: CaptionStyle;
+    emphasis_word_indices: number[];
+    emphasis_color: string;
+    box_text_color: string;
   };
   headline: {
     enabled: boolean;
@@ -225,6 +236,7 @@ export type RenderSettings = {
     font_family: string;
     font_size: number;
     duration_seconds: number;
+    persistent: boolean;
     burst_color: string;
     strip_color: string;
     text_color: string;
@@ -238,7 +250,39 @@ export type RenderSettings = {
     quote_strip_opacity: number;
     quote_padding: number;
   };
+  transitions: {
+    piece_junction: PieceJunction;
+    flash_opacity: number;
+    flash_seconds: number;
+  };
 };
+
+export type CaptionStyle = "classic" | "word_reveal" | "pop" | "box";
+export type PieceJunction = "cut" | "flash" | "zoom";
+
+export type OverlayWord = {
+  index: number; text: string; start: number; end: number;
+  emphasis: boolean; original: string; probability: number | null;
+};
+export type OverlayPage = {start: number; end: number; lines: OverlayWord[][]};
+export type OverlayPreview = {
+  ass_text: string; generator_version: string; content_hash: string;
+  timeline_duration_seconds: number; canvas: {width: number; height: number};
+  pages: OverlayPage[]; junctions: number[];
+  fonts: Array<{ass_name: string; url: string}>;
+};
+export type SafeRect = [number, number, number, number];
+export type SafeZones = {
+  version: number;
+  platforms: Record<string, {top_bar: SafeRect; right_actions: SafeRect; bottom_meta: SafeRect}>;
+};
+export type EditPlanOptions = {
+  transcriptArtifactId: string; analysisArtifactId: string; start: number; end: number; profile: string;
+  maximumSeconds?: number; minimumSeconds?: number; approximateEdl?: Array<Record<string, unknown>>;
+  confirmedVoice?: Record<string, unknown> | null; sceneIndexArtifactId?: string | null;
+  tighten?: boolean; headline?: string | null; primarySubject?: string | null;
+};
+export type RefineStatus = {status: "accepted" | "skipped" | "rejected"; reason?: string};
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -273,7 +317,7 @@ export const api = {
   createProject: (name: string) =>
     request<Project>("/api/v1/projects", { method: "POST", body: JSON.stringify({ name }) }),
 
-  createWorkflowRun: (projectId: string, sourceAssetId: string, brief: SuggestionBrief) =>
+  createWorkflowRun: (projectId: string, sourceAssetId: string, brief: SuggestionBrief & {hotwords?: string[]}) =>
     request<WorkflowRun>(`/api/v1/projects/${projectId}/runs`, {
       method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, ...brief }),
     }),
@@ -287,6 +331,7 @@ export const api = {
     render_settings: RenderSettings;
     caption_edits: Record<string, CaptionCorrection[]>;
     headlines: Record<string,string>;
+    emphasis?: Record<string, number[]>;
     visual_artifacts: Record<string,string>;
     interviewer_identity_id?: string;
     reuse_reactions: boolean;
@@ -338,10 +383,17 @@ export const api = {
   transcript: (projectId: string, artifactId: string, signal?: AbortSignal) =>
     request<{document:{segments:Array<{words:TranscriptWord[]}>}}>(`/api/v1/projects/${projectId}/transcripts/${artifactId}`, {signal}),
 
-  startEditPlan: (projectId: string, transcriptArtifactId: string, analysisArtifactId: string, start: number, end: number, profile: string, maximum_seconds?: number, approximate_edl?: Array<Record<string, unknown>>) =>
+  startEditPlan: (projectId: string, o: EditPlanOptions) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/edit-plans`, {
       method: "POST",
-      body: JSON.stringify({ transcript_artifact_id: transcriptArtifactId, analysis_artifact_id: analysisArtifactId, start, end, profile, maximum_seconds, approximate_edl }),
+      body: JSON.stringify({
+        transcript_artifact_id: o.transcriptArtifactId, analysis_artifact_id: o.analysisArtifactId,
+        start: o.start, end: o.end, profile: o.profile,
+        maximum_seconds: o.maximumSeconds, minimum_seconds: o.minimumSeconds,
+        approximate_edl: o.approximateEdl, confirmed_voice: o.confirmedVoice ?? undefined,
+        scene_index_artifact_id: o.sceneIndexArtifactId ?? undefined,
+        tighten: o.tighten, headline: o.headline || undefined, primary_subject: o.primarySubject || undefined,
+      }),
     }),
 
   startSceneIndex: (projectId: string, sourceAssetId: string, sourceRanges?: Array<{start:number;end:number}>) =>
@@ -386,7 +438,7 @@ export const api = {
   sourcePreviewUrl: (projectId: string, sourceAssetId: string, timeSeconds: number) =>
     `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/preview?time_seconds=${encodeURIComponent(timeSeconds.toFixed(3))}`,
 
-  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, cameraEditPlanArtifactId?: string, confirmedVoice?: Record<string, unknown> | null) =>
+  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, cameraEditPlanArtifactId?: string, confirmedVoice?: Record<string, unknown> | null, options: {purpose?: "draft" | "export"} = {}) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/renders`, {
       method: "POST",
       body: JSON.stringify({
@@ -394,8 +446,19 @@ export const api = {
         camera_edit_plan_artifact_id: cameraEditPlanArtifactId ?? null,
         render_settings: renderSettings,
         confirmed_voice: confirmedVoice ?? null,
+        purpose: options.purpose ?? "export",
       }),
     }),
+
+  overlayPreview: (projectId: string, editPlanArtifactId: string, settings: RenderSettings, signal?: AbortSignal) =>
+    request<OverlayPreview>(`/api/v1/projects/${projectId}/overlay-preview`, {
+      method: "POST", signal,
+      body: JSON.stringify({edit_plan_artifact_id: editPlanArtifactId, settings}),
+    }),
+
+  renderDefaults: (signal?: AbortSignal) => request<RenderSettings>("/api/v1/render-defaults", {signal}),
+
+  safeZones: (signal?: AbortSignal) => request<SafeZones>("/api/v1/safe-zones", {signal}),
 
   renderArtifact: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<{ auto_framing?: Array<{ mode: string; reason: string }> }>>(`/api/v1/projects/${projectId}/renders/${artifactId}`),

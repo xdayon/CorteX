@@ -1,13 +1,14 @@
 import { JobProgress, type JobActivity } from "./JobProgress";
 import { EpisodeLibrary } from "./EpisodeLibrary";
-import { TranscriptEditor } from "./TranscriptEditor";
 import type { CaptionCorrection } from "./api";
-import { CaptionControls, LivePreview } from "./CaptionEditor";
-import { FramingReview } from "./FramingReview";
-import type { CameraScene } from "./api";
 import { restoreEditorDraft, type EditorDraft, type VisualArtifacts } from "./editorDraft";
-import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from "react";
-import { api, type ApiJob, type ExportBatch, type IdentityIndexDocument, type RenderSettings, type SuggestedClip, type SuggestionSelection, type WorkflowRun } from "./api";
+import { ExportEditor } from "./editor/ExportEditor";
+import { Field, Range, Toggle } from "./editor/controls";
+import { clipDuration, clipKey } from "./editor/clips";
+import { parseHotwords } from "./editor/hotwords";
+import { defaultRenderSettings, LEGACY_FRAMING_NOTICE, normalizeSettings } from "./editor/settings";
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { api, type ApiJob, type ExportBatch, type RenderSettings, type SuggestionSelection, type WorkflowRun } from "./api";
 
 type IconName = "check" | "chevron" | "link" | "play" | "spark" | "upload" | "user";
 
@@ -25,47 +26,6 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
-const defaultRenderSettings: RenderSettings = {
-  schema_version: 1,
-  encoder: "h264_nvenc",
-  canvas: { width: 1080, height: 1920, fps: 30 },
-  framing: { schema_version: 1, mode: "blurred_background", position_y: 0.37, punch_in: { enabled: false, scale: 1.15, anchor: "center", alternate_on_jump_cuts: true } },
-  captions: {
-    enabled: true, font_family: "Montserrat", font_size: 56, words_per_cue: 5,
-    font_weight: 900, uppercase: true, position_y: 0.64,
-    outline: true, shadow: true, karaoke: true,
-    text_color: "#FFFFFF", karaoke_color: "#2CE4D7", outline_color: "#071012",
-    shadow_color: "#000000B8", animation: { style: "fade", duration_seconds: 0.18 },
-  },
-  headline: {
-    enabled: true, text: "", font_family: "Montserrat", font_size: 48, duration_seconds: 4,
-    burst_color: "#11B9AD", strip_color: "#FFFFFFF5", text_color: "#071012",
-    animation: { entrance: "fade", exit: "fade", duration_seconds: 0.24 },
-  },
-  subtitles: { sidecar_srt: true },
-  template: { quote_burst_opacity: 1, quote_strip_opacity: 0.96, quote_padding: 14 },
-};
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return <label className="field"><span className="field-head"><b>{label}</b>{hint && <small>{hint}</small>}</span>{children}</label>;
-}
-
-function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  const pickerValue = /^#[0-9a-fA-F]{6}/.test(value) ? value.slice(0, 7) : "#FFFFFF";
-  function pick(rgb: string) { onChange(value.length === 9 ? `${rgb}${value.slice(7)}` : rgb); }
-  return <Field label={label}><div className="color-control"><input type="color" value={pickerValue} onChange={(event) => pick(event.target.value.toUpperCase())}/><input type="text" value={value} maxLength={9} spellCheck={false} onChange={(event) => onChange(event.target.value.toUpperCase())}/></div></Field>;
-}
-
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
-  return <button type="button" className={`toggle-row ${checked ? "on" : ""}`} onClick={() => onChange(!checked)}><span>{label}</span><i><em /></i></button>;
-}
-
-function Range({ label, value, min, max, step = 1, suffix = "", onChange }: { label: string; value: number; min: number; max: number; step?: number; suffix?: string; onChange: (v: number) => void }) {
-  const fill = `${((value - min) / (max - min)) * 100}%`;
-  return <Field label={label}><div className="range-wrap"><input type="range" min={min} max={max} step={step} value={value} style={{ "--fill": fill } as CSSProperties} onChange={(e) => onChange(Number(e.target.value))}/><output>{value}{suffix}</output></div></Field>;
-}
-
-// Complementa o prompt fixo (prompts/clip_selection.pt-BR.md) com público e gosto editorial;
 // o último texto usado fica salvo no navegador.
 const INSTRUCTIONS_KEY = "cortex-editorial-instructions";
 const DEFAULT_INSTRUCTIONS = [
@@ -91,35 +51,6 @@ async function downloadAll(items: Array<{title: string; url: string}>) {
 }
 
 function timestamp(seconds: number) { const value = Math.max(0, Math.round(seconds)); const h = Math.floor(value / 3600); const m = Math.floor((value % 3600) / 60); const s = value % 60; return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`; }
-
-function previewPieces(clip: SuggestedClip, seconds = 10): {end: number; edl: Array<Record<string, unknown>>} | null {
-  const pieces = clip.pieces;
-  if (!pieces || pieces.length < 2) return null;
-  let left = seconds;
-  const kept: Array<{start: number; end: number}> = [];
-  for (const piece of pieces) {
-    if (left <= 0.05) break;
-    const end = Math.min(piece.end, piece.start + left);
-    kept.push({start: piece.start, end});
-    left -= end - piece.start;
-  }
-  const edl = kept.map((item, order) => ({
-    order, source_start: item.start, source_end: item.end,
-    purpose: order === 0 ? "hook" : "development", preferred_visual: "primary_speaker",
-    audio_mode: "source", transition_in: "hard_cut", mask_jump_with: "none", confidence: 1.0,
-    notes: "Prévia curta da timeline composta.",
-  }));
-  return {end: kept[kept.length - 1].end, edl};
-}
-function clipKey(clip: SuggestedClip) { return `${clip.rank}:${clip.start_second}:${clip.end_second}:${clip.pacing}`; }
-
-function countContextShots(spans?: Array<{ mode: string; reason: string }>) {
-  return spans?.filter((span) => span.mode === "blurred_background" && span.reason !== "manual_full_frame").length || 0;
-}
-
-function contextShotsWarning(title: string, count: number) {
-  return `“${title}”: ${count} planos mantiveram o quadro inteiro porque a cena mostrava o contexto da conversa ou não permitia um recorte seguro.`;
-}
 
 function errorMessage(reason: unknown) {
   return reason instanceof Error ? reason.message : String(reason);
@@ -156,27 +87,6 @@ function resultArtifact(job: ApiJob, key: string) {
 
 type SimpleScreen = "library" | "new" | "review" | "export";
 
-function CameraDynamicsPanel({
-  projectId, artifactId, identityIndex, interviewerIdentityId, busy, message, onPrepare, onSelect,
-}: {
-  projectId: string;
-  artifactId?: string;
-  identityIndex: IdentityIndexDocument | null;
-  interviewerIdentityId: string;
-  busy: boolean;
-  message: string;
-  onPrepare: () => void;
-  onSelect: (identityId: string) => void;
-}) {
-  const identities = identityIndex?.identities.filter((identity) => identity.status === "confirmed") ?? [];
-  return <section className="camera-dynamics simple-card">
-    <div><span className="eyebrow">OPCIONAL · DINÂMICA DE PODCAST</span><h3>Reações do entrevistador</h3><p>O CorteX procura os rostos e planos existentes no episódio. Se houver uma reação segura do entrevistador, ela pode entrar sem alterar o áudio editorial.</p></div>
-    {!identityIndex && <button className="btn secondary" disabled={busy} onClick={onPrepare}><Icon name="user"/> {busy ? message || "Analisando pessoas..." : "Analisar pessoas e câmeras"}</button>}
-    {identityIndex && identities.length === 0 && <small>{identityIndex.identities.length > 0 ? (new Set(identityIndex.identities.flatMap(i => i.layout_ids)).size < 2 ? "Foram encontrados rostos, mas os trechos analisados têm apenas um ângulo. Ainda não foi possível confirmar o entrevistador para reutilizar reações." : "Foram encontrados rostos, mas a correspondência entre ângulos ainda é incerta. Não foi possível confirmar o entrevistador para reutilizar reações.") : "Nenhum rosto pôde ser agrupado com segurança nos trechos analisados."} O automático continua disponível e preserva as cenas abertas.</small>}
-    {identityIndex && identities.length > 0 && <div className="identity-choice"><strong>Quem é o entrevistador?</strong><div>{identities.map((identity) => <button key={identity.identity_id} disabled={busy} aria-label={`Selecionar entrevistador ${identity.identity_id}`} aria-pressed={interviewerIdentityId === identity.identity_id} className={interviewerIdentityId === identity.identity_id ? "selected" : ""} onClick={() => onSelect(identity.identity_id)}>{artifactId && <img src={api.identityPreviewUrl(projectId, artifactId, identity.identity_id)} alt="Rosto detectado"/>}<span>{interviewerIdentityId === identity.identity_id ? "ENTREVISTADOR" : "Selecionar"}</span></button>)}</div><small>{interviewerIdentityId ? "Entrevistador confirmado. Você pode habilitar o reaproveitamento de reações nas opções de enquadramento." : "Selecione explicitamente o entrevistador. Nenhum papel é inferido a partir de outro rosto."}</small></div>}
-  </section>;
-}
-
 type RecentEpisode = {projectId: string; runId: string; label: string};
 function recentEpisodes(): RecentEpisode[] {
   try { const value = JSON.parse(localStorage.getItem("cortex-recent-episodes") || "[]");
@@ -187,10 +97,14 @@ function recentEpisodes(): RecentEpisode[] {
 export default function App() {
   const [captionEdits, setCaptionEdits] = useState<Record<string,CaptionCorrection[]>>({});
   const [headlines, setHeadlines] = useState<Record<string, string>>({});
+  const [emphasisEdits, setEmphasisEdits] = useState<Record<string, number[]>>({});
+  const [hotwordsText, setHotwordsText] = useState("");
+  const [notice, setNotice] = useState("");
+  const [encoderError, setEncoderError] = useState("");
+  const serverEncoder = useRef<RenderSettings["encoder"] | null>(null);
   const [draftRunKey, setDraftRunKey] = useState<string | null>(null);
   const [draftError, setDraftError] = useState("");
   const [focusedKey, setFocusedKey] = useState("");
-  const [previewVideo, setPreviewVideo] = useState<{url:string;title:string}|null>(null);
   const [recent, setRecent] = useState(recentEpisodes);
   const [screen, setScreen] = useState<SimpleScreen>("new");
   const [file, setFile] = useState<File | null>(null);
@@ -221,20 +135,21 @@ export default function App() {
   const [jobHistory, setJobHistory] = useState<JobActivity[]>([]);
   const [renderProgress, setRenderProgress] = useState(0);
   const [rendered, setRendered] = useState<Array<{ title: string; url: string; subtitles: string }>>([]);
-  const [processingKind, setProcessingKind] = useState<"visual" | "export">("visual");
-  const [visualComplete, setVisualComplete] = useState(false);
-  const [visualBusy, setVisualBusy] = useState(false);
-  const [visualProgress, setVisualProgress] = useState(0);
-  const [visualMessage, setVisualMessage] = useState("");
-  const [cameraScenes, setCameraScenes] = useState<CameraScene[]>([]);
-  const [identityIndex, setIdentityIndex] = useState<IdentityIndexDocument | null>(null);
-  const [interviewerIdentityId, setInterviewerIdentityId] = useState("");
-  const [reuseReactions, setReuseReactions] = useState(false);
   const [visualArtifacts, setVisualArtifacts] = useState<VisualArtifacts | null>(null);
   const [, setRevisionId] = useState("");
   const [activeBatch, setActiveBatch] = useState<ExportBatch | null>(null);
 
-  useEffect(() => { setPreviewVideo(null); }, [settings, captionEdits, headlines, focusedKey]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void api.renderDefaults(controller.signal).then(defaults => {
+      if (controller.signal.aborted) return;
+      serverEncoder.current = defaults.encoder;
+      setSettings(value => value.encoder === defaults.encoder ? value : { ...value, encoder: defaults.encoder });
+    }).catch(reason => {
+      if (!controller.signal.aborted) setEncoderError(`Não foi possível ler o codificador do servidor: ${errorMessage(reason)}`);
+    });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     if (busy || !run || !activeBatch || !["queued","running"].includes(activeBatch.status)) return;
@@ -250,12 +165,12 @@ export default function App() {
 
   useEffect(() => {
     if (!run || !selection || draftRunKey !== `${run.project_id}:${run.id}`) return;
-    const draft: EditorDraft = {schema_version: 1, settings, selectedKeys, captionEdits, headlines, focusedKey, rendered, reuseReactions, visualArtifacts};
+    const draft: EditorDraft = {schema_version: 1, settings, selectedKeys, captionEdits, headlines, emphasisEdits, focusedKey, rendered, reuseReactions: false, visualArtifacts};
     try {
       localStorage.setItem(`cortex-draft:${draftRunKey}`, JSON.stringify(draft));
       setDraftError("");
     } catch { setDraftError("Não foi possível salvar os ajustes neste navegador. Libere espaço antes de fechar a página."); }
-  }, [run, selection, draftRunKey, settings, selectedKeys, captionEdits, headlines, focusedKey, rendered, reuseReactions, visualArtifacts]);
+  }, [run, selection, draftRunKey, settings, selectedKeys, captionEdits, headlines, emphasisEdits, focusedKey, rendered, visualArtifacts]);
 
   useEffect(() => {
     if (!run || !selection || draftRunKey !== `${run.project_id}:${run.id}`) return;
@@ -265,14 +180,13 @@ export default function App() {
         .map(clip => ({...clip,key:clipKey(clip)}));
       void api.saveRevision(run.project_id,run.id,{
         selection_artifact_id:run.artifacts.suggestion,selected_clips:selected,
-        render_settings:settings,caption_edits:captionEdits,headlines,
-        visual_artifacts:visualArtifacts || {},interviewer_identity_id:interviewerIdentityId || undefined,
-        reuse_reactions:reuseReactions,
+        render_settings:settings,caption_edits:captionEdits,headlines,emphasis:emphasisEdits,
+        visual_artifacts:visualArtifacts || {},reuse_reactions:false,
       }).then(saved => { if (saved) { setRevisionId(saved.id); setDraftError(""); } })
         .catch(reason => setDraftError(`Ajustes salvos neste navegador, mas não no servidor: ${errorMessage(reason)}`));
     },500);
     return () => window.clearTimeout(timer);
-  }, [run, selection, draftRunKey, settings, selectedKeys, captionEdits, headlines, reuseReactions, visualArtifacts, interviewerIdentityId]);
+  }, [run, selection, draftRunKey, settings, selectedKeys, captionEdits, headlines, emphasisEdits, visualArtifacts]);
 
   function trackJob(job: ApiJob) {
     setCurrentJob(job);
@@ -299,16 +213,15 @@ export default function App() {
   function clearEpisodeState() {
     setCurrentJob(null); setJobHistory([]);
     setDraftRunKey(null); setDraftError("");
-    setRun(null); setSelection(null); setSelectedKeys([]); setCaptionEdits({}); setHeadlines({});
-    setFocusedKey(""); setPreviewVideo(null); setRendered([]);
+    setRun(null); setSelection(null); setSelectedKeys([]); setCaptionEdits({}); setHeadlines({}); setEmphasisEdits({}); setNotice("");
+    setFocusedKey(""); setRendered([]);
     setError(null); setWarnings([]); setUploadProgress(0); setRenderProgress(0);
-    setSettings(defaultRenderSettings); setIdentityIndex(null); setVisualArtifacts(null);
-    setInterviewerIdentityId(""); setReuseReactions(false); setVisualProgress(0); setVisualMessage(""); setCameraScenes([]);
-    setVisualComplete(false); setProcessingKind("visual"); setRevisionId(""); setActiveBatch(null);
+    setSettings(normalizeSettings(defaultRenderSettings, defaultRenderSettings, serverEncoder.current).settings); setVisualArtifacts(null);
+    setRevisionId(""); setActiveBatch(null);
   }
 
   function resetEpisode() {
-    if (busy || visualBusy) return;
+    if (busy) return;
     if (run) {
       const entry = {projectId:run.project_id,runId:run.id,label:selection?.clips[0]?.title || "Episódio anterior"};
       const next = [entry,...recent.filter(r => r.runId !== run.id)].slice(0,10);
@@ -320,7 +233,7 @@ export default function App() {
   }
 
   async function resumeEpisode(item: RecentEpisode) {
-    if (busy || visualBusy) return;
+    if (busy) return;
     const signal = beginEpisode(); clearEpisodeState(); setBusy(true); setScreen("new");
     try {
       localStorage.setItem("cortex-active-run", `${item.projectId}:${item.runId}`);
@@ -341,11 +254,11 @@ export default function App() {
     signal.throwIfAborted();
     const result = envelope.document.selection;
     const runKey = `${next.project_id}:${next.id}`;
-    const draft = restoreEditorDraft(localStorage, runKey, result.clips.map(clipKey), defaultRenderSettings);
+    const draft = restoreEditorDraft(localStorage, runKey, result.clips.map(clipKey), defaultRenderSettings, serverEncoder.current);
     setSelection({ ...result, provenance: envelope.document.provenance });
     setSettings(draft.settings); setSelectedKeys(draft.selectedKeys); setCaptionEdits(draft.captionEdits);
-    setHeadlines(draft.headlines); setFocusedKey(draft.focusedKey); setRendered(draft.rendered);
-    setReuseReactions(draft.reuseReactions);
+    setHeadlines(draft.headlines); setEmphasisEdits(draft.emphasisEdits); setFocusedKey(draft.focusedKey); setRendered(draft.rendered);
+    let legacyFraming = draft.legacyFraming;
 
     let serverVisual = draft.visualArtifacts;
     try {
@@ -353,10 +266,11 @@ export default function App() {
       signal.throwIfAborted();
       const validKeys = new Set(result.clips.map(clipKey));
       const savedKeys = saved.selected_clips.map(clip=>clip.key).filter(key=>validKeys.has(key));
-      setRevisionId(saved.id); setSettings(saved.render_settings); setSelectedKeys(savedKeys);
+      const restored = normalizeSettings(saved.render_settings, defaultRenderSettings, serverEncoder.current);
+      legacyFraming = restored.legacyFraming;
+      setRevisionId(saved.id); setSettings(restored.settings); setSelectedKeys(savedKeys);
       setCaptionEdits(saved.caption_edits); setHeadlines(saved.headlines);
-      setReuseReactions(saved.reuse_reactions);
-      setInterviewerIdentityId(saved.interviewer_identity_id || next.interviewer_identity_id || "");
+      setEmphasisEdits(Object.fromEntries(Object.entries(saved.emphasis ?? {}).filter(([key]) => validKeys.has(key))));
       serverVisual = Object.keys(saved.visual_artifacts).length ? saved.visual_artifacts as VisualArtifacts : serverVisual;
     } catch { /* primeira revisão: mantém o draft local compatível */ }
 
@@ -373,6 +287,7 @@ export default function App() {
       }
     } catch { /* lote ainda inexistente */ }
 
+    setNotice(legacyFraming ? LEGACY_FRAMING_NOTICE : "");
     setScreen("review");
     const persistedVisual = {
       scene: next.artifacts.scene_index,
@@ -383,21 +298,7 @@ export default function App() {
       identity: next.artifacts.identity_index,
     };
     const visual = Object.values(persistedVisual).every(Boolean) ? persistedVisual : serverVisual;
-    if (visual) {
-      try {
-        const identities = await api.identityIndex(next.project_id, visual.identity);
-        signal.throwIfAborted();
-        setVisualArtifacts(visual);
-        setIdentityIndex(identities.document);
-        setInterviewerIdentityId(next.interviewer_identity_id || "");
-        const cameras = await api.cameraTimeline(next.project_id, visual.camera);
-        signal.throwIfAborted();
-        setCameraScenes(cameras.document.scenes);
-      } catch (reason) {
-        signal.throwIfAborted();
-        setWarnings((items) => [...items, `Não foi possível restaurar as câmeras. Os cortes normais continuam disponíveis. ${errorMessage(reason)}`]);
-      }
-    }
+    if (visual) setVisualArtifacts(visual);
     signal.throwIfAborted();
     setDraftRunKey(runKey);
   }
@@ -426,7 +327,7 @@ export default function App() {
   }, []);
 
   async function processEpisode() {
-    if (busy || visualBusy) return;
+    if (busy) return;
     const signal = beginEpisode();
     clearEpisodeState(); setBusy(true); setScreen("new");
     window.localStorage.removeItem("cortex-active-run");
@@ -461,7 +362,7 @@ export default function App() {
         } else throw new Error("Download sem fonte nem tarefa");
       }
       const created = await api.createWorkflowRun(project.id, sourceAssetId, {
-        count, minimum_seconds: minimum, maximum_seconds: maximum, instructions, primary_subject: primarySubject, new_clips_only: newClipsOnly,
+        count, minimum_seconds: minimum, maximum_seconds: maximum, instructions, primary_subject: primarySubject, new_clips_only: newClipsOnly, hotwords: parseHotwords(hotwordsText),
       });
       signal.throwIfAborted();
       window.localStorage.setItem("cortex-active-run", `${project.id}:${created.id}`);
@@ -471,194 +372,40 @@ export default function App() {
     } finally { if (!signal.aborted) setBusy(false); }
   }
 
-  async function prepareCameraDynamics(forExport = false) {
-    if (!run || visualBusy || busy || !episode.current) return;
+  async function renderSelected() {
+    if (!run || !selection || busy || !episode.current) return;
     const signal = episode.current.signal;
-    if (!forExport) setProcessingKind("visual");
-    setVisualComplete(false); setVisualProgress(0);
-    setVisualBusy(true); setError(null); setVisualMessage("Detectando mudanças de câmera");
-    try {
-      async function finish(job: ApiJob, label: string, key: string) {
-        signal.throwIfAborted();
-        setVisualMessage(label); setVisualProgress(0);
-        const done = await completeJob(job, signal, (update) => {
-          if (!signal.aborted) { setVisualMessage(update.message || label); setVisualProgress(update.progress || 0); }
-        });
-        return resultArtifact(done, key);
-      }
-      const sceneId = await finish(await api.startSceneIndex(run.project_id, run.source_asset_id, activeClips.flatMap(c => c.pieces?.length ? c.pieces.map(p => ({start:Math.max(0,p.start-1),end:p.end+1})) : [{start:Math.max(0,c.start_second-3),end:c.end_second+3}])), "Detectando cenas", "scene_index_artifact_id");
-      const faceId = await finish(await api.startFaceIndex(run.project_id, run.source_asset_id, sceneId), "Encontrando rostos", "face_index_artifact_id");
-      const speakerId = await finish(await api.startSpeakerTimeline(run.project_id, run.source_asset_id, sceneId, faceId, run.artifacts.analysis), "Relacionando fala e imagem", "speaker_timeline_artifact_id");
-      const cameraId = await finish(await api.startCameraTimeline(run.project_id, sceneId, faceId, speakerId), "Entendendo os planos do podcast", "camera_timeline_artifact_id");
-      const qualityId = await finish(await api.startVisualQuality(run.project_id, run.source_asset_id, sceneId, faceId), "Validando qualidade visual", "visual_quality_artifact_id");
-      const identityId = await finish(await api.startIdentityIndex(run.project_id, faceId, cameraId), "Agrupando as pessoas", "identity_index_artifact_id");
-      const envelope = await api.identityIndex(run.project_id, identityId);
-      signal.throwIfAborted();
-      setIdentityIndex(envelope.document);
-      const cameras = await api.cameraTimeline(run.project_id, cameraId);
-      signal.throwIfAborted();
-      setCameraScenes(cameras.document.scenes);
-      const prepared = { scene: sceneId, face: faceId, speaker: speakerId, camera: cameraId, quality: qualityId, identity: identityId };
-      setVisualArtifacts(prepared);
-      if (visualArtifacts && visualArtifacts.scene !== sceneId && settings.framing.scene_overrides?.length) {
-        setSettings(v=>({...v,framing:{...v.framing,scene_overrides:[]}}));
-        throw new Error("Os trechos analisados mudaram. Revise os ajustes manuais de enquadramento antes de renderizar.");
-      }
-      if (identityId !== visualArtifacts?.identity) setInterviewerIdentityId("");
-      setVisualMessage("Enquadramento pronto. Identificar o entrevistador é opcional para reutilizar reações.");
-      setVisualComplete(true); setVisualProgress(100);
-      return prepared;
-    } catch (reason) {
-      if (!signal.aborted) setWarnings((items) => [...items, `A dinâmica de câmera não ficou pronta, mas os cortes normais continuam disponíveis. ${errorMessage(reason)}`]);
-    } finally { if (!signal.aborted) setVisualBusy(false); }
-  }
-
-  async function selectInterviewer(identityId: string) {
-    if (!run || !visualArtifacts || visualBusy || busy || !episode.current) return;
-    const signal = episode.current.signal;
-    setVisualBusy(true); setError(null);
-    try {
-      const updated = await api.selectWorkflowIdentity(run.project_id, run.id, identityId, visualArtifacts);
-      signal.throwIfAborted();
-      setRun(updated);
-      setInterviewerIdentityId(updated.interviewer_identity_id || "");
-    } catch (reason) {
-      if (!signal.aborted) setError(errorMessage(reason));
-    } finally { if (!signal.aborted) setVisualBusy(false); }
-  }
-
-  async function renderSelected(preview = false) {
-    if (!run || !selection || busy || visualBusy || !episode.current) return;
-    const signal = episode.current.signal;
-    const clips = preview ? (focusedClip ? [focusedClip] : []) : selection.clips.filter((clip) => selectedKeys.includes(clipKey(clip)));
+    const clips = selection.clips.filter((clip) => selectedKeys.includes(clipKey(clip)));
     if (!clips.length) { setError("Selecione pelo menos um corte"); return; }
-    setBusy(true); setProcessingKind("export"); setJobHistory([]); setCurrentJob(null); setError(null); if (!preview) setRendered([]); else setPreviewVideo(null); setRenderProgress(0);
+    setBusy(true); setJobHistory([]); setCurrentJob(null); setError(null); setRendered([]); setRenderProgress(0);
     try {
-      const visualMode = settings.framing.mode === "speaker_auto" || settings.framing.mode === "speaker_face";
-      const visual = visualMode
-        ? await prepareCameraDynamics(true) : visualArtifacts;
-      signal.throwIfAborted();
-      if (visualMode && !visual) {
-        throw new Error("A análise de câmeras não terminou. Tente novamente ou escolha Quadro inteiro com fundo desfocado.");
+      const selected = clips.map(clip => ({...clip,key:clipKey(clip)}));
+      const revision = await api.saveRevision(run.project_id,run.id,{
+        selection_artifact_id:run.artifacts.suggestion,selected_clips:selected,
+        render_settings:settings,caption_edits:captionEdits,headlines,emphasis:emphasisEdits,
+        visual_artifacts:visualArtifacts || {},reuse_reactions:false,
+      });
+      if (!revision) throw new Error("Não foi possível salvar a revisão antes de exportar");
+      setRevisionId(revision.id);
+      let batch = await api.createExportBatch(
+        run.project_id,run.id,revision.id,`${run.id}:${crypto.randomUUID()}`,
+      );
+      setActiveBatch(batch);
+      while (["queued","running"].includes(batch.status)) {
+        const finished = batch.items.filter(item => ["succeeded","failed","cancelled"].includes(item.status)).length;
+        setRenderProgress((finished / batch.items.length) * 100);
+        await waitForPoll(signal);
+        batch = await api.exportBatch(run.project_id,batch.id,signal);
+        setActiveBatch(batch);
       }
-      if (reuseReactions && visual && visual.identity !== visualArtifacts?.identity) {
-        throw new Error("A análise de pessoas foi atualizada. Confirme o entrevistador antes de reaproveitar reações.");
-      }
-      if (!preview) {
-        const selected = clips.map(clip => ({...clip,key:clipKey(clip)}));
-        const revision = await api.saveRevision(run.project_id,run.id,{
-          selection_artifact_id:run.artifacts.suggestion,selected_clips:selected,
-          render_settings:settings,caption_edits:captionEdits,headlines,
-          visual_artifacts:visual || {},interviewer_identity_id:interviewerIdentityId || undefined,
-          reuse_reactions:reuseReactions,
-        });
-        if (revision) {
-          setRevisionId(revision.id);
-          let batch = await api.createExportBatch(
-            run.project_id,run.id,revision.id,`${run.id}:${crypto.randomUUID()}`,
-          );
-          setActiveBatch(batch);
-          while (["queued","running"].includes(batch.status)) {
-            const finished = batch.items.filter(item => ["succeeded","failed","cancelled"].includes(item.status)).length;
-            setRenderProgress((finished / batch.items.length) * 100);
-            await waitForPoll(signal);
-            batch = await api.exportBatch(run.project_id,batch.id,signal);
-            setActiveBatch(batch);
-          }
-          const completed = batch.items.filter(item => item.status === "succeeded" && item.render_artifact_id);
-          setRendered(completed.map(item => ({
-            title:item.title,url:api.renderMediaUrl(run.project_id,item.render_artifact_id!),
-            subtitles:api.renderSubtitlesUrl(run.project_id,item.render_artifact_id!),
-          })));
-          if (visualMode) {
-            for (const item of completed) {
-              try {
-                const manifest = await api.renderArtifact(run.project_id, item.render_artifact_id!);
-                signal.throwIfAborted();
-                const contextShots = countContextShots(manifest.document.auto_framing);
-                if (contextShots) setWarnings(items => [...items, contextShotsWarning(item.title, contextShots)]);
-              } catch (reason) {
-                signal.throwIfAborted();
-              }
-            }
-          }
-          const failures = batch.items.filter(item => item.status === "failed");
-          if (failures.length) setWarnings(items => [...items,...failures.map(item => `“${item.title}”: ${item.error || "falha na exportação"}`)]);
-          if (!completed.length) throw new Error(batch.error || "Nenhum corte foi exportado");
-          setRenderProgress(100);
-          return;
-        }
-      }
-
-      let reactionArtifactId: string | undefined;
-      if (visual && interviewerIdentityId && reuseReactions) {
-        try {
-          const reactionJob = await api.startReactionCandidates(
-            run.project_id, visual.speaker, visual.camera,
-            visual.identity, visual.quality, interviewerIdentityId,
-          );
-          reactionArtifactId = resultArtifact(await completeJob(reactionJob, signal), "reaction_candidate_artifact_id");
-        } catch (reason) {
-          signal.throwIfAborted();
-          setWarnings(items=>[...items,`Render continuará sem reações: ${errorMessage(reason)}`]);
-        }
-      }
-      for (let index = 0; index < clips.length; index += 1) {
-        signal.throwIfAborted();
-        const clip = clips[index];
-        const shortPreview = preview ? previewPieces(clip) : null;
-        const planJob = await api.startEditPlan(
-          run.project_id, run.artifacts.transcript, run.artifacts.analysis,
-          clip.start_second, shortPreview ? shortPreview.end : preview ? Math.min(clip.end_second,clip.start_second+10) : clip.end_second, clip.pacing, run.brief.maximum_seconds,
-          ...(shortPreview ? [shortPreview.edl] : []),
-        );
-        const planDone = await completeJob(planJob, signal, (job) => {
-          if (!signal.aborted) setRenderProgress(((index + (job.progress || 0) / 200) / clips.length) * 100);
-        });
-        const planId = resultArtifact(planDone, "edit_plan_artifact_id");
-        if (!preview && planDone.result?.duration_limit_applied) {
-          const seconds = planDone.result.timeline_duration_seconds;
-          setWarnings(items => [...items, `“${clip.title}”: o final foi antecipado${typeof seconds === "number" ? ` para ${seconds.toFixed(1)}s` : ""} para respeitar o limite de ${run.brief.maximum_seconds}s sem cortar uma palavra. Confira o fechamento na prévia.`]);
-        }
-        let cameraPlanId: string | undefined;
-        if (visual && (visualMode || reuseReactions)) {
-          try {
-            const cameraPlanJob = await api.startCameraPlan(
-              run.project_id, planId, visual.camera, visual.identity,
-              visual.quality, reactionArtifactId,
-            );
-            cameraPlanId = resultArtifact(await completeJob(cameraPlanJob, signal), "camera_edit_plan_artifact_id");
-          } catch (reason) {
-            signal.throwIfAborted();
-            if (visualMode) throw reason;
-            setWarnings((items) => [...items, `“${clip.title}” seguirá sem plano de câmeras: ${errorMessage(reason)}`]);
-          }
-        }
-        const withCorrections = {...settings,captions:{...settings.captions,corrections:captionEdits[clipKey(clip)] || []}};
-        const effective = {...withCorrections, headline: {...settings.headline,
-          text: headlines[clipKey(clip)]?.trim() || clip.headline || clip.title,
-        }};
-        const renderJob = await api.startRender(run.project_id, planId, effective, cameraPlanId, ...(run.brief.confirmed_voice ? [run.brief.confirmed_voice] : []));
-        const renderDone = await completeJob(renderJob, signal, (job) => {
-          if (!signal.aborted) setRenderProgress(((index + 0.5 + (job.progress || 0) / 200) / clips.length) * 100);
-        });
-        const artifactId = resultArtifact(renderDone, "render_artifact_id");
-        try {
-          const manifest = await api.renderArtifact(run.project_id, artifactId);
-          signal.throwIfAborted();
-          const contextShots = countContextShots(manifest.document.auto_framing);
-          if (contextShots) setWarnings((items) => [...items, contextShotsWarning(clip.title, contextShots)]);
-        } catch (reason) {
-          signal.throwIfAborted();
-          setWarnings((items) => [...items, `Vídeo pronto; não foi possível ler os detalhes do enquadramento: ${errorMessage(reason)}`]);
-        }
-        if (preview) setPreviewVideo({title:clip.title,url:api.renderMediaUrl(run.project_id,artifactId)});
-        else setRendered((items) => [...items, {
-          title: clip.title,
-          url: api.renderMediaUrl(run.project_id, artifactId),
-          subtitles: api.renderSubtitlesUrl(run.project_id, artifactId),
-        }]);
-      }
+      const completed = batch.items.filter(item => item.status === "succeeded" && item.render_artifact_id);
+      setRendered(completed.map(item => ({
+        title:item.title,url:api.renderMediaUrl(run.project_id,item.render_artifact_id!),
+        subtitles:api.renderSubtitlesUrl(run.project_id,item.render_artifact_id!),
+      })));
+      const failures = batch.items.filter(item => item.status === "failed");
+      if (failures.length) setWarnings(items => [...items,...failures.map(item => `“${item.title}”: ${item.error || "falha na exportação"}`)]);
+      if (!completed.length) throw new Error(batch.error || "Nenhum corte foi exportado");
       setRenderProgress(100);
     } catch (reason) {
       if (!signal.aborted) setError(errorMessage(reason));
@@ -669,54 +416,38 @@ export default function App() {
   const allSelected = !!selection?.clips.length && selection.clips.every((clip) => selectedKeys.includes(clipKey(clip)));
   const focusedClip = activeClips.find(c => clipKey(c) === focusedKey) || activeClips[0];
   return <div className="simple-app">
-    <header className="simple-header"><div className="brand"><span className="brand-mark">CX<i/></span><div><b>Corte<span>X</span></b><small>PODCAST CLIPPER</small></div></div><nav aria-label="Jornada do episódio">{(["new", "review", "export"] as SimpleScreen[]).map((item, index) => <button key={item} className={screen === item ? "active" : ""} disabled={(item === "new" && (busy || visualBusy)) || ((item === "review" || item === "export") && !selection)} onClick={() => item === "new" ? resetEpisode() : setScreen(item)}><span>{index + 1}</span>{item === "new" ? "Novo episódio" : item === "review" ? "Escolher cortes" : "Exportar"}</button>)}</nav><button className={`library-nav ${screen === "library" ? "active" : ""}`} onClick={() => setScreen("library")}>Biblioteca</button><span className={`simple-status ${busy ? "working" : ""}`}>{busy ? "PROCESSANDO" : "LOCAL"}</span></header>
+    <header className="simple-header"><div className="brand"><span className="brand-mark">CX<i/></span><div><b>Corte<span>X</span></b><small>PODCAST CLIPPER</small></div></div><nav aria-label="Jornada do episódio">{(["new", "review", "export"] as SimpleScreen[]).map((item, index) => <button key={item} className={screen === item ? "active" : ""} disabled={(item === "new" && (busy)) || ((item === "review" || item === "export") && !selection)} onClick={() => item === "new" ? resetEpisode() : setScreen(item)}><span>{index + 1}</span>{item === "new" ? "Novo episódio" : item === "review" ? "Escolher cortes" : "Exportar"}</button>)}</nav><button className={`library-nav ${screen === "library" ? "active" : ""}`} onClick={() => setScreen("library")}>Biblioteca</button><span className={`simple-status ${busy ? "working" : ""}`}>{busy ? "PROCESSANDO" : "LOCAL"}</span></header>
     <main className="simple-main">
 
-      {(screen === "new" || screen === "library") && !run && recent.length > 0 && <div className="episode-history"><b>Retomar episódio</b>{recent.map(item => <button key={item.runId} className="btn secondary" disabled={busy || visualBusy} onClick={() => void resumeEpisode(item)}>{item.label}</button>)}</div>}
+      {(screen === "new" || screen === "library") && !run && recent.length > 0 && <div className="episode-history"><b>Retomar episódio</b>{recent.map(item => <button key={item.runId} className="btn secondary" disabled={busy} onClick={() => void resumeEpisode(item)}>{item.label}</button>)}</div>}
 
-      {screen === "library" && <EpisodeLibrary busy={busy || visualBusy} onOpen={saved => void resumeEpisode({projectId:saved.project_id, runId:saved.id, label:saved.message})} onUse={entry => {
+      {screen === "library" && <EpisodeLibrary busy={busy} onOpen={saved => void resumeEpisode({projectId:saved.project_id, runId:saved.id, label:saved.message})} onUse={entry => {
         resetEpisode(); setYoutube(entry.url || ""); setPrimarySubject(entry.primary_subject); setNewClipsOnly(true); setScreen("new");
         if (!entry.url && entry.source) { void (async () => {
           const signal = beginEpisode(); setBusy(true);
-          try { const created = await api.createWorkflowRun(entry.source!.project_id, entry.source!.id, {count, minimum_seconds:minimum, maximum_seconds:maximum, instructions, primary_subject:entry.primary_subject, new_clips_only:true});
+          try { const created = await api.createWorkflowRun(entry.source!.project_id, entry.source!.id, {count, minimum_seconds:minimum, maximum_seconds:maximum, instructions, primary_subject:entry.primary_subject, new_clips_only:true, hotwords:parseHotwords(hotwordsText)});
             localStorage.setItem("cortex-active-run", `${created.project_id}:${created.id}`); await followRun(created,signal);
           } catch(reason) { if(!signal.aborted) setError(errorMessage(reason)); } finally { if(!signal.aborted) setBusy(false); }
         })(); }
       }}/>}
-      {screen === "new" && <section className="simple-page enter"><div className="simple-title"><span>01 · NOVO EPISÓDIO</span><h1>Do episódio aos cortes, em um clique.</h1><p>Envie o vídeo, escolha a duração e deixe o CorteX transcrever, analisar e encontrar os melhores momentos.</p></div><div className="simple-grid"><div className="simple-card source-card"><div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}><Icon name="upload"/> Arquivo</button><button className={sourceMode === "youtube" ? "active" : ""} onClick={() => setSourceMode("youtube")}><Icon name="link"/> YouTube</button></div>{sourceMode === "file" ? <label className={`dropzone ${file ? "has-file" : ""}`}><input type="file" accept="video/*,audio/*" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] || null)}/><Icon name={file ? "check" : "upload"} size={30}/><strong>{file?.name || "Solte o episódio aqui"}</strong><small>MP4, MOV, MKV, WebM, MP3 ou WAV</small></label> : <div className="simple-url"><Icon name="link"/><input value={youtube} onChange={(event) => setYoutube(event.target.value)} placeholder="https://youtube.com/watch?v=..."/></div>}</div><div className="simple-card settings-card"><h3>O que você quer receber</h3><Range label="Quantidade" value={count} min={1} max={25} onChange={setCount}/><Range label="Mínimo" value={minimum} min={15} max={180} suffix="s" onChange={(value) => { setMinimum(value); if (value > maximum) setMaximum(value); }}/><Range label="Máximo" value={maximum} min={15} max={180} suffix="s" onChange={(value) => { setMaximum(value); if (value < minimum) setMinimum(value); }}/><Field label="Protagonista dos cortes" hint="Orienta a IA; não reconhece a voz pelo nome"><input value={primarySubject} onChange={event => setPrimarySubject(event.target.value)}/></Field><p className="field-help">Para confirmar sua voz, use “Identificar a voz do Dayon” no episódio salvo na Biblioteca.</p><Toggle checked={newClipsOnly} onChange={setNewClipsOnly} label="Evitar trechos já sugeridos"/><Field label="Direção editorial" hint="Este pedido é enviado à IA para escolher os trechos"><textarea placeholder="Ex.: priorize minhas explicações sobre consciência; inclua a pergunta quando ajudar a entender; preserve o contexto e evite frases cortadas." value={instructions} onChange={(event) => setInstructions(event.target.value)}/></Field></div></div>{run && busy && <div className="simple-progress"><div><b>{run.message}</b><span>{Math.round(run.progress)}%</span></div><i><em style={{ width: `${run.progress}%` }}/></i><small>{uploadProgress > 0 && uploadProgress < 1 ? `Enviando · ${Math.round(uploadProgress * 100)}%` : "O processamento continua mesmo se você fechar esta tela."}</small></div>}{busy && currentJob && <><JobProgress job={currentJob} history={jobHistory} progress={currentJob.progress ?? uploadProgress * 100} completed={false} label={currentJob.message || "Preparando episódio"} busy/><button className="btn secondary" onClick={() => void api.cancelJob(currentJob.id).then(trackJob).catch(reason => setError(errorMessage(reason)))}>Cancelar tarefa</button></>}<button className="btn primary simple-primary" disabled={busy || visualBusy || (sourceMode === "file" ? !file : !youtube)} onClick={() => void processEpisode()}><Icon name="spark"/> {busy ? "Processando episódio..." : "Processar episódio"}</button></section>}
-      {screen === "review" && selection && run && <section className="simple-page enter"><div className="simple-title row"><div><span>02 · ESCOLHER CORTES</span><h1>{selection.clips.length} momentos encontrados.</h1><p>{selection.selection_notes}</p></div><div className="review-actions"><button className="btn secondary" onClick={() => setSelectedKeys(allSelected ? [] : selection.clips.map(clipKey))}>{allSelected ? "Limpar seleção" : "Selecionar todos"}</button><button className="btn primary" disabled={!activeClips.length} onClick={() => setScreen("export")}>Editar {activeClips.length} selecionado{activeClips.length === 1 ? "" : "s"} <Icon name="chevron"/></button></div></div><div className="clip-grid">{selection.clips.map((clip) => { const key = clipKey(clip); const selected = selectedKeys.includes(key); return <article key={key} className={`simple-clip ${selected ? "selected" : ""}`} onClick={() => setSelectedKeys((items) => selected ? items.filter((item) => item !== key) : [...items, key])}><div className="clip-frame"><img src={api.sourcePreviewUrl(run.project_id, run.source_asset_id, clip.start_second + 1)} alt="Preview do corte"/><span>{timestamp(clip.estimated_duration)}</span><i>{selected ? <Icon name="check"/> : null}</i></div><div><span className="clip-rank">#{clip.rank} · {clip.primary_speaker}{clip.pieces && clip.pieces.length > 1 ? <b className="clip-pieces-badge">{clip.pieces.length} trechos</b> : null}</span><h3>{clip.title}</h3><p>{clip.reasoning}</p><strong>{timestamp(clip.start_second)} — {timestamp(clip.end_second)}</strong>{clip.pieces && clip.pieces.length > 0 ? <details className="clip-text" onClick={(event) => event.stopPropagation()}><summary>Ver texto do corte</summary>{clip.pieces.map((piece) => <p key={piece.from_id}><small>{timestamp(piece.start)} — {timestamp(piece.end)}</small> {piece.text}</p>)}</details> : null}</div></article>; })}</div></section>}
-      {screen === "export" && selection && run && <section className="simple-page enter"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Seu corte, do seu jeito.</h1><p>{activeClips.length} cortes selecionados · 1080 × 1920. Estilo aplicado ao lote; headline e correções de legenda são individuais.</p><p>Depois que o lote for enviado, o processamento continua no servidor mesmo se você fechar esta tela.</p></div><div className="export-layout"><fieldset disabled={busy || visualBusy} className="export-controls simple-card"><legend className="sr-only">Ajustes da exportação</legend><h3>Enquadramento</h3><Field label="Composição"><select value={settings.framing.mode} disabled={busy || visualBusy} onChange={(event) => setSettings((value) => ({ ...value, framing: { ...value.framing, mode: event.target.value as RenderSettings["framing"]["mode"] } }))}><option value="speaker_face">Focado em quem fala</option><option value="speaker_auto">Automático por pessoa e câmera</option><option value="blurred_background">Quadro inteiro com fundo desfocado</option><option value="vertical_crop">Recorte central fixo</option></select></Field><p>{settings.framing.mode === "blurred_background" ? "Mantém o vídeo inteiro sobre um fundo com Gaussian blur. Ideal para mostrar a mesa e todos os participantes." : settings.framing.mode === "speaker_face" ? "Recorte vertical centralizado no rosto de quem está falando." : settings.framing.mode === "speaker_auto" ? "Preserva cenas abertas e acompanha os closes existentes. Analisa somente os cortes selecionados com margem de 3 segundos e reutiliza o cache." : "Preenche a tela vertical pelo centro do vídeo. As laterais ficam fora do quadro."}</p>{settings.framing.mode === "speaker_face" && <><Field label={`Nos planos com duas pessoas, ${run.brief.primary_subject || "o Dayon"} aparece à:`}><select value={settings.framing.primary_side ?? ""} onChange={(event) => setSettings((value) => ({ ...value, framing: { ...value.framing, primary_side: (event.target.value || null) as "left" | "right" | null } }))}><option value="">Não informado</option><option value="left">Esquerda</option><option value="right">Direita</option></select></Field>{!run.brief.confirmed_voice && <p className="field-help">Sem a voz identificada, o recorte fica no lado escolhido durante todo o plano com duas pessoas.</p>}</>}{settings.framing.mode === "blurred_background" && <Range label="Posição vertical do vídeo" value={Math.round((settings.framing.position_y ?? .5)*100)} min={0} max={100} suffix="%" onChange={value => setSettings(s => ({...s, framing:{...s.framing,position_y:value/100}}))}/>}<div className="toggles"><Toggle checked={settings.framing.punch_in.enabled} onChange={(enabled) => setSettings((value) => ({ ...value, framing: { ...value.framing, punch_in: { ...value.framing.punch_in, enabled } } }))} label="Zoom discreto alternado (1,15×)"/></div><p className="field-help">O zoom alterna uma ampliação fixa entre trechos separados por cortes de pausa. Não é um movimento contínuo; um trecho único pode ficar sem zoom. Planos abertos são preservados no automático.</p>{reuseReactions && <p>{interviewerIdentityId ? "Usa apenas candidatos validados do entrevistador, preservando o áudio da sua fala." : "Analise as pessoas e selecione o entrevistador abaixo para habilitar o reaproveitamento."}</p>}{focusedClip && <><Field label="Corte em revisão"><select disabled={busy || visualBusy} value={clipKey(focusedClip)} onChange={e=>{setFocusedKey(e.target.value);setPreviewVideo(null);}}>{activeClips.map(c=><option key={clipKey(c)} value={clipKey(c)}>{c.title}</option>)}</select></Field><TranscriptEditor projectId={run.project_id} artifactId={run.artifacts.transcript} clip={focusedClip} corrections={captionEdits[clipKey(focusedClip)] || []} disabled={busy || visualBusy} onChange={edits=>{
- const next={...captionEdits,[clipKey(focusedClip)]:edits}; setCaptionEdits(next); setPreviewVideo(null);
-}}/></>}      {screen === "export" && run && focusedClip && <section className="headline-editor">
-        <h3>Headline deste corte</h3><Toggle checked={settings.headline.enabled} onChange={(enabled) => setSettings(value => ({...value, headline:{...value.headline,enabled}}))} label="Mostrar headline"/>
-        <Field label="Headline manual" hint="Campo vazio usa a sugestão da IA">
-          <textarea maxLength={300} disabled={busy || visualBusy} value={headlines[clipKey(focusedClip)] || ""}
-            placeholder={focusedClip.headline || focusedClip.title}
-            onChange={event => setHeadlines(current => ({...current, [clipKey(focusedClip)]: event.target.value}))}/>
-        </Field>
-        <p>Sugestão da IA: {focusedClip.headline || focusedClip.title}</p>
-        <details><summary>Estilo da headline</summary>
-          <Field label="Fonte da headline"><select value={settings.headline.font_family} onChange={e => setSettings(s => ({...s,headline:{...s.headline,font_family:e.target.value}}))}>{['Montserrat','Lato','DejaVu Sans'].map(f => <option key={f}>{f}</option>)}</select></Field>
-          <Range label="Escala da headline" value={settings.headline.font_size} min={24} max={96} onChange={font_size => setSettings(s => ({...s,headline:{...s.headline,font_size}}))}/>
-          <Range label="Tempo da headline" value={settings.headline.duration_seconds} min={1} max={10} suffix="s" onChange={duration_seconds => setSettings(s => ({...s,headline:{...s.headline,duration_seconds}}))}/>
-          <Field label="Entrada da headline"><select value={settings.headline.animation.entrance} onChange={e => setSettings(s => ({...s,headline:{...s.headline,animation:{...s.headline.animation,entrance:e.target.value as RenderSettings['headline']['animation']['entrance']}}}))}><option value="none">Sem animação</option><option value="fade">Aparecer suave</option><option value="slide">Deslizar</option></select></Field>
-        </details>
-        <p>{settings.headline.enabled ? `Texto para exportação: ${headlines[clipKey(focusedClip)]?.trim() || focusedClip.headline || focusedClip.title}` : "Headline desativada."}</p>
-        <button className="btn secondary" disabled={busy || visualBusy || !headlines[clipKey(focusedClip)]}
-          onClick={() => setHeadlines(current => { const next = {...current}; delete next[clipKey(focusedClip)]; return next; })}>Usar sugestão da IA</button>
-        <p>Revise a acentuação e os nomes próprios. O texto aparece na prévia ao vivo e na exportação. Os ajustes são salvos automaticamente neste navegador.</p>
-      </section>}
-<CaptionControls controls={<> <Range label="Tamanho" value={settings.captions.font_size} min={16} max={96} onChange={(font_size) => setSettings((value) => ({ ...value, captions: { ...value.captions, font_size } }))}/><ColorField label="Texto" value={settings.captions.text_color} onChange={(text_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, text_color } }))}/><ColorField label="Palavra ativa" value={settings.captions.karaoke_color} onChange={(karaoke_color) => setSettings((value) => ({ ...value, captions: { ...value.captions, karaoke_color } }))}/> </>} settings={settings} disabled={busy || visualBusy} onChange={(patch) => setSettings(value => ({...value, captions:{...value.captions,...patch}}))}/>
-<details className="reactions-options"><summary>Reações e câmeras · opcional</summary><Toggle checked={reuseReactions} onChange={setReuseReactions} label="Reaproveitar reações de outro instante"/>      {screen === "export" && run && (settings.framing.mode === "speaker_auto" || settings.framing.mode === "speaker_face") && <FramingReview
-        projectId={run.project_id} sourceId={run.source_asset_id} scenes={cameraScenes}
-        clips={activeClips} disabled={busy || visualBusy} overrides={settings.framing.scene_overrides || []}
-        onChange={(scene_overrides) => setSettings((value) => ({ ...value, framing: { ...value.framing, scene_overrides } }))}
-      />}
-      {screen === "export" && run && <CameraDynamicsPanel projectId={run.project_id} artifactId={visualArtifacts?.identity} identityIndex={identityIndex} interviewerIdentityId={interviewerIdentityId} busy={visualBusy || busy} message={visualMessage} onPrepare={() => void prepareCameraDynamics()} onSelect={(identityId) => void selectInterviewer(identityId)}/>}
-</details>{activeBatch && <div className="field-help"><p>Lote no servidor: {activeBatch.items.filter(item=>item.status==="succeeded").length}/{activeBatch.items.length} concluídos · {activeBatch.status}</p>{["queued","running"].includes(activeBatch.status)&&<button className="btn secondary" disabled={busy} onClick={()=>void api.cancelExportBatch(activeBatch.project_id,activeBatch.id).then(setActiveBatch).catch(reason=>setError(errorMessage(reason)))}>Cancelar lote</button>}{activeBatch.items.some(item=>item.status==="failed")&&<button className="btn secondary" disabled={busy} onClick={()=>void api.retryExportBatch(activeBatch.project_id,activeBatch.id).then(setActiveBatch).catch(reason=>setError(errorMessage(reason)))}>Repetir falhas</button>}</div>}
-</fieldset><aside className="export-preview"><LivePreview settings={{...settings,headline:{...settings.headline,text:focusedClip ? headlines[clipKey(focusedClip)]?.trim() || focusedClip.headline || focusedClip.title : ""}}} image={focusedClip ? api.sourcePreviewUrl(run.project_id,run.source_asset_id,focusedClip.start_second+1) : undefined}/></aside></div>{(busy || currentJob) && <JobProgress job={currentJob} history={jobHistory} progress={processingKind === "visual" || visualBusy ? visualProgress : renderProgress} completed={processingKind === "visual" ? visualComplete : renderProgress === 100} label={processingKind === "visual" ? visualComplete ? "Análise de câmeras concluída. Você pode continuar." : visualMessage : busy ? currentJob?.message || "Preparando exportação" : renderProgress === 100 ? "Exportação concluída" : "Exportação interrompida"} busy={busy || visualBusy}/>}<div className="clip-preview-actions"><div className="export-actionbar"><button className="btn primary simple-primary" disabled={busy || visualBusy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button><button className="btn secondary" disabled={busy || visualBusy || !focusedClip} onClick={()=>void renderSelected(true)}>Gerar prévia curta (~10 s)</button></div><p>Duração aproximada para respeitar o fechamento da fala. Usa legenda corrigida, enquadramento e áudio da exportação. Mudanças nos ajustes exigem nova prévia.</p>{previewVideo && <div><h3>Prévia · {previewVideo.title}</h3><video controls src={previewVideo.url}/></div>}</div>{rendered.length > 1 && <div className="export-actionbar"><button className="btn primary" onClick={() => void downloadAll(rendered)}><Icon name="check"/> Baixar todos ({rendered.length} MP4)</button></div>}{rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download={downloadName(item.title)}>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}</section>}
+      {screen === "new" && <section className="simple-page enter"><div className="simple-title"><span>01 · NOVO EPISÓDIO</span><h1>Do episódio aos cortes, em um clique.</h1><p>Envie o vídeo, escolha a duração e deixe o CorteX transcrever, analisar e encontrar os melhores momentos.</p></div><div className="simple-grid"><div className="simple-card source-card"><div className="source-tabs"><button className={sourceMode === "file" ? "active" : ""} onClick={() => setSourceMode("file")}><Icon name="upload"/> Arquivo</button><button className={sourceMode === "youtube" ? "active" : ""} onClick={() => setSourceMode("youtube")}><Icon name="link"/> YouTube</button></div>{sourceMode === "file" ? <label className={`dropzone ${file ? "has-file" : ""}`}><input type="file" accept="video/*,audio/*" onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] || null)}/><Icon name={file ? "check" : "upload"} size={30}/><strong>{file?.name || "Solte o episódio aqui"}</strong><small>MP4, MOV, MKV, WebM, MP3 ou WAV</small></label> : <div className="simple-url"><Icon name="link"/><input value={youtube} onChange={(event) => setYoutube(event.target.value)} placeholder="https://youtube.com/watch?v=..."/></div>}</div><div className="simple-card settings-card"><h3>O que você quer receber</h3><Range label="Quantidade" value={count} min={1} max={25} onChange={setCount}/><Range label="Mínimo" value={minimum} min={15} max={180} suffix="s" onChange={(value) => { setMinimum(value); if (value > maximum) setMaximum(value); }}/><Range label="Máximo" value={maximum} min={15} max={180} suffix="s" onChange={(value) => { setMaximum(value); if (value < minimum) setMinimum(value); }}/><Field label="Protagonista dos cortes" hint="Orienta a IA; não reconhece a voz pelo nome"><input value={primarySubject} onChange={event => setPrimarySubject(event.target.value)}/></Field><Field label="Nomes e termos do episódio" hint="Opcional · separe por vírgula"><input value={hotwordsText} onChange={event => setHotwordsText(event.target.value)} placeholder="Ex.: nome do convidado, termos técnicos"/></Field><p className="field-help">Ajuda a transcrição a escrever certo nomes próprios e termos difíceis.</p><p className="field-help">Para confirmar sua voz, use “Identificar a voz do Dayon” no episódio salvo na Biblioteca.</p><Toggle checked={newClipsOnly} onChange={setNewClipsOnly} label="Evitar trechos já sugeridos"/><Field label="Direção editorial" hint="Este pedido é enviado à IA para escolher os trechos"><textarea placeholder="Ex.: priorize minhas explicações sobre consciência; inclua a pergunta quando ajudar a entender; preserve o contexto e evite frases cortadas." value={instructions} onChange={(event) => setInstructions(event.target.value)}/></Field></div></div>{run && busy && <div className="simple-progress"><div><b>{run.message}</b><span>{Math.round(run.progress)}%</span></div><i><em style={{ width: `${run.progress}%` }}/></i><small>{uploadProgress > 0 && uploadProgress < 1 ? `Enviando · ${Math.round(uploadProgress * 100)}%` : "O processamento continua mesmo se você fechar esta tela."}</small></div>}{busy && currentJob && <><JobProgress job={currentJob} history={jobHistory} progress={currentJob.progress ?? uploadProgress * 100} completed={false} label={currentJob.message || "Preparando episódio"} busy/><button className="btn secondary" onClick={() => void api.cancelJob(currentJob.id).then(trackJob).catch(reason => setError(errorMessage(reason)))}>Cancelar tarefa</button></>}<button className="btn primary simple-primary" disabled={busy || (sourceMode === "file" ? !file : !youtube)} onClick={() => void processEpisode()}><Icon name="spark"/> {busy ? "Processando episódio..." : "Processar episódio"}</button></section>}
+      {screen === "review" && selection && run && <section className="simple-page enter"><div className="simple-title row"><div><span>02 · ESCOLHER CORTES</span><h1>{selection.clips.length} momentos encontrados.</h1><p>{selection.selection_notes}</p></div><div className="review-actions"><button className="btn secondary" onClick={() => setSelectedKeys(allSelected ? [] : selection.clips.map(clipKey))}>{allSelected ? "Limpar seleção" : "Selecionar todos"}</button><button className="btn primary" disabled={!activeClips.length} onClick={() => setScreen("export")}>Editar {activeClips.length} selecionado{activeClips.length === 1 ? "" : "s"} <Icon name="chevron"/></button></div></div><div className="clip-grid">{selection.clips.map((clip) => { const key = clipKey(clip); const selected = selectedKeys.includes(key); return <article key={key} className={`simple-clip ${selected ? "selected" : ""}`} onClick={() => setSelectedKeys((items) => selected ? items.filter((item) => item !== key) : [...items, key])}><div className="clip-frame"><img src={api.sourcePreviewUrl(run.project_id, run.source_asset_id, clip.start_second + 1)} alt="Preview do corte"/><span>{timestamp(clip.estimated_duration)}</span><i>{selected ? <Icon name="check"/> : null}</i></div><div><span className="clip-rank">#{clip.rank} · {clip.primary_speaker} · {clipDuration(clip.estimated_duration)}{clip.pieces && clip.pieces.length > 1 ? <b className="clip-pieces-badge">montado de {clip.pieces.length} trechos</b> : null}</span><h3>{clip.title}</h3><p>{clip.reasoning}</p>{clip.lead_trimmed ? <small className="clip-note">Começo limpo: “{clip.lead_trimmed}” removido</small> : null}{clip.headline_options && clip.headline_options.length > 1 ? <small className="clip-muted">Outras manchetes: {clip.headline_options.slice(1).join(" · ")}</small> : null}<strong>{timestamp(clip.start_second)} — {timestamp(clip.end_second)}</strong>{clip.pieces && clip.pieces.length > 0 ? <details className="clip-text" onClick={(event) => event.stopPropagation()}><summary>Ver texto do corte</summary>{clip.pieces.map((piece) => <p key={piece.from_id}><small>{timestamp(piece.start)} — {timestamp(piece.end)}</small> {piece.text}</p>)}</details> : null}</div></article>; })}</div></section>}
+      {screen === "export" && selection && run && <section className="simple-page enter export-page"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Seu corte, do seu jeito.</h1><p>{activeClips.length} cortes selecionados · 1080 × 1920. A prévia é o vídeo real da edição com a legenda exata da exportação. Depois que o lote for enviado, o processamento continua no servidor mesmo se você fechar esta tela.</p></div>
+        {notice && <p className="simple-notice" role="status">{notice}</p>}
+        <ExportEditor run={run} clips={activeClips} focusedKey={focusedKey} onFocus={setFocusedKey} settings={settings} update={setSettings}
+          captionEdits={captionEdits} onCaptionEdits={(key, edits) => setCaptionEdits(current => ({...current, [key]: edits}))}
+          headlines={headlines} onHeadline={(key, text) => setHeadlines(current => { const next = {...current}; if (text) next[key] = text; else delete next[key]; return next; })}
+          emphasisEdits={emphasisEdits} onEmphasis={(key, indices) => setEmphasisEdits(current => ({...current, [key]: indices}))}
+          sceneIndexArtifactId={visualArtifacts?.scene} disabled={busy}
+          itemStatus={Object.fromEntries((activeBatch?.items ?? []).map(item => [item.clip_key, item.status]))}/>
+        {activeBatch && <div className="field-help"><p>Lote no servidor: {activeBatch.items.filter(item=>item.status==="succeeded").length}/{activeBatch.items.length} concluídos · {activeBatch.status}</p>{["queued","running"].includes(activeBatch.status)&&<button className="btn secondary" disabled={busy} onClick={()=>void api.cancelExportBatch(activeBatch.project_id,activeBatch.id).then(setActiveBatch).catch(reason=>setError(errorMessage(reason)))}>Cancelar lote</button>}{activeBatch.items.some(item=>item.status==="failed")&&<button className="btn secondary" disabled={busy} onClick={()=>void api.retryExportBatch(activeBatch.project_id,activeBatch.id).then(setActiveBatch).catch(reason=>setError(errorMessage(reason)))}>Repetir falhas</button>}</div>}
+        {(busy || currentJob) && <JobProgress job={currentJob} history={jobHistory} progress={renderProgress} completed={renderProgress === 100} label={busy ? currentJob?.message || "Preparando exportação" : renderProgress === 100 ? "Exportação concluída" : "Exportação interrompida"} busy={busy}/>}
+        <div className="clip-preview-actions"><div className="export-actionbar"><button className="btn primary simple-primary" disabled={busy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button></div></div>
+        {rendered.length > 1 && <div className="export-actionbar"><button className="btn primary" onClick={() => void downloadAll(rendered)}><Icon name="check"/> Baixar todos ({rendered.length} MP4)</button></div>}
+        {rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download={downloadName(item.title)}>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}</section>}
       {screen === "export" && warnings.length > 0 && <aside className="simple-warnings" role="status" aria-label="Avisos da exportação"><b>Avisos da exportação</b>{warnings.map((warning, index) => <p key={index}>{warning}</p>)}</aside>}
       {draftError && <p role="alert">{draftError}</p>}
+      {encoderError && <p role="alert">{encoderError}</p>}
       {error && <div className="simple-error" role="alert"><b>Não deu certo ainda</b><p>{error}</p><button onClick={() => setError(null)}>Fechar</button></div>}
     </main>
   </div>;
