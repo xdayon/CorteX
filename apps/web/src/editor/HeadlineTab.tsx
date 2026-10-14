@@ -33,5 +33,11 @@ export function HeadlineTab({ clip, settings, update, headline, onHeadline, disa
     <Range label="Tamanho" value={h.font_size} min={24} max={96} onChange={font_size => patch({ font_size })}/>
     {!h.persistent && <Range label="Tempo na tela" value={h.duration_seconds} min={1} max={10} suffix="s" onChange={duration_seconds => patch({ duration_seconds })}/>}
     <p className="field-help">Revise a acentuação e os nomes próprios.</p>
+    <h3>Gancho</h3>
+    <Toggle checked={settings.transitions.teaser && !!clip.teaser} disabled={!clip.teaser}
+      onChange={teaser => update(s => ({ ...s, transitions: { ...s.transitions, teaser } }))} label="Abrir com teaser"/>
+    {clip.teaser
+      ? <p className="field-help">Repete no início a frase: “{clip.teaser.text}”</p>
+      : <p className="field-help">A IA não encontrou uma frase boa para abrir este corte.</p>}
   </fieldset>;
 }

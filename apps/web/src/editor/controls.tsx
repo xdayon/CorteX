@@ -10,8 +10,8 @@ export function ColorField({ label, value, onChange }: { label: string; value: s
   return <Field label={label}><div className="color-control"><input type="color" value={pickerValue} onChange={(event) => pick(event.target.value.toUpperCase())}/><input type="text" value={value} maxLength={9} spellCheck={false} onChange={(event) => onChange(event.target.value.toUpperCase())}/></div></Field>;
 }
 
-export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
-  return <button type="button" aria-pressed={checked} className={`toggle-row ${checked ? "on" : ""}`} onClick={() => onChange(!checked)}><span>{label}</span><i><em /></i></button>;
+export function Toggle({ checked, onChange, label, disabled }: { checked: boolean; onChange: (value: boolean) => void; label: string; disabled?: boolean }) {
+  return <button type="button" aria-pressed={checked} disabled={disabled} className={`toggle-row ${checked ? "on" : ""}`} onClick={() => onChange(!checked)}><span>{label}</span><i><em /></i></button>;
 }
 
 export function Range({ label, value, min, max, step = 1, suffix = "", onChange, startLabel, endLabel }: {

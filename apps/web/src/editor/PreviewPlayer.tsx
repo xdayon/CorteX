@@ -28,6 +28,20 @@ function refineLabel(preview: DraftPreview) {
   return refine.reason ? `${label}: ${refine.reason}` : label;
 }
 
+const TEASER_DROP_REASONS: Record<string, string> = {
+  max_duration: "o corte ficaria acima da duração máxima",
+  teaser_removed_by_refine: "o enxugamento da IA removeu a frase do teaser",
+  outside_source: "a frase está fora da mídia disponível",
+  no_speech: "não há fala na frase escolhida",
+  invalid_teaser: "o trecho do teaser é inválido",
+};
+
+function teaserLabel(preview: DraftPreview) {
+  const reason = preview.teaserDropped;
+  if (!reason) return "";
+  return `Teaser de abertura não aplicado: ${TEASER_DROP_REASONS[reason] ?? reason}`;
+}
+
 export function PreviewPlayer({ preview, overlay, onTime, ref }: {
   preview: DraftPreview; overlay: OverlayPreview | null; onTime?: (seconds: number) => void; ref?: Ref<PlayerHandle>;
 }) {
@@ -135,7 +149,7 @@ export function PreviewPlayer({ preview, overlay, onTime, ref }: {
   const total = overlay?.timeline_duration_seconds ?? (duration || preview.timelineSeconds || 0);
   const busy = preview.phase === "planning" || preview.phase === "rendering";
   const stale = preview.phase === "rendering" && hasVideo;
-  const refineText = refineLabel(preview);
+  const refineText = [refineLabel(preview), teaserLabel(preview)].filter(Boolean).join(" · ");
   return <div className="preview-player">
     <div className="phone-stage">
       <div className="phone-screen">

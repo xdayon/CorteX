@@ -122,10 +122,12 @@ export type SuggestedClip = {
   emphasis?: string[];
   emphasis_word_indices?: number[];
   lead_trimmed?: string;
+  teaser?: ClipTeaser | null;
   transcript_text?: string;
   connective_logic?: string;
 };
 
+export type ClipTeaser = {start: number; end: number; text: string};
 export type ClipPiece = {from_id: number; to_id: number; start: number; end: number; text: string};
 
 export type ClipRevision = {
@@ -238,6 +240,7 @@ export type RenderSettings = {
     piece_junction: PieceJunction;
     flash_opacity: number;
     flash_seconds: number;
+    teaser: boolean;
   };
 };
 
@@ -265,6 +268,7 @@ export type EditPlanOptions = {
   maximumSeconds?: number; minimumSeconds?: number; approximateEdl?: Array<Record<string, unknown>>;
   confirmedVoice?: Record<string, unknown> | null; sceneIndexArtifactId?: string | null;
   tighten?: boolean; headline?: string | null; primarySubject?: string | null;
+  teaserStart?: number; teaserEnd?: number;
 };
 export type RefineStatus = {status: "accepted" | "skipped" | "rejected"; reason?: string};
 
@@ -370,6 +374,7 @@ export const api = {
         approximate_edl: o.approximateEdl, confirmed_voice: o.confirmedVoice ?? undefined,
         scene_index_artifact_id: o.sceneIndexArtifactId ?? undefined,
         tighten: o.tighten, headline: o.headline || undefined, primary_subject: o.primarySubject || undefined,
+        teaser_start: o.teaserStart, teaser_end: o.teaserEnd,
       }),
     }),
 

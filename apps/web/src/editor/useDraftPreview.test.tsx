@@ -97,3 +97,29 @@ test("a failed plan exposes the error and retry runs it again", async () => {
   await flush();
   expect(result.current.phase).toBe("ready");
 });
+
+test("sends the teaser range only when the toggle is on and re-plans when it changes", async () => {
+  const withTeaser = { ...clip, teaser: { start: 40, end: 43.5, text: "frase" } } as SuggestedClip;
+  const on = { ...defaultRenderSettings, transitions: { ...defaultRenderSettings.transitions, teaser: true } };
+  const { rerender } = renderHook((settings) => useDraftPreview({ projectId: "project", run, clip: withTeaser, settings }), { initialProps: defaultRenderSettings });
+  await flush();
+  expect(vi.mocked(api.startEditPlan).mock.lastCall![1]).not.toHaveProperty("teaserStart");
+  rerender(on);
+  await flush();
+  expect(api.startEditPlan).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(api.startEditPlan).mock.lastCall![1]).toMatchObject({ teaserStart: 40, teaserEnd: 43.5 });
+  rerender({ ...on, captions: { ...on.captions, font_size: 70 } });
+  await flush(2000);
+  expect(api.startEditPlan).toHaveBeenCalledTimes(2);
+});
+
+test("a clip without teaser never sends one, and the drop reason is exposed", async () => {
+  const on = { ...defaultRenderSettings, transitions: { ...defaultRenderSettings.transitions, teaser: true } };
+  vi.mocked(api.startEditPlan).mockResolvedValue(job("plan", {
+    edit_plan_artifact_id: "edl", teaser_applied: false, teaser_dropped: "max_duration",
+  }));
+  const { result } = renderHook(() => useDraftPreview({ projectId: "project", run, clip, settings: on }));
+  await flush();
+  expect(vi.mocked(api.startEditPlan).mock.lastCall![1]).not.toHaveProperty("teaserStart");
+  expect(result.current.teaserDropped).toBe("max_duration");
+});

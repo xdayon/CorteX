@@ -23,7 +23,7 @@ export const defaultRenderSettings: RenderSettings = {
   },
   subtitles: { sidecar_srt: true },
   template: { quote_burst_opacity: 1, quote_strip_opacity: 0.96, quote_padding: 14 },
-  transitions: { piece_junction: "flash", flash_opacity: 0.55, flash_seconds: 0.12 },
+  transitions: { piece_junction: "flash", flash_opacity: 0.55, flash_seconds: 0.12, teaser: false },
 };
 
 export const LEGACY_FRAMING_NOTICE =

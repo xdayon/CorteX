@@ -56,3 +56,10 @@ test("new sessions follow faces at 1.45x, while saved revisions without focus_mo
   expect(normalizeSettings(saved).settings.framing.focus_mode).toBe("faces");
   expect(normalizeSettings(undefined).settings.framing.focus_mode).toBe("faces");
 });
+
+test("transitions saved before the teaser existed gain teaser: false and keep their junction", () => {
+  const old = structuredClone(defaultRenderSettings) as Record<string, any>;
+  old.transitions = { piece_junction: "zoom", flash_opacity: 0.4, flash_seconds: 0.2 };
+  const { settings } = normalizeSettings(old);
+  expect(settings.transitions).toEqual({ piece_junction: "zoom", flash_opacity: 0.4, flash_seconds: 0.2, teaser: false });
+});

@@ -9,6 +9,7 @@ export type DraftPreview = {
   timelineSeconds: number | null;
   refine: RefineStatus | null;
   belowMinimum: boolean;
+  teaserDropped: string | null;
   phase: DraftPhase;
   progress: number;
   error: string;
@@ -18,7 +19,7 @@ export type DraftPreview = {
 const RERENDER_DELAY_MS = 800;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 
-type Plan = { id: string; clip: string; timeline: number | null; refine: RefineStatus | null; belowMinimum: boolean };
+type Plan = { id: string; clip: string; timeline: number | null; refine: RefineStatus | null; belowMinimum: boolean; teaserDropped: string | null };
 
 function message(reason: unknown) {
   return reason instanceof Error ? reason.message : String(reason);
@@ -50,10 +51,13 @@ export function useDraftPreview({ projectId, run, clip, settings, sceneIndexArti
   const clipRef = useRef(clip);
   clipRef.current = clip;
   const renderedKey = useRef("");
+  const teaser = settings.transitions.teaser && clip?.teaser ? clip.teaser : null;
+  const teaserKey = teaser ? `${teaser.start}-${teaser.end}` : "";
   const renderKey = JSON.stringify([settings.framing, settings.transitions.piece_junction]);
 
   useEffect(() => {
     const current = clipRef.current;
+    const teaserRange = settingsRef.current.transitions.teaser && current?.teaser ? current.teaser : null;
     setPlan(null); setVideoUrl(null); setError(""); setProgress(0);
     renderedKey.current = "";
     if (!current) return;
@@ -70,6 +74,7 @@ export function useDraftPreview({ projectId, run, clip, settings, sceneIndexArti
           confirmedVoice: run.brief.confirmed_voice, primarySubject: run.brief.primary_subject,
           headline: current.headline || null, tighten: true,
           sceneIndexArtifactId: sceneIndexArtifactId ?? null,
+          ...(teaserRange ? { teaserStart: teaserRange.start, teaserEnd: teaserRange.end } : {}),
         });
         jobId = job.id;
         const done = await finish(job, controller.signal, update => setProgress((update.progress || 0) / 2));
@@ -84,6 +89,7 @@ export function useDraftPreview({ projectId, run, clip, settings, sceneIndexArti
           timeline: typeof result.timeline_duration_seconds === "number" ? result.timeline_duration_seconds : null,
           refine: (result.refine as RefineStatus | undefined) ?? null,
           belowMinimum: result.below_minimum === true,
+          teaserDropped: typeof result.teaser_dropped === "string" ? result.teaser_dropped : null,
         });
       } catch (reason) {
         if (controller.signal.aborted) return;
@@ -91,9 +97,9 @@ export function useDraftPreview({ projectId, run, clip, settings, sceneIndexArti
       }
     })();
     return () => { controller.abort(); cancelQuietly(jobId); };
-    // The plan is rebuilt only for another clip (or a manual retry), exactly like the export.
+    // The plan is rebuilt only for another clip, a teaser toggle (or a manual retry), exactly like the export.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, key, nonce, run.id, sceneIndexArtifactId]);
+  }, [projectId, key, nonce, run.id, sceneIndexArtifactId, teaserKey]);
 
   useEffect(() => {
     if (!plan || plan.clip !== key) return;
@@ -133,6 +139,7 @@ export function useDraftPreview({ projectId, run, clip, settings, sceneIndexArti
   return {
     videoUrl, editPlanArtifactId: planMatches?.id ?? null, timelineSeconds: planMatches?.timeline ?? null,
     refine: planMatches?.refine ?? null, belowMinimum: planMatches?.belowMinimum ?? false,
+    teaserDropped: planMatches?.teaserDropped ?? null,
     phase, progress, error, retry,
   };
 }
