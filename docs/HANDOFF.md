@@ -40,19 +40,19 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 
 ## Em andamento / próximo gate
 
-1. Fase 2 do [ROADMAP](ROADMAP.md): foco por rosto entregue; apagar os modos
-   congelados (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de câmera,
-   reações, identidade) mantendo valores de enum antigos legíveis no SQLite; decidir
-   com o usuário entre consertar ou remover a diarização.
+1. Fase 2 do [ROADMAP](ROADMAP.md): foco por rosto entregue e modos congelados
+   (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de câmera, reações,
+   identidade) removidos; valores de enum e campos antigos seguem legíveis no SQLite
+   e o render recusa os modos antigos. Falta decidir com o usuário entre consertar ou
+   remover a diarização.
 2. Acesso remoto (`cortex.synapses.academy`): código, guarda JWT na origem, script e
    `cloudflared` prontos; faltam os passos do usuário no painel e
    `scripts/setup_remote_access.py` — [guia](LOCAL_AND_CLOUDFLARE.md).
 
 ## Congelado (não evoluir)
 
-Análise de câmera/identidade/falante, reações emprestadas e diarização pyannote:
-6 de 7 diarizações falharam e os modos automáticos não foram usados nos últimos 80
-renders. Mantidos só até o foco por rostos substituí-los.
+Diarização pyannote: 6 de 7 diarizações falharam. Mantida até a decisão do usuário.
+(Análise de câmera/identidade/falante e reações emprestadas já foram removidas.)
 
 ## Operação
 

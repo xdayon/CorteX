@@ -38,8 +38,9 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   1,45): rostos YuNet em poucas amostras por cena; todos cabem → centraliza; senão →
   lado do Dayon ou maior rosto; um recorte estático por cena, motivo no manifest.
   Validado com rostos reais ([evidência](evidence/2026-10-14-studio-editor-and-framing.md)).
-- [ ] Depois de validado: apagar modos congelados (planos de câmera, reações
-  emprestadas, identidade) e decidir sobre a diarização (hoje 6 falhas em 7).
+- [x] Modos congelados apagados (planos de câmera, reações emprestadas, identidade,
+  `speaker_auto`/`speaker_face`/`face_static_crop`); dados antigos seguem legíveis.
+- [ ] Decidir sobre a diarização (hoje 6 falhas em 7).
 - [ ] Teaser de abertura opcional (repete 2–4 s do payoff; nunca muda o sentido).
 - [ ] Capa JPG separada opcional (frame escolhido + manchete); nunca no 1º frame.
 

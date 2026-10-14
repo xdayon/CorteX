@@ -23,7 +23,7 @@ Não há runtime PodCLI, multicam ISO, servidor editorial alternativo ou cloud G
 | UI | `apps/web/src/` | App.test.tsx, api.test.ts |
 | Avaliação | `eval/`, `scripts/eval_selection.py` | eval_runner |
 | Operação local | `scripts/studio.sh`, `install_local_service.py`, `update_and_verify.sh` | — |
-| Congelado | `analyze/{face,speaker,identity,camera,reaction}*`, `diarize/`, `edit/camera_plan_service.py`, `render/auto_framing.py` | manter verdes até remoção |
+| Foco por rostos | `render/face_focus.py`, `analyze/face_detect.py` (YuNet), `analyze/frames.py`, `analyze/scene_*` | face_focus, face_detect, face_focus_render, scene_index |
 
 Python paths são relativos a `src/cortex/`; testes em `tests/`. Mídia/SQLite/cache
 ficam em `data/` (fora do Git).
@@ -63,6 +63,8 @@ sobe no login. Acesso remoto (Tailscale ou Cloudflare Tunnel + Access) é Fase 3
 
 ## Evolução sem reescrita
 
-Remover os modos congelados quando substituídos pelo foco por rostos; extrair routers do
+A dinâmica de câmera antiga (análise de rosto/falante/identidade, planos de câmera, reações emprestadas)
+foi removida: o foco por rostos a substitui; jobs, modos e campos antigos seguem legíveis no SQLite.
+Extrair routers do
 `api.py` por domínio mantendo contratos. Não introduzir Redis, banco remoto, segundo
 renderer ou framework por conveniência. Prioridades em [ROADMAP](ROADMAP.md).
