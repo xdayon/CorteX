@@ -249,4 +249,5 @@ def test_export_items_carry_emphasis_headline_and_minimum(tmp_path: Path) -> Non
     plan_job = next(job for job in JobStore(config.paths.database).list() if job.type == "edit_plan")
     assert plan_job.payload["tighten"] is True
     assert plan_job.payload["minimum_seconds"] == 40
-    assert plan_job.payload["headline"] == "Minha manchete"
+    # Refine is keyed on the AI headline so editing the text never re-bills it.
+    assert plan_job.payload["headline"] == "Sugestão A"

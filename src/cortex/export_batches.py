@@ -19,12 +19,6 @@ from cortex.jobs import JobStore
 from cortex.schemas import Job, JobCreate, JobStatus, JobType
 
 
-def _item_headline(item: ExportItem) -> str | None:
-    settings = item.render_settings or {}
-    text = str((settings.get("headline") or {}).get("text") or "").strip()
-    return text or item.clip.get("headline") or None
-
-
 def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> dict:
     """The one edit-plan payload for export items (first item, next items and
     retries alike), so every exported clip gets the same refine/duration rules."""
@@ -36,7 +30,10 @@ def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> 
         "profile": item.clip["pacing"],
         "maximum_seconds": run.brief.get("maximum_seconds"),
         "minimum_seconds": run.brief.get("minimum_seconds"),
-        "headline": _item_headline(item),
+        # The AI headline, not the user's edited text: refine results are cached
+        # by input, and the editor preview uses the same value, so editing the
+        # on-screen headline never triggers (and bills) a new refine call.
+        "headline": item.clip.get("headline") or None,
         "approximate_edl": item.clip.get("approximate_edl"),
         "confirmed_voice": run.brief.get("confirmed_voice"),
         "primary_subject": run.brief.get("primary_subject"),
