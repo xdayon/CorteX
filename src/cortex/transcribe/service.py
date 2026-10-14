@@ -110,6 +110,7 @@ class TranscribeService:
                 allow_cpu_fallback=allow_cpu_fallback,
                 progress_cb=_engine_progress,
                 should_cancel=should_cancel,
+                hotwords=[*cfg.hotwords, *(overrides.get("hotwords") or [])],
             )
         except TranscriptionCancelled as exc:
             raise TranscribeJobCancelled() from exc

@@ -61,6 +61,7 @@ class TranscriptionEngine(Protocol):
         allow_cpu_fallback: bool,
         progress_cb: ProgressCallback | None = None,
         should_cancel: ShouldCancel | None = None,
+        hotwords: list[str] | None = None,
     ) -> EngineTranscriptionResult: ...
 
     def unload(self) -> None: ...
@@ -130,8 +131,12 @@ class FasterWhisperEngine:
         allow_cpu_fallback: bool,
         progress_cb: ProgressCallback | None = None,
         should_cancel: ShouldCancel | None = None,
+        hotwords: list[str] | None = None,
     ) -> EngineTranscriptionResult:
         effective_device, effective_compute_type = device, compute_type
+        hotwords = [word.strip() for word in (hotwords or []) if word.strip()]
+        effective_batch_size = 0
+        batch_fallback_reason = None
         fallback = False
         try:
             whisper_model = self._load_model(model, device, compute_type)
@@ -156,6 +161,7 @@ class FasterWhisperEngine:
             word_timestamps=True,
             vad_filter=vad,
             condition_on_previous_text=False,
+            hotwords=" ".join(hotwords) or None,
         )
 
         segment_iter = None
@@ -169,10 +175,12 @@ class FasterWhisperEngine:
                 segment_iter, info = self._batched_pipeline.transcribe(
                     str(audio_path), batch_size=batch_size, **common,
                 )
+                effective_batch_size = batch_size
             except Exception as exc:
                 if _is_cuda_runtime_error(exc):
                     raise
                 segment_iter = None
+                batch_fallback_reason = f"{type(exc).__name__}: {exc}"[:300]
 
         if segment_iter is None:
             segment_iter, info = whisper_model.transcribe(str(audio_path), **common)
@@ -213,6 +221,9 @@ class FasterWhisperEngine:
             batch_size=batch_size,
             vad=vad,
             fallback=fallback,
+            effective_batch_size=effective_batch_size,
+            batch_fallback_reason=batch_fallback_reason,
+            hotwords=hotwords,
         )
         resolved_duration = duration if duration > 0 else (segments[-1].end if segments else 0.0)
         return EngineTranscriptionResult(

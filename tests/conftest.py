@@ -78,8 +78,9 @@ class FakeTranscriptionEngine:
         allow_cpu_fallback,
         progress_cb=None,
         should_cancel=None,
+        hotwords=None,
     ) -> EngineTranscriptionResult:
-        self.calls.append({"device": device, "compute_type": compute_type})
+        self.calls.append({"device": device, "compute_type": compute_type, "hotwords": hotwords})
         effective_device, effective_compute_type, fallback = device, compute_type, False
 
         if self.fail_on_cuda and device == "cuda":

@@ -39,6 +39,9 @@ class TranscriptionConfig(BaseModel):
     batch_size: int = Field(default=8, ge=0, le=64)
     vad: bool = True
     allow_cpu_fallback: bool = False
+    # Names/terms the decoder should prefer (e.g. "Dayon"). Applies to new
+    # transcriptions; cached transcripts are not redone when this changes.
+    hotwords: list[str] = Field(default_factory=list, max_length=50)
 
 
 class RenderConfig(BaseModel):

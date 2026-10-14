@@ -224,6 +224,8 @@ class TranscribeServiceCacheTests(unittest.TestCase):
             self.assertTrue(second["cached"])
             self.assertEqual(second["transcript_artifact_id"], first["transcript_artifact_id"])
             self.assertEqual(len(engine.calls), 1)  # engine not invoked again
+            # Configured vocabulary and per-request names reach the decoder.
+            self.assertEqual(engine.calls[0]["hotwords"], list(config.transcription.hotwords))
 
 
 class WorkerCudaFailHardTests(unittest.TestCase):

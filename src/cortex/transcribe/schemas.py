@@ -38,6 +38,12 @@ class EngineInfo(BaseModel):
     batch_size: int
     vad: bool
     fallback: bool = False
+    # Batched decoding can fail for non-CUDA reasons and fall back to the
+    # sequential decoder; both are faster-whisper but segment differently, so
+    # the effective mode is recorded instead of hidden (0 = sequential).
+    effective_batch_size: int | None = None
+    batch_fallback_reason: str | None = None
+    hotwords: list[str] = Field(default_factory=list)
 
 
 class TranscriptDocument(BaseModel):

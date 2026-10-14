@@ -19,6 +19,7 @@ transcription:
   batch_size: 8
   vad: true
   allow_cpu_fallback: false
+  hotwords: [Dayon]
 
 ingest:
   max_upload_bytes: 10737418240

@@ -45,13 +45,17 @@ def main() -> None:
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     binary_dirs = []
-    for binary in ("node", "codex"):
+    # Optional CLIs: the editorial provider (claude or codex) and node. fnm paths
+    # point at the stable "default" alias, so a Node upgrade does not leave the
+    # service with a vanished versioned directory.
+    fnm_default = Path.home() / ".local/share/fnm/aliases/default/bin"
+    for binary in ("claude", "node", "codex"):
         location = shutil.which(binary)
         if location is None:
-            raise SystemExit(f"Instale {binary} antes de configurar o serviço")
-        # Codex can be an npm JS symlink. Its PATH entry must be the bin directory,
-        # resolved via the neighboring node executable, not the JS package folder.
+            continue
         parent = Path(location).parent.resolve()
+        if "/fnm/" in str(parent) and fnm_default.is_dir():
+            parent = fnm_default
         binary_dirs.append(parent)
     text = service_text(root, binary_dirs)
     if not args.install:
