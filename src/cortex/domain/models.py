@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -195,5 +195,34 @@ class ExportBatch(BaseModel):
     reaction_candidate_artifact_id: str | None = None
     error: str | None = None
     items: list[ExportItem] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ClipPublication(BaseModel):
+    """What happened to one exported clip after it was posted (learning-loop input)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    project_id: str
+    render_artifact_id: str
+    title: str = Field(min_length=1, max_length=300)
+    headline: str = Field(default="", max_length=300)
+    hook_text: str = Field(default="", max_length=200)
+    duration_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
+    published: bool = False
+    platforms: list[Literal["instagram", "tiktok"]] = Field(default_factory=list)
+    published_on: date | None = None
+    url: str | None = Field(default=None, max_length=500, pattern=r"^https?://\S+$")
+    views: int | None = Field(default=None, ge=0)
+    likes: int | None = Field(default=None, ge=0)
+    comments: int | None = Field(default=None, ge=0)
+    shares: int | None = Field(default=None, ge=0)
+    saves: int | None = Field(default=None, ge=0)
+    retention_3s_pct: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    avg_watch_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    rating: Literal[-1, 0, 1] | None = None
+    notes: str = Field(default="", max_length=300)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

@@ -1070,6 +1070,8 @@ def create_app(config: CortexConfig | None = None):
 
     from cortex.review_api import create_review_router
     app.include_router(create_review_router(router_prefix, domain, jobs))
+    from cortex.publication_api import create_publication_router
+    app.include_router(create_publication_router(router_prefix, domain))
     from cortex.overlay_api import create_overlay_router
     app.include_router(create_overlay_router(router_prefix, settings, domain))
 

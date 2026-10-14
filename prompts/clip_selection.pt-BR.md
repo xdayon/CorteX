@@ -38,6 +38,9 @@ pontuar.
 A direção editorial do próprio Dayon (`brief.instructions`, na mensagem do
 pedido) tem prioridade sobre estes critérios gerais.
 
+Quando existir a seção "Aprendizado do perfil", ela reflete resultados reais
+deste perfil e deve pesar na escolha dos cortes e na redação dos títulos.
+
 ## Montagem (cortes dinâmicos)
 
 Cada corte é uma lista ordenada de **peças** (`pieces`). Cada peça é um

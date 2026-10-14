@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
 
 from cortex.domain.models import (
+    ClipPublication,
     ClipRevision,
     ExportBatch,
     ExportItem,
@@ -40,6 +42,10 @@ class RenderPresetNotFoundError(LookupError):
 
 
 class RenderPresetNameConflictError(ValueError):
+    pass
+
+
+class ClipPublicationNotFoundError(LookupError):
     pass
 
 
@@ -229,6 +235,16 @@ class DomainStore:
                 )"""
             )
             connection.execute(
+                """CREATE TABLE IF NOT EXISTS clip_publications (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    render_artifact_id TEXT NOT NULL UNIQUE,
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )"""
+            )
+            connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_workflow_runs_project_created
                    ON workflow_runs (project_id, created_at DESC)"""
             )
@@ -259,6 +275,7 @@ class DomainStore:
             for migration_id in (
                 "2026-09-13-export-batches-v1",
                 "2026-09-13-indexed-artifact-cache-v1",
+                "2026-10-14-clip-publications-v1",
             ):
                 connection.execute(
                     "INSERT OR IGNORE INTO schema_migrations(id, applied_at) VALUES (?, ?)",
@@ -763,3 +780,71 @@ class DomainStore:
         if cursor.rowcount != 1:
             raise RenderPresetNotFoundError(preset_id)
         return updated
+
+    # -- Clip publications ----------------------------------------------
+
+    def upsert_clip_publication(self, publication: ClipPublication) -> ClipPublication:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, created_at FROM clip_publications WHERE render_artifact_id = ?",
+                (publication.render_artifact_id,),
+            ).fetchone()
+            if row is None:
+                saved = publication
+                connection.execute(
+                    """INSERT INTO clip_publications
+                       (id, project_id, render_artifact_id, data, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        saved.id, saved.project_id, saved.render_artifact_id,
+                        json.dumps(saved.model_dump(mode="json"), ensure_ascii=False),
+                        saved.created_at.isoformat(), saved.updated_at.isoformat(),
+                    ),
+                )
+                return saved
+            saved = publication.model_copy(update={
+                "id": row["id"],
+                "created_at": datetime.fromisoformat(row["created_at"]),
+                "updated_at": utc_now(),
+            })
+            connection.execute(
+                "UPDATE clip_publications SET data = ?, updated_at = ? WHERE id = ?",
+                (
+                    json.dumps(saved.model_dump(mode="json"), ensure_ascii=False),
+                    saved.updated_at.isoformat(), saved.id,
+                ),
+            )
+            return saved
+
+    def get_clip_publication(self, project_id: str, render_artifact_id: str) -> ClipPublication:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT data FROM clip_publications WHERE project_id = ? AND render_artifact_id = ?",
+                (project_id, render_artifact_id),
+            ).fetchone()
+        if row is None:
+            raise ClipPublicationNotFoundError(render_artifact_id)
+        return ClipPublication.model_validate_json(row["data"])
+
+    def delete_clip_publication(self, project_id: str, render_artifact_id: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM clip_publications WHERE project_id = ? AND render_artifact_id = ?",
+                (project_id, render_artifact_id),
+            )
+        if cursor.rowcount != 1:
+            raise ClipPublicationNotFoundError(render_artifact_id)
+
+    def list_clip_publications(
+        self, *, project_id: str | None = None, limit: int = 200,
+    ) -> list[ClipPublication]:
+        query = "SELECT data FROM clip_publications"
+        params: list[object] = []
+        if project_id is not None:
+            query += " WHERE project_id = ?"
+            params.append(project_id)
+        query += " ORDER BY updated_at DESC, id LIMIT ?"
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [ClipPublication.model_validate_json(row["data"]) for row in rows]

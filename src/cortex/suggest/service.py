@@ -20,6 +20,7 @@ from cortex.diarize.attribution import (
 from cortex.domain.models import StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore, SourceAssetNotFoundError
 from cortex.paths import suggestions_dir
+from cortex.suggest.learning import build_learning_context
 from cortex.suggest.provider import SuggestionProvider, SuggestionProviderCancelled
 
 SUGGESTION_ARTIFACT_VERSION = 4
@@ -502,7 +503,7 @@ def provider_identity(config: CortexConfig, *, effort: str | None = None) -> dic
 
 def selection_system_context(
     prompt_template: str, units: list[dict[str, Any]], transcript: dict[str, Any],
-    *, episode_title: str | None,
+    *, episode_title: str | None, learning: str = "",
 ) -> str:
     """Stable part of the selection request (cached by the CLI across calls on
     the same episode): editorial instructions + the whole episode."""
@@ -511,7 +512,9 @@ def selection_system_context(
     if isinstance(duration, (int, float)):
         header.append(f"Duração: {float(duration) / 60:.0f} min")
     return (
-        f"{prompt_template.strip()}\n\n## Episódio\n"
+        f"{prompt_template.strip()}\n\n"
+        + (f"{learning.strip()}\n\n" if learning.strip() else "")
+        + "## Episódio\n"
         + ("\n".join(header) + "\n\n" if header else "")
         + "## Transcrição\n" + _transcript_lines(units)
     )
@@ -551,9 +554,11 @@ class SuggestionService:
         units: list[dict[str, Any]], voice: ConfirmedVoice | None,
         prompt_template: str, schema: dict[str, Any], second_round: bool,
         should_cancel: Callable[[], bool], episode_title: str | None = None,
+        learning: str = "",
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, list[tuple[dict[str, Any], dict[str, Any]]]]:
         system_context = selection_system_context(
             prompt_template, units, transcript, episode_title=episode_title,
+            learning=learning,
         )
         prompt = selection_request(brief, self._config, second_round=second_round)
         if len(system_context) + len(prompt) > self._config.ai.max_input_chars:
@@ -679,6 +684,8 @@ class SuggestionService:
         except SourceAssetNotFoundError:
             pass
 
+        learning = build_learning_context(self._domain)
+
         # The model never sees the (huge) diarization turns, but the hash must change with the voice.
         request_brief = {key: value for key, value in brief.items() if key != "confirmed_voice"}
         prompt_sha256 = hashlib.sha256(prompt_template.encode()).hexdigest()
@@ -697,6 +704,7 @@ class SuggestionService:
                 "brief": request_brief,
                 "system_context_sha256": hashlib.sha256(selection_system_context(
                     prompt_template, units, transcript, episode_title=episode_title,
+                    learning=learning,
                 ).encode()).hexdigest(),
             },
             **({"voice_attribution_version": VOICE_ATTRIBUTION_VERSION,
@@ -723,7 +731,7 @@ class SuggestionService:
         select_kwargs = dict(
             transcript=transcript, units=units, voice=voice,
             prompt_template=prompt_template, schema=schema, should_cancel=should_cancel,
-            episode_title=episode_title,
+            episode_title=episode_title, learning=learning,
         )
         selection, provenance, voice_validation, metrics = self._select(
             brief=brief, second_round=False, **select_kwargs,
