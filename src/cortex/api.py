@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import UploadFile
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from cortex.analyze.camera_schemas import CameraTimelineDocument
 from cortex.analyze.face_schemas import FaceIndexDocument
@@ -119,6 +119,15 @@ class WorkflowRunCreate(BaseModel):
     maximum_seconds: float = Field(default=120, ge=15, le=180)
     topic: str | None = Field(default=None, max_length=500)
     instructions: str | None = Field(default=None, max_length=2000)
+    # Names/terms of this episode (guest, places) that the transcription should
+    # spell right; added to transcription.hotwords for new transcriptions.
+    hotwords: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("hotwords")
+    @classmethod
+    def clean_hotwords(cls, value: list[str]) -> list[str]:
+        cleaned = [" ".join(item.split())[:40] for item in value]
+        return list(dict.fromkeys(item for item in cleaned if item))
 
     @model_validator(mode="after")
     def duration_order(self) -> "WorkflowRunCreate":
@@ -684,7 +693,10 @@ def create_app(config: CortexConfig | None = None):
             job = jobs.create(JobCreate(
                 type=JobType.TRANSCRIPTION,
                 project_id=project_id,
-                payload={"source_asset_id": asset.id, "workflow_run_id": run.id, "overrides": {}},
+                payload={
+                    "source_asset_id": asset.id, "workflow_run_id": run.id,
+                    "overrides": {"hotwords": request.hotwords} if request.hotwords else {},
+                },
                 idempotency_key=f"workflow:{run.id}:transcription",
             ), connection=connection)
             run = domain.update_workflow_run(

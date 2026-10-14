@@ -86,15 +86,18 @@ def test_one_action_persists_and_advances_to_review(
 
     response = client.post(
         f"/api/v1/projects/{project.id}/runs",
-        json={"source_asset_id": source.id, "count": 10, "minimum_seconds": 40, "maximum_seconds": 120},
+        json={"source_asset_id": source.id, "count": 10, "minimum_seconds": 40, "maximum_seconds": 120,
+              "hotwords": [" Teo  Nanacacho ", "", "Teo Nanacacho"]},
     )
     assert response.status_code == 201, response.text
     run_id = response.json()["id"]
     jobs = JobStore(config.paths.database)
 
-    assert process_next(config, jobs, domain, FakeTranscriptionEngine(duration_seconds=40, segments=[
+    engine = FakeTranscriptionEngine(duration_seconds=40, segments=[
         TranscriptSegment(id=0, start=0.0, end=40.0, text="ola mundo", avg_logprob=-0.1, no_speech_prob=0.0, words=[]),
-    ]), _SuggestionProvider())
+    ])
+    assert process_next(config, jobs, domain, engine, _SuggestionProvider())
+    assert engine.calls[0]["hotwords"] == [*config.transcription.hotwords, "Teo Nanacacho"]
     assert domain.get_workflow_run(run_id).stage == "analyze"
     assert process_next(config, jobs, domain, FakeTranscriptionEngine(), _SuggestionProvider())
     assert domain.get_workflow_run(run_id).stage == "suggest"
