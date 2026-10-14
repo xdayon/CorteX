@@ -160,7 +160,9 @@ def test_learning_context_ranking_format_and_size(tmp_path: Path) -> None:
     best, worst = text.split("Funcionaram pior:")
     best_lines = [line for line in best.splitlines() if line.startswith("- ")]
     worst_lines = [line for line in worst.splitlines() if line.startswith("- ")]
-    assert len(best_lines) == 3 and len(worst_lines) == 3
+    assert len(best_lines) == 3 and len(worst_lines) == 2
+    # An "ok" clip is neither a model to follow nor one to avoid.
+    assert "Saúde e sistema" not in text
     assert best_lines[0] == (
         '- "Os ETs já estão aqui" — gancho: "Gancho 1" — 61 s — 12,3 mil views'
         " · 3,1% compart.+salv. — nota: ótimo"
@@ -213,3 +215,20 @@ def test_selection_context_has_learning_and_cache_key_changes(tmp_path: Path) ->
 
     domain.upsert_clip_publication(_pub(project, 1, published=True, views=12300, rating=-1))
     assert run(ScriptedProvider([_doc((0, 10, 7))]))["cached"] is False
+
+
+def test_unrated_clips_need_clear_engagement_signal(tmp_path: Path) -> None:
+    store, project = _store(tmp_path)
+    rows = [
+        dict(views=1000, shares=50, saves=50),   # 10% -> best (above median)
+        dict(views=1000, shares=20, saves=10),   # 3% -> median, best
+        dict(views=1000, shares=10, saves=10),   # 2% -> neither
+        dict(views=1000, shares=2, saves=3),     # 0.5% -> worst (below median / 2)
+        dict(views=50, shares=40, saves=40),     # too few views -> excluded
+    ]
+    for index, row in enumerate(rows, 1):
+        store.upsert_clip_publication(_pub(project, index, published=True, headline=f"C{index}", **row))
+    text = build_learning_context(store)
+    best, worst = text.split("Funcionaram pior:")
+    assert '"C1"' in best and '"C2"' in best and '"C3"' not in text and '"C5"' not in text
+    assert '"C4"' in worst

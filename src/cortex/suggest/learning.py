@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from math import ceil
-
 from cortex.domain.models import ClipPublication
 from cortex.domain.store import DomainStore
 
@@ -75,13 +73,33 @@ def build_learning_context(domain: DomainStore) -> str:
     ]
     if len(items) < MIN_RECORDS:
         return ""
+    # Only real signal teaches the model: an explicit rating, or (when unrated) an
+    # engagement clearly above / below the profile's median. "ok" clips and clips
+    # with too few views are left out instead of being forced into a list.
+    rates = sorted(rate for rate in (_engagement(item) for item in items) if rate is not None)
+    median = rates[len(rates) // 2] if rates else None
+
+    def is_best(item: ClipPublication) -> bool:
+        if item.rating is not None:
+            return item.rating == 1
+        rate = _engagement(item)
+        return rate is not None and median is not None and rate >= median
+
+    def is_worst(item: ClipPublication) -> bool:
+        if item.rating is not None:
+            return item.rating == -1
+        rate = _engagement(item)
+        return rate is not None and median is not None and rate < median / 2
+
     ranked = sorted(items, key=_rank_key)
-    best_count = min(MAX_BEST, ceil(len(ranked) / 2))
-    worst_count = min(MAX_WORST, len(ranked) - best_count)
-    best = ranked[:best_count]
-    worst = list(reversed(ranked[len(ranked) - worst_count:])) if worst_count else []
-    lines = ["## Aprendizado do perfil", "", "Funcionaram melhor:"]
-    lines += [_line(item) for item in best]
+    best = [item for item in ranked if is_best(item)][:MAX_BEST]
+    worst = [item for item in reversed(ranked) if is_worst(item)][:MAX_WORST]
+    if not best and not worst:
+        return ""
+    lines = ["## Aprendizado do perfil"]
+    if best:
+        lines += ["", "Funcionaram melhor:"]
+        lines += [_line(item) for item in best]
     if worst:
         lines += ["", "Funcionaram pior:"]
         lines += [_line(item) for item in worst]

@@ -41,6 +41,8 @@ export function PublicationPanel({projectId, artifactId, publication, hookText, 
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  // The Library lists every saved video; mount the form only when opened.
+  const [open, setOpen] = useState(false);
   useEffect(() => setForm(formFromPublication(publication)), [publication]);
   const set = <K extends keyof PublicationFormState>(key: K, value: PublicationFormState[K]) =>
     setForm(current => ({...current, [key]: value}));
@@ -64,9 +66,9 @@ export function PublicationPanel({projectId, artifactId, publication, hookText, 
     catch (reason) { setErrors([String(reason)]); }
     finally { setBusy(false); }
   }
-  return <details className="pub-panel">
+  return <details className="pub-panel" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Publicação <PublicationBadges publication={publication}/></summary>
-    <form onSubmit={event => void submit(event)} noValidate>
+    {open && <form onSubmit={event => void submit(event)} noValidate>
       <label className="pub-check"><input type="checkbox" checked={form.published} onChange={event => set("published", event.target.checked)}/> Publicado</label>
       <div className="pub-row">{PLATFORMS.map(([key, label]) => <label className="pub-check" key={key}><input type="checkbox" checked={form.platforms.includes(key)} onChange={() => togglePlatform(key)}/> {label}</label>)}</div>
       <label className="pub-field">Data da publicação<input type="date" value={form.published_on} onChange={event => set("published_on", event.target.value)}/></label>
@@ -83,6 +85,6 @@ export function PublicationPanel({projectId, artifactId, publication, hookText, 
         <button className="btn primary" type="submit" disabled={busy}>Salvar publicação</button>
         {publication && <button className="btn secondary" type="button" disabled={busy} onClick={() => void clear()}>Remover registro</button>}
       </div>
-    </form>
+    </form>}
   </details>;
 }

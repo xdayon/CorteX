@@ -47,8 +47,9 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
 
 ## Fase 3 — aprendizado e acesso
 
-- [ ] Registrar cortes publicados e métricas (retenção 3 s, compartilhamentos,
-  salvamentos) e usar exemplos aprovados/reprovados no prompt de seleção.
+- [x] Registrar cortes publicados e métricas (painel "Publicação" na exportação e na
+  Biblioteca) e usar o "Aprendizado do perfil" no prompt de seleção: só nota explícita
+  ou engajamento claramente acima/abaixo da mediana; ~450 tokens no contexto em cache.
 - [ ] Imagens ilustrativas opcionais: IA sugere momentos e termos; imagem enviada
   pelo usuário ou de acervo livre (ex.: Wikimedia), com licença registrada.
 - [x] Acesso remoto por Cloudflare Tunnel + Access no código: JWT validado na origem,

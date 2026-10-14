@@ -49,7 +49,12 @@ test("formatViews abbreviates thousands and millions", () => {
 test("the form blocks invalid input and sends the payload when valid", async () => {
   vi.mocked(api.savePublication).mockResolvedValue(saved);
   const onSaved = vi.fn();
-  render(<PublicationPanel projectId="proj" artifactId="art" hookText="Gancho" onSaved={onSaved} onDeleted={vi.fn()}/>);
+  const { container } = render(<PublicationPanel projectId="proj" artifactId="art" hookText="Gancho" onSaved={onSaved} onDeleted={vi.fn()}/>);
+  // The form is mounted only when the panel is opened (the Library lists many videos).
+  expect(screen.queryByLabelText("Views")).toBeNull();
+  const details = container.querySelector("details")!;
+  details.open = true;
+  fireEvent(details, new Event("toggle"));
   fireEvent.change(screen.getByLabelText("Views"), { target: { value: "abc" } });
   fireEvent.click(screen.getByText("Salvar publicação"));
   expect(screen.getByRole("alert").textContent).toContain("Views");
