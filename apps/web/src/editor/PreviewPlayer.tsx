@@ -10,7 +10,10 @@ const ZONE_LABELS: Record<string, string> = {
 };
 const PLATFORM_LABELS: Record<string, string> = { instagram_reels: "Instagram", tiktok: "TikTok" };
 
-type Engine = { ready: Promise<void>; renderer: { setTrack: (ass: string) => Promise<unknown> }; destroy: () => Promise<void> };
+type Engine = {
+  ready: Promise<void>; renderer: { setTrack: (ass: string) => Promise<unknown> };
+  resize: (forceRepaint?: boolean) => Promise<void>; destroy: () => Promise<void>;
+};
 
 function clock(seconds: number) {
   const value = Math.max(0, seconds);
@@ -59,11 +62,15 @@ export function PreviewPlayer({ preview, overlay, onTime, ref }: {
     if (!video || !hasVideo || !fontKey) return;
     let cancelled = false;
     let created: Engine | null = null;
-    const availableFonts = Object.fromEntries(fonts.map(font => [font.ass_name, new URL(font.url, window.location.href).href]));
+    const urls = fonts.map(font => new URL(font.url, window.location.href).href);
+    const availableFonts = Object.fromEntries(fonts.map((font, index) => [font.ass_name, urls[index]]));
     setEngineError("");
     void import("jassub").then(({ default: JASSUB }) => {
       if (cancelled) return;
-      created = new JASSUB({ video, subContent: assRef.current, availableFonts }) as unknown as Engine;
+      // `fonts` are loaded up front and matched by the family names inside the
+      // files (exactly like libass with fontsdir in the export). availableFonts
+      // alone is looked up by "family + weight" keys and misses "Montserrat Black".
+      created = new JASSUB({ video, subContent: assRef.current, fonts: urls, availableFonts }) as unknown as Engine;
       engineRef.current = created;
       setEngine(created);
     }).catch(reason => {
@@ -85,9 +92,26 @@ export function PreviewPlayer({ preview, overlay, onTime, ref }: {
     if (!engine || !overlay) return;
     let cancelled = false;
     void engine.ready.then(() => cancelled ? undefined : engine.renderer.setTrack(overlay.ass_text))
+      // A paused video produces no new frames, so repaint the current one.
+      .then(() => {
+        if (cancelled) return;
+        nudgeFrame();
+        return engine.resize(true);
+      })
       .catch(reason => { if (!cancelled) setEngineError(`Legenda da prévia indisponível: ${reason instanceof Error ? reason.message : reason}`); });
     return () => { cancelled = true; };
   }, [engine, overlay]);
+
+  function repaint() {
+    void engineRef.current?.resize(true).catch(() => undefined);
+  }
+
+  function nudgeFrame() {
+    // JASSUB draws on video frame callbacks; a paused, freshly loaded video never
+    // presents a new frame, so re-seek to the same time to get one.
+    const video = videoRef.current;
+    if (video && video.paused && video.readyState >= 2) video.currentTime = video.currentTime;
+  }
 
   useEffect(() => {
     if (!zonesOn || zones) return;
@@ -120,6 +144,7 @@ export function PreviewPlayer({ preview, overlay, onTime, ref }: {
           aria-label="Prévia do corte"
           onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
           onLoadedMetadata={event => setDuration(event.currentTarget.duration || 0)}
+          onLoadedData={() => { nudgeFrame(); repaint(); }} onSeeked={repaint}
           onTimeUpdate={event => { setTime(event.currentTarget.currentTime); onTime?.(event.currentTarget.currentTime); }}
           onClick={toggle}
         />
