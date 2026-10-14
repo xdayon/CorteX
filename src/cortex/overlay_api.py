@@ -27,6 +27,7 @@ from cortex.render.safe_zones import PLATFORM_OCCLUSIONS, SAFE_ZONES_VERSION
 from cortex.render.schemas import RenderSettings
 from cortex.render.service import (
     build_plan_overlay,
+    default_render_settings,
     effective_headline_settings,
     normalize_headline_text,
 )
@@ -164,6 +165,10 @@ def create_overlay_router(prefix: str, config: CortexConfig, domain: DomainStore
             "junctions": list(overlay.junctions),
             "fonts": fonts,
         }
+
+    @router.get("/render-defaults")
+    def render_defaults():
+        return default_render_settings(config).model_dump(mode="json")
 
     @router.get("/safe-zones")
     def safe_zones():

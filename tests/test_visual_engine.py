@@ -1010,3 +1010,30 @@ def test_safe_zones_endpoint_lists_platform_rects(tmp_path) -> None:
     assert body["version"] == 2
     assert body["platforms"]["instagram_reels"]["right_actions"] == [0.86, 0.43, 1.0, 0.90]
     assert set(body["platforms"]) == {"instagram_reels", "tiktok"}
+
+
+def test_render_defaults_endpoint_uses_server_encoder(tmp_path) -> None:
+    config, _project, _plan = _api_fixture(tmp_path)
+    body = TestClient(create_app(config)).get("/api/v1/render-defaults").json()
+    assert body["encoder"] == config.render.encoder
+    assert body["captions"]["font_size"] == config.render.caption_font_size
+    assert RenderSettings.model_validate(body).encoder == config.render.encoder
+
+
+def test_nvenc_mismatch_is_an_explicit_precondition(tmp_path, monkeypatch) -> None:
+    import cortex.render.service as render_service
+
+    monkeypatch.setattr(
+        render_service, "nvenc_unavailable_reason",
+        lambda _ffmpeg: "Driver does not support the required nvenc API version",
+    )
+    config, project, plan_artifact = _api_fixture(tmp_path)
+    domain = DomainStore(config.paths.database)
+    (config.paths.data_dir / "m.mp4").write_bytes(b"")  # checked before the encoder
+    settings = _settings(_caption()).model_copy(update={"encoder": "h264_nvenc"})
+    with pytest.raises(render_service.RenderPreconditionError, match="NVENC indisponível"):
+        render_service.RenderService(config, domain).run(
+            edit_plan_artifact=domain.get_stage_artifact(plan_artifact.id),
+            encoder=None, headline=None, render_settings=settings,
+            progress_cb=lambda *_a: None, should_cancel=lambda: False,
+        )

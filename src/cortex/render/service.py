@@ -436,6 +436,35 @@ def _export_render_files(
         ) from exc
 
 
+_NVENC_PROBES: dict[str, str | None] = {}
+
+
+def nvenc_unavailable_reason(ffmpeg: Path) -> str | None:
+    """None when this FFmpeg can open h264_nvenc, else FFmpeg's own reason.
+
+    A driver/FFmpeg API mismatch (e.g. FFmpeg built for NVENC API 13.1 on the
+    Pascal 580 driver, which stops at 13.0) only shows up when the encoder
+    opens; probing once per process turns that into an explicit precondition
+    error instead of a failed render. Cached per FFmpeg path.
+    """
+    key = str(ffmpeg)
+    if key not in _NVENC_PROBES:
+        try:
+            result = subprocess.run(
+                [key, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                 "color=c=black:s=1280x720:d=0.1", "-frames:v", "1", "-c:v", "h264_nvenc",
+                 "-f", "null", "-"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            lines = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+            _NVENC_PROBES[key] = None if result.returncode == 0 else (
+                lines[0] if lines else f"código de saída {result.returncode}"
+            )[:300]
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _NVENC_PROBES[key] = str(exc)[:300]
+    return _NVENC_PROBES[key]
+
+
 def _encoder_args(encoder: str, *, draft: bool = False) -> list[str]:
     if encoder == "h264_nvenc":
         return ["-c:v", encoder, "-preset", "p1" if draft else "p4", "-cq", "18"]
@@ -458,6 +487,12 @@ def _resolve_font_family(requested: str) -> str:
             f"fonte solicitada não está instalada sem fallback: {requested}"
         )
     return effective
+
+
+def default_render_settings(config: CortexConfig) -> RenderSettings:
+    """Server-side defaults for the Studio (encoder and typography come from
+    config, so the UI never hardcodes them)."""
+    return _default_render_settings(config, encoder=None, headline=None)
 
 
 def _default_render_settings(
@@ -1466,6 +1501,13 @@ class RenderService:
         requested_settings = _merge_render_settings(requested_settings, render_settings_override)
         requested_encoder = requested_settings.encoder.strip()
         _encoder_args(requested_encoder, draft=draft)
+        if requested_encoder == "h264_nvenc":
+            reason = nvenc_unavailable_reason(self._config.render.ffmpeg)
+            if reason is not None:
+                raise RenderPreconditionError(
+                    "NVENC indisponível neste FFmpeg/driver; configure render.encoder: "
+                    f"libx264. Detalhe: {reason}"
+                )
         if (
             requested_settings.framing.mode == "face_static_crop"
             and camera_edit_plan_artifact is not None

@@ -34,7 +34,10 @@ render:
   remotion_app_dir: apps/remotion
   overlay_renderer: libass
   fonts_dir: assets/fonts
-  encoder: h264_nvenc
+  # NVENC indisponível desde 02/out/2026: o FFmpeg 8.1.3 do Bazzite exige a API
+  # NVENC 13.1 (driver >= 610) e a GTX 1060 (Pascal) termina no driver 580 (API 13.0).
+  # Ver docs/evidence/2026-10-14-host-nvenc.md antes de voltar para h264_nvenc.
+  encoder: libx264
   allow_cpu_fallback: false
   width: 1080
   height: 1920
