@@ -138,13 +138,10 @@ input[type="range"]::-webkit-slider-thumb { appearance: none; width: 13px; heigh
 .export-layout { grid-template-columns:minmax(0,1000px); }
 .episode-history { margin:20px 0; display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
 @media(max-width:650px) { .caption-editor { grid-template-columns:1fr; }.caption-preview-panel { position:static; max-width:320px; margin:auto; } }
-.transcript-words { display:grid; grid-template-columns:repeat(auto-fill,minmax(135px,1fr)); gap:10px; max-height:340px; overflow:auto; margin:18px 0; }
-.transcript-words label { min-width:0; }.transcript-words input { width:100%; }.transcript-words small { display:block; color:var(--muted); margin-bottom:4px; }
 .clip-preview-actions { margin:24px 0; }.clip-preview-actions p { color:var(--muted); font-size:12px; }.clip-preview-actions video { width:min(100%,360px); max-height:640px; }
 .headline-editor { margin-top:24px; max-width:700px; }
 .headline-editor textarea { width:100%; min-height:110px; resize:vertical; padding:12px; color:var(--text); background:var(--surface-2); border:1px solid var(--line); }
 .headline-editor p { color:var(--muted); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
-.transcript-editor { scroll-margin-top:96px; }.transcript-words input { background:var(--surface-2); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:8px; font:inherit; font-size:12px; }.transcript-words input:focus { outline:1px solid var(--cyan); }
 
 .library-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:20px; }
 .library-grid h3 { overflow-wrap:anywhere; }

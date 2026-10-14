@@ -435,7 +435,7 @@ export default function App() {
       {screen === "export" && selection && run && <section className="simple-page enter export-page"><div className="simple-title"><span>03 · EXPORTAR</span><h1>Seu corte, do seu jeito.</h1><p>{activeClips.length} cortes selecionados · 1080 × 1920. A prévia é o vídeo real da edição com a legenda exata da exportação. Depois que o lote for enviado, o processamento continua no servidor mesmo se você fechar esta tela.</p></div>
         {notice && <p className="simple-notice" role="status">{notice}</p>}
         <ExportEditor run={run} clips={activeClips} focusedKey={focusedKey} onFocus={setFocusedKey} settings={settings} update={setSettings}
-          captionEdits={captionEdits} onCaptionEdits={(key, edits) => setCaptionEdits(current => ({...current, [key]: edits}))}
+          captionEdits={captionEdits} onCaptionEdits={(key, edits) => setCaptionEdits(current => ({...current, [key]: edits}))} onAllCaptionEdits={setCaptionEdits}
           headlines={headlines} onHeadline={(key, text) => setHeadlines(current => { const next = {...current}; if (text) next[key] = text; else delete next[key]; return next; })}
           emphasisEdits={emphasisEdits} onEmphasis={(key, indices) => setEmphasisEdits(current => ({...current, [key]: indices}))}
           sceneIndexArtifactId={visualArtifacts?.scene} disabled={busy}

@@ -1,8 +1,8 @@
-import { useRef, useState } from "react";
-import type { CaptionCorrection, RenderSettings, SuggestedClip, WorkflowRun } from "../api";
-import { TranscriptEditor } from "../TranscriptEditor";
+import { useEffect, useRef, useState } from "react";
+import { api, type CaptionCorrection, RenderSettings, SuggestedClip, WorkflowRun } from "../api";
 import { clipDuration, clipKey, effectiveHeadline } from "./clips";
-import { emphasisFor } from "./captions";
+import { emphasisFor, flatWords, type IndexedWord } from "./captions";
+import { CaptionTab } from "./CaptionTab";
 import { FramingTab } from "./FramingTab";
 import { HeadlineTab } from "./HeadlineTab";
 import { PreviewPlayer, type PlayerHandle } from "./PreviewPlayer";
@@ -32,6 +32,7 @@ export type ExportEditorProps = {
   update: SettingsUpdate;
   captionEdits: Record<string, CaptionCorrection[]>;
   onCaptionEdits: (key: string, edits: CaptionCorrection[]) => void;
+  onAllCaptionEdits: (all: Record<string, CaptionCorrection[]>) => void;
   headlines: Record<string, string>;
   onHeadline: (key: string, text: string | null) => void;
   emphasisEdits: Record<string, number[]>;
@@ -47,10 +48,21 @@ export function ExportEditor(props: ExportEditorProps) {
   const key = clip ? clipKey(clip) : "";
   const [tab, setTab] = useState<Tab>("caption");
   const player = useRef<PlayerHandle>(null);
+  const [time, setTime] = useState(0);
+  const [words, setWords] = useState<IndexedWord[] | null>(null);
+  const [wordsError, setWordsError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    setWords(null); setWordsError("");
+    void api.transcript(run.project_id, run.artifacts.transcript, controller.signal)
+      .then(({ document }) => { if (!controller.signal.aborted) setWords(flatWords(document.segments)); })
+      .catch(reason => { if (!controller.signal.aborted) setWordsError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => controller.abort();
+  }, [run.project_id, run.artifacts.transcript]);
   const preview = useDraftPreview({ projectId: run.project_id, run, clip, settings, sceneIndexArtifactId: props.sceneIndexArtifactId });
   const corrections = props.captionEdits[key] ?? EMPTY_CORRECTIONS;
   const emphasis = clip ? emphasisFor(clip, props.emphasisEdits) : EMPTY_NUMBERS;
-  const { overlay, error: overlayError } = useOverlayPreview({
+  const { overlay, error: overlayError, loading: overlayLoading } = useOverlayPreview({
     projectId: run.project_id, editPlanArtifactId: preview.editPlanArtifactId, settings,
     corrections, emphasis, headlineText: clip ? effectiveHeadline(clip, props.headlines[key]) : "",
   });
@@ -68,7 +80,7 @@ export function ExportEditor(props: ExportEditorProps) {
       })}
     </nav>
     <div className="editor-stage">
-      <PreviewPlayer ref={player} preview={preview} overlay={overlay}/>
+      <PreviewPlayer ref={player} preview={preview} overlay={overlay} onTime={setTime}/>
       {overlayError && <p className="preview-note warn" role="status">Não foi possível atualizar a legenda da prévia: {overlayError}</p>}
     </div>
     <section className="editor-panel" aria-label="Ajustes do corte">
@@ -77,8 +89,11 @@ export function ExportEditor(props: ExportEditorProps) {
           aria-controls="editor-tabpanel" className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>{item.label}</button>)}
       </div>
       <div id="editor-tabpanel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="tab-body">
-        {tab === "caption" && <TranscriptEditor projectId={run.project_id} artifactId={run.artifacts.transcript} clip={clip}
-          corrections={corrections} disabled={disabled} onChange={edits => props.onCaptionEdits(key, edits)}/>}
+        {tab === "caption" && <CaptionTab clip={clip} clips={clips} overlay={overlay} loading={overlayLoading} error={overlayError}
+          time={time} onSeek={seconds => player.current?.seek(seconds)} disabled={disabled}
+          corrections={corrections} onCorrections={edits => props.onCaptionEdits(key, edits)}
+          emphasis={emphasis} onEmphasis={indices => props.onEmphasis(key, indices)}
+          captionEdits={props.captionEdits} onAllCaptionEdits={props.onAllCaptionEdits} words={words} wordsError={wordsError}/>}
         {tab === "style" && <StyleTab settings={settings} update={update} disabled={disabled}/>}
         {tab === "framing" && <FramingTab settings={settings} update={update} disabled={disabled}/>}
         {tab === "headline" && <HeadlineTab clip={clip} settings={settings} update={update} disabled={disabled}

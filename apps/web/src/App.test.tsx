@@ -358,3 +358,28 @@ test("the review screen shows duration, assembled pieces, the cleaned start and 
   expect(screen.getByText(/Outras manchetes: Outra opção/)).toBeTruthy();
   expect(document.querySelector(".clip-rank")?.textContent).toContain("0:40");
 });
+
+test("caption corrections and emphasis edited in the Legenda tab reach the saved revision and draft", async () => {
+  vi.mocked(api.overlayPreview).mockResolvedValue({
+    ass_text: "x", generator_version: "1", content_hash: "h", timeline_duration_seconds: 38, canvas: { width: 1080, height: 1920 },
+    pages: [{ start: 0, end: 1, lines: [[{ index: 4, text: "CORTECS", start: 0, end: 1, emphasis: false, original: "Cortecs", probability: 0.9 }]] }],
+    junctions: [], fonts: [],
+  });
+  vi.mocked(api.createExportBatch).mockResolvedValue(succeededBatch);
+  await openExport();
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+  fireEvent.click(screen.getByRole("button", { name: "CORTECS" }));
+  fireEvent.click(screen.getByRole("button", { name: "★ Destacar" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Texto da palavra" }), { target: { value: "CorteX" } });
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Texto da palavra" }), { key: "Enter" });
+  fireEvent.click(screen.getByRole("button", { name: "Renderizar 1 corte" }));
+  await settle();
+  const body = vi.mocked(api.saveRevision).mock.lastCall![2];
+  expect(body.caption_edits).toEqual({ [KEY]: [{ word_index: 4, original: "Cortecs", text: "CorteX" }] });
+  expect(body.emphasis).toEqual({ [KEY]: [3, 4] });
+  expect(JSON.parse(localStorage.getItem("cortex-draft:project:run")!).emphasisEdits).toEqual({ [KEY]: [3, 4] });
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+  expect(vi.mocked(api.overlayPreview).mock.lastCall![2].captions).toMatchObject({
+    emphasis_word_indices: [3, 4], corrections: [{ word_index: 4, original: "Cortecs", text: "CorteX" }],
+  });
+});
