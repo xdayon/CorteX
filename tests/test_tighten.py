@@ -289,3 +289,19 @@ def test_refine_of_composed_clip_never_bridges_pieces(tmp_path: Path):
     request = provider.calls[0][0]
     assert '"headline":"Manchete"' in request and '"piece":1' in request
     assert provider.system_contexts[0].startswith("# Refino de corte")
+
+
+def test_refine_cache_key_ignores_int_vs_float_durations(tmp_path: Path):
+    words = [(float(i), float(i) + 0.9, f"frase{i}.") for i in range(40)]
+    config = _suggestion_config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    transcript = _transcript_artifact(domain, tmp_path, words)
+    provider = FakeSuggestionProvider({"keep_ids": list(range(36)), "notes": "x"})
+    service = TightenService(config, domain, provider)
+    kwargs = dict(transcript_artifact=transcript, start=0.0, end=40.0, brief=None,
+                  progress_cb=lambda *_args: None, should_cancel=lambda: False)
+    first = service.run(minimum_seconds=30, maximum_seconds=120, **kwargs)
+    second = service.run(minimum_seconds=30.0, maximum_seconds=120.0, **kwargs)
+    assert second["cached"] is True and second["tighten_artifact_id"] == first["tighten_artifact_id"]
+    assert len(provider.calls) == 1

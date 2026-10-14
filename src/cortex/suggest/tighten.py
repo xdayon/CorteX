@@ -198,6 +198,10 @@ class TightenService:
         schema_sha256 = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
 
         original_seconds = _speech_seconds(phrases)
+        # Normalized so 40 and 40.0 (int from a brief, float from JSON) share the
+        # same cache entry; a mismatch would silently re-bill the refine call.
+        minimum_seconds = float(minimum_seconds) if minimum_seconds is not None else None
+        maximum_seconds = float(maximum_seconds) if maximum_seconds is not None else None
         request_payload = {
             "primary_subject": (brief or {}).get("primary_subject"),
             "headline": headline or None,
