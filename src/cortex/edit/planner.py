@@ -406,6 +406,7 @@ def remove_fillers(
         candidates = [f for f in eligible if seg_start < f.start and f.end < seg_end]
         cursor = seg_start
         pieces: list[dict] = []
+        carried = {"piece_index": segment["piece_index"]} if "piece_index" in segment else {}
         for filler in candidates:
             if filler.start <= cursor:
                 continue
@@ -420,13 +421,13 @@ def remove_fillers(
                 or any(a <= cut_from <= b or a <= cut_to <= b for a, b in forbidden)
             ):
                 continue
-            pieces.append({"start": round(cursor, 3), "end": round(cut_from, 3)})
+            pieces.append({**carried, "start": round(cursor, 3), "end": round(cut_from, 3)})
             cursor = round(cut_to, 3)
             removed += 1
         if not pieces and cursor == seg_start:
             result.append(dict(segment))
             continue
-        pieces.append({"start": round(cursor, 3), "end": round(seg_end, 3)})
+        pieces.append({**carried, "start": round(cursor, 3), "end": round(seg_end, 3)})
         for piece in pieces[:-1]:
             piece["transition"] = build_transition(profile)
         if segment.get("transition") is not None:

@@ -51,6 +51,19 @@ class EditPlanPreconditionError(ValueError):
 def resolve_semantic_ranges(
     approximate_edl: list[dict] | None, start: float, end: float,
 ) -> list[tuple[float, float]]:
+    return [(a, b) for a, b, _piece in resolve_semantic_pieces(approximate_edl, start, end)]
+
+
+def _entry_piece(entry: dict) -> int | None:
+    value = entry.get("piece", entry.get("order"))
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def resolve_semantic_pieces(
+    approximate_edl: list[dict] | None, start: float, end: float,
+) -> list[tuple[float, float, int | None]]:
     """Turn ``approximate_edl`` entries into clamped, unioned keep-ranges.
 
     Requirement R5: a range partly outside the ``[start, end)`` envelope is
@@ -62,7 +75,7 @@ def resolve_semantic_ranges(
     error. Raises only when ``approximate_edl`` was given but nothing usable
     remains.
     """
-    raw_ranges: list[tuple[float, float]] = []
+    raw_ranges: list[tuple[float, float, int | None]] = []
     for entry in approximate_edl or []:
         if entry.get("audio_mode") == "room_tone":
             continue
@@ -77,15 +90,15 @@ def resolve_semantic_ranges(
         clamped_end = min(range_end, end)
         if clamped_end <= clamped_start:
             continue
-        raw_ranges.append((clamped_start, clamped_end))
-    raw_ranges.sort()
-    semantic_ranges: list[tuple[float, float]] = []
-    for range_start, range_end in raw_ranges:
+        raw_ranges.append((clamped_start, clamped_end, _entry_piece(entry)))
+    raw_ranges.sort(key=lambda item: (item[0], item[1]))
+    semantic_ranges: list[tuple[float, float, int | None]] = []
+    for range_start, range_end, piece in raw_ranges:
         if semantic_ranges and range_start <= semantic_ranges[-1][1]:
-            prev_start, prev_end = semantic_ranges[-1]
-            semantic_ranges[-1] = (prev_start, max(prev_end, range_end))
+            prev_start, prev_end, prev_piece = semantic_ranges[-1]
+            semantic_ranges[-1] = (prev_start, max(prev_end, range_end), prev_piece)
         else:
-            semantic_ranges.append((range_start, range_end))
+            semantic_ranges.append((range_start, range_end, piece))
     if approximate_edl is not None and not semantic_ranges:
         raise EditPlanPreconditionError("approximate_edl não possui áudio editorial")
     return semantic_ranges
@@ -115,6 +128,7 @@ def _segment_to_schema(segment: dict) -> EditSegment:
         audio_end=segment.get("audio_end"),
         timeline_order=segment.get("timeline_order", 0),
         transition=EditTransition(**transition) if transition else None,
+        piece_index=segment.get("piece_index"),
     )
 
 
@@ -151,7 +165,8 @@ class EditPlanService:
             raise EditPlanPreconditionError("maximum_seconds deve ser positivo e finito")
         if maximum_seconds is not None:
             maximum_seconds = float(maximum_seconds)
-        semantic_ranges = resolve_semantic_ranges(approximate_edl, start, end)
+        semantic_pieces = resolve_semantic_pieces(approximate_edl, start, end)
+        semantic_ranges = [(a, b) for a, b, _piece in semantic_pieces]
         voice = ConfirmedVoice.model_validate(confirmed_voice) if confirmed_voice else None
         if analysis_artifact.stage != "analysis":
             raise EditPlanPreconditionError("artifact informado não é um AnalysisArtifact")
@@ -245,7 +260,8 @@ class EditPlanService:
             hash_payload["duration_limit_version"] = 1
         if semantic_ranges:
             hash_payload["semantic_ranges"] = semantic_ranges
-            hash_payload["semantic_planner_version"] = 2
+            hash_payload["semantic_pieces"] = [piece for _a, _b, piece in semantic_pieces]
+            hash_payload["semantic_planner_version"] = 3
         if voice is not None:
             hash_payload["confirmed_voice"] = {
                 "speaker": voice.speaker,
@@ -284,15 +300,19 @@ class EditPlanService:
         if should_cancel():
             raise EditPlanJobCancelled()
         progress_cb(45.0, "Planejando cortes seguros")
-        planning_ranges = semantic_ranges or [(start, end)]
+        planning_ranges = semantic_pieces or [(start, end, None)]
         segments = []
         range_diagnostics = []
-        for range_start, range_end in planning_ranges:
+        for range_start, range_end, piece in planning_ranges:
             planned, range_diag = plan_safe_segments(
                 words, range_start, range_end, resolved_profile, energy,
                 vad_intervals=analysis.vad_intervals,
             )
-            segments.extend(protect_segment_boundaries(planned, words, resolved_profile))
+            protected = protect_segment_boundaries(planned, words, resolved_profile)
+            if piece is not None:
+                for segment in protected:
+                    segment["piece_index"] = piece
+            segments.extend(protected)
             range_diagnostics.append(range_diag)
         if len(planning_ranges) > 1:
             # Independently-planned semantic ranges may abut once padded;

@@ -46,6 +46,11 @@ class EditSegment(BaseModel):
     audio_end: float | None = Field(default=None, ge=0)
     timeline_order: int = Field(ge=0)
     transition: EditTransition | None = None
+    # Which selection piece (approximate_edl ``piece``/``order``) this kept
+    # range came from. Adjacent segments with different values mark a content
+    # jump between pieces of a composed clip; equal or missing values are jump
+    # cuts inside the same speech (pause/filler/tighten removals).
+    piece_index: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _fill_and_check_clocks(self) -> "EditSegment":

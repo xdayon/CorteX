@@ -735,3 +735,47 @@ def test_final_plan_rejects_non_predominant_confirmed_voice(tmp_path: Path) -> N
             },
             progress_cb=lambda *_args: None, should_cancel=lambda: False,
         )
+
+
+def test_selection_pieces_are_tagged_on_final_segments(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = [
+        _word("primeiro", 0.5, 1.0), _word("bloco.", 1.1, 1.5),
+        _word("segundo", 6.5, 7.0), _word("bloco.", 7.1, 7.5),
+    ]
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 8.0)
+    result = EditPlanService(config, domain).run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0, end=8, profile="balanced",
+        approximate_edl=[
+            {"order": 0, "source_start": 0, "source_end": 2, "audio_mode": "source"},
+            {"order": 1, "source_start": 6, "source_end": 8, "audio_mode": "source"},
+        ],
+        progress_cb=lambda *_args: None, should_cancel=lambda: False,
+    )
+    document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
+    assert [segment.piece_index for segment in document.segments] == [0, 1]
+
+
+def test_tighten_ranges_without_piece_leave_piece_index_empty(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = [
+        _word("primeiro", 0.5, 1.0), _word("bloco.", 1.1, 1.5),
+        _word("segundo", 6.5, 7.0), _word("bloco.", 7.1, 7.5),
+    ]
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 8.0)
+    result = EditPlanService(config, domain).run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=0, end=8, profile="balanced",
+        approximate_edl=[
+            {"source_start": 0, "source_end": 2, "audio_mode": "source"},
+            {"source_start": 6, "source_end": 8, "audio_mode": "source"},
+        ],
+        progress_cb=lambda *_args: None, should_cancel=lambda: False,
+    )
+    document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
+    assert all(segment.piece_index is None for segment in document.segments)
