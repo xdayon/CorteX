@@ -104,7 +104,7 @@ export function useDraftPreview({ projectId, run, clip, settings, sceneIndexArti
       try {
         setPhase("rendering"); setError("");
         const job = await api.startRender(
-          projectId, plan!.id, settingsRef.current, undefined,
+          projectId, plan!.id, settingsRef.current,
           run.brief.confirmed_voice ?? null, { purpose: "draft" },
         );
         jobId = job.id;

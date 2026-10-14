@@ -48,7 +48,7 @@ test("plans exactly like the export and renders a draft video", async () => {
     maximumSeconds: 120, minimumSeconds: 40, approximateEdl: [{ order: 0 }], confirmedVoice: { speaker: "A" },
     primarySubject: "Dayon", headline: "Manchete da IA", tighten: true, sceneIndexArtifactId: "scene",
   });
-  expect(api.startRender).toHaveBeenCalledWith("project", "edl", defaultRenderSettings, undefined, { speaker: "A" }, { purpose: "draft" });
+  expect(api.startRender).toHaveBeenCalledWith("project", "edl", defaultRenderSettings, { speaker: "A" }, { purpose: "draft" });
   expect(result.current).toMatchObject({
     phase: "ready", videoUrl: "/api/v1/projects/project/renders/draft/media", editPlanArtifactId: "edl",
     timelineSeconds: 52, belowMinimum: true, refine: { status: "accepted", reason: "ok" },

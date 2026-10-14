@@ -69,7 +69,7 @@ const tab = (name: string) => fireEvent.click(screen.getByRole("tab", { name }))
 const revision = (extra: Partial<ClipRevision> = {}) => ({
   id: "revision", project_id: "project", workflow_run_id: "run", version: 1, selection_artifact_id: "suggestion",
   selected_clips: [{ ...baseClip, key: KEY }], render_settings: defaultRenderSettings, caption_edits: {}, headlines: {},
-  visual_artifacts: {}, reuse_reactions: false, ...extra,
+  visual_artifacts: {}, ...extra,
 }) as unknown as ClipRevision;
 const succeededBatch = {
   id: "batch", project_id: "project", workflow_run_id: "run", revision_id: "revision", status: "succeeded",
@@ -155,7 +155,7 @@ test("a temporary reload error keeps the saved run available for retry", async (
 test("the export screen plans, renders a draft and shows the real preview player", async () => {
   await openExport();
   expect(api.startEditPlan).toHaveBeenCalledWith("project", expect.objectContaining({ tighten: true, headline: "Headline real", profile: "balanced", start: 0, end: 40 }));
-  expect(api.startRender).toHaveBeenCalledWith("project", "edl", expect.anything(), undefined, null, { purpose: "draft" });
+  expect(api.startRender).toHaveBeenCalledWith("project", "edl", expect.anything(), null, { purpose: "draft" });
   await act(async () => { await vi.advanceTimersByTimeAsync(250); });
   expect(api.overlayPreview).toHaveBeenCalled();
   expect(screen.getByLabelText("Prévia do corte").getAttribute("src")).toContain("/renders/draft/media");

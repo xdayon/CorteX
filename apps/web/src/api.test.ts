@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, isRemoteOrigin } from "./api";
+import { defaultRenderSettings } from "./editor/settings";
 
 class Events extends EventTarget {
   static instances: Events[] = [];
@@ -40,18 +41,15 @@ test("already cancelled work never opens a subscription", async () => {
   expect(Events.instances).toHaveLength(0);
 });
 
-test("identity requests explicitly name the interviewer and preserve the artifact chain", async () => {
-  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ interviewer_identity_id: "host" })));
+test("draft renders never send camera plan or identity fields", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "job" })));
   vi.stubGlobal("fetch", fetchMock);
-  await api.selectWorkflowIdentity("project", "run", "host", {
-    scene: "scene", face: "face", speaker: "speaker", camera: "camera", quality: "quality", identity: "identity",
-  });
+  await api.startRender("project", "edl", defaultRenderSettings, { speaker: "A" }, { purpose: "draft" });
   const [url, options] = fetchMock.mock.calls[0];
-  expect(url).toBe("/api/v1/projects/project/runs/run/identity");
+  expect(url).toBe("/api/v1/projects/project/renders");
   expect(JSON.parse(options.body)).toEqual({
-    interviewer_identity_id: "host", scene_index_artifact_id: "scene", face_index_artifact_id: "face",
-    speaker_timeline_artifact_id: "speaker", camera_timeline_artifact_id: "camera",
-    visual_quality_artifact_id: "quality", identity_index_artifact_id: "identity",
+    edit_plan_artifact_id: "edl", render_settings: defaultRenderSettings,
+    confirmed_voice: { speaker: "A" }, purpose: "draft",
   });
 });
 

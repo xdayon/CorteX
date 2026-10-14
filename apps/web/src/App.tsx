@@ -165,7 +165,7 @@ export default function App() {
 
   useEffect(() => {
     if (!run || !selection || draftRunKey !== `${run.project_id}:${run.id}`) return;
-    const draft: EditorDraft = {schema_version: 1, settings, selectedKeys, captionEdits, headlines, emphasisEdits, focusedKey, rendered, reuseReactions: false, visualArtifacts};
+    const draft: EditorDraft = {schema_version: 1, settings, selectedKeys, captionEdits, headlines, emphasisEdits, focusedKey, rendered, visualArtifacts};
     try {
       localStorage.setItem(`cortex-draft:${draftRunKey}`, JSON.stringify(draft));
       setDraftError("");
@@ -181,7 +181,7 @@ export default function App() {
       void api.saveRevision(run.project_id,run.id,{
         selection_artifact_id:run.artifacts.suggestion,selected_clips:selected,
         render_settings:settings,caption_edits:captionEdits,headlines,emphasis:emphasisEdits,
-        visual_artifacts:visualArtifacts || {},reuse_reactions:false,
+        visual_artifacts:visualArtifacts || {},
       }).then(saved => { if (saved) { setRevisionId(saved.id); setDraftError(""); } })
         .catch(reason => setDraftError(`Ajustes salvos neste navegador, mas não no servidor: ${errorMessage(reason)}`));
     },500);
@@ -271,7 +271,7 @@ export default function App() {
       setRevisionId(saved.id); setSettings(restored.settings); setSelectedKeys(savedKeys);
       setCaptionEdits(saved.caption_edits); setHeadlines(saved.headlines);
       setEmphasisEdits(Object.fromEntries(Object.entries(saved.emphasis ?? {}).filter(([key]) => validKeys.has(key))));
-      serverVisual = Object.keys(saved.visual_artifacts).length ? saved.visual_artifacts as VisualArtifacts : serverVisual;
+      serverVisual = saved.visual_artifacts.scene ? {scene: saved.visual_artifacts.scene} : serverVisual;
     } catch { /* primeira revisão: mantém o draft local compatível */ }
 
     try {
@@ -289,15 +289,8 @@ export default function App() {
 
     setNotice(legacyFraming ? LEGACY_FRAMING_NOTICE : "");
     setScreen("review");
-    const persistedVisual = {
-      scene: next.artifacts.scene_index,
-      face: next.artifacts.face_index,
-      speaker: next.artifacts.speaker_timeline,
-      camera: next.artifacts.camera_timeline,
-      quality: next.artifacts.visual_quality,
-      identity: next.artifacts.identity_index,
-    };
-    const visual = Object.values(persistedVisual).every(Boolean) ? persistedVisual : serverVisual;
+    const persistedScene = next.artifacts.scene_index;
+    const visual = persistedScene ? {scene: persistedScene} : serverVisual;
     if (visual) setVisualArtifacts(visual);
     signal.throwIfAborted();
     setDraftRunKey(runKey);
@@ -383,7 +376,7 @@ export default function App() {
       const revision = await api.saveRevision(run.project_id,run.id,{
         selection_artifact_id:run.artifacts.suggestion,selected_clips:selected,
         render_settings:settings,caption_edits:captionEdits,headlines,emphasis:emphasisEdits,
-        visual_artifacts:visualArtifacts || {},reuse_reactions:false,
+        visual_artifacts:visualArtifacts || {},
       });
       if (!revision) throw new Error("Não foi possível salvar a revisão antes de exportar");
       setRevisionId(revision.id);

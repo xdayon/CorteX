@@ -1,7 +1,7 @@
 import type { CaptionCorrection, RenderSettings } from './api';
 import { normalizeSettings } from './editor/settings';
 
-export type VisualArtifacts = { scene: string; face: string; speaker: string; camera: string; quality: string; identity: string };
+export type VisualArtifacts = { scene: string };
 export type EditorDraft = {
   schema_version: 1;
   settings: RenderSettings;
@@ -11,7 +11,6 @@ export type EditorDraft = {
   emphasisEdits: Record<string, number[]>;
   focusedKey: string;
   rendered: Array<{title: string; url: string; subtitles: string}>;
-  reuseReactions: boolean;
   visualArtifacts: VisualArtifacts | null;
 };
 
@@ -37,7 +36,7 @@ export type RestoredDraft = EditorDraft & {legacyFraming: boolean};
 
 export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: string[], defaults: RenderSettings, encoder?: RenderSettings['encoder'] | null): RestoredDraft {
   const fallback = normalizeSettings(defaults, defaults, encoder).settings;
-  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, emphasisEdits: {}, focusedKey: '', rendered: [], reuseReactions: false, visualArtifacts: null};
+  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, emphasisEdits: {}, focusedKey: '', rendered: [], visualArtifacts: null};
   try {
     const saved: unknown = JSON.parse(storage.getItem(`cortex-draft:${runKey}`) || 'null');
     if (saved !== null && (!object(saved) || (saved.schema_version !== undefined && saved.schema_version !== 1))) return empty;
@@ -68,8 +67,7 @@ export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: s
       headlines: object(draft.headlines) ? Object.fromEntries(Object.entries(draft.headlines).filter(([key, value]) => clipKeys.includes(key) && typeof value === 'string')) as Record<string, string> : {},
       focusedKey: typeof draft.focusedKey === 'string' && clipKeys.includes(draft.focusedKey) ? draft.focusedKey : '',
       rendered: Array.isArray(draft.rendered) ? draft.rendered.filter(item => object(item) && ['title', 'url', 'subtitles'].every(key => typeof item[key] === 'string')) : [],
-      reuseReactions: draft.reuseReactions === true,
-      visualArtifacts: object(visual) && ['scene', 'face', 'speaker', 'camera', 'quality', 'identity'].every(key => typeof visual[key] === 'string' && !!visual[key]) ? visual as VisualArtifacts : null,
+      visualArtifacts: object(visual) && typeof visual.scene === 'string' && !!visual.scene ? {scene: visual.scene} : null,
     };
   } catch { return empty; }
 }

@@ -56,8 +56,6 @@ export type WorkflowRun = {
   brief: SuggestionBrief;
   active_job_id?: string | null;
   artifacts: Record<string, string>;
-  subject_identity_id?: string | null;
-  interviewer_identity_id?: string | null;
   error?: string | null;
 };
 
@@ -139,8 +137,6 @@ export type ClipRevision = {
   headlines: Record<string, string>;
   emphasis?: Record<string, number[]>;
   visual_artifacts: Record<string, string>;
-  interviewer_identity_id?: string | null;
-  reuse_reactions: boolean;
 };
 
 export type ExportItem = {
@@ -167,20 +163,6 @@ export type SuggestionSelection = {
   provenance?: SuggestionProvenance;
 };
 
-export type IdentityIndexDocument = {
-  schema_version: number;
-  source_asset_id: string;
-  face_index_artifact_id: string;
-  identities: Array<{
-    identity_id: string;
-    status: "confirmed" | "single_layout" | "ambiguous";
-    sample_count: number;
-    layout_ids: string[];
-    evidence: string[];
-  }>;
-};
-
-export type CameraScene = { scene_index: number; start_us: number; end_us: number; role: string };
 export type SceneFramingOverride = { scene_index: number; target: "left" | "right" | "full" };
 
 export type CaptionCorrection = {word_index: number; original: string; text: string};
@@ -195,6 +177,7 @@ export type RenderSettings = {
   };
   framing: {
     schema_version: 1;
+    // face_static_crop, speaker_auto and speaker_face are legacy: stored revisions may carry them.
     mode: "vertical_crop" | "blurred_background" | "face_static_crop" | "speaker_auto" | "speaker_face";
     position_y?: number;
     primary_side?: "left" | "right" | null;
@@ -344,8 +327,6 @@ export const api = {
     headlines: Record<string,string>;
     emphasis?: Record<string, number[]>;
     visual_artifacts: Record<string,string>;
-    interviewer_identity_id?: string;
-    reuse_reactions: boolean;
   }) => request<ClipRevision>(`/api/v1/projects/${projectId}/runs/${runId}/revisions`, {
     method:"POST", body:JSON.stringify(body),
   }),
@@ -369,21 +350,6 @@ export const api = {
 
   retryExportBatch: (projectId:string,batchId:string) =>
     request<ExportBatch>(`/api/v1/projects/${projectId}/export-batches/${batchId}/retry`,{method:"POST"}),
-
-  selectWorkflowIdentity: (projectId: string, runId: string, identityId: string, artifacts: {
-    scene: string; face: string; speaker: string; camera: string; quality: string; identity: string;
-  }) => request<WorkflowRun>(`/api/v1/projects/${projectId}/runs/${runId}/identity`, {
-    method: "PUT",
-    body: JSON.stringify({
-      interviewer_identity_id: identityId,
-      scene_index_artifact_id: artifacts.scene,
-      face_index_artifact_id: artifacts.face,
-      speaker_timeline_artifact_id: artifacts.speaker,
-      camera_timeline_artifact_id: artifacts.camera,
-      visual_quality_artifact_id: artifacts.quality,
-      identity_index_artifact_id: artifacts.identity,
-    }),
-  }),
 
   suggestion: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<SuggestionArtifactDocument>>(`/api/v1/projects/${projectId}/suggestions/${artifactId}`),
@@ -413,48 +379,14 @@ export const api = {
       body: JSON.stringify({ source_asset_id: sourceAssetId, source_ranges: sourceRanges }),
     }),
 
-  startFaceIndex: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/faces`, {
-      method: "POST",
-      body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId }),
-    }),
-
-  startSpeakerTimeline: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string, faceIndexArtifactId: string, analysisArtifactId: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/speakers`, { method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId, face_index_artifact_id: faceIndexArtifactId, analysis_artifact_id: analysisArtifactId }) }),
-
-  startCameraTimeline: (projectId: string, sceneIndexArtifactId: string, faceIndexArtifactId: string, speakerTimelineArtifactId: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/cameras`, { method: "POST", body: JSON.stringify({ scene_index_artifact_id: sceneIndexArtifactId, face_index_artifact_id: faceIndexArtifactId, speaker_timeline_artifact_id: speakerTimelineArtifactId }) }),
-
-  startVisualQuality: (projectId: string, sourceAssetId: string, sceneIndexArtifactId: string, faceIndexArtifactId: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/visual-quality`, { method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, scene_index_artifact_id: sceneIndexArtifactId, face_index_artifact_id: faceIndexArtifactId }) }),
-
-  cameraTimeline: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<{ scenes: CameraScene[] }>>(`/api/v1/projects/${projectId}/cameras/${artifactId}`),
-
-  startIdentityIndex: (projectId: string, faceIndexArtifactId: string, cameraTimelineArtifactId: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/identities`, { method: "POST", body: JSON.stringify({ face_index_artifact_id: faceIndexArtifactId, camera_timeline_artifact_id: cameraTimelineArtifactId }) }),
-
-  identityIndex: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<IdentityIndexDocument>>(`/api/v1/projects/${projectId}/identities/${artifactId}`),
-
-  startReactionCandidates: (projectId: string, speakerTimelineArtifactId: string, cameraTimelineArtifactId: string, identityIndexArtifactId: string, visualQualityArtifactId: string, interviewerIdentityId: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/reaction-candidates`, { method: "POST", body: JSON.stringify({ speaker_timeline_artifact_id: speakerTimelineArtifactId, camera_timeline_artifact_id: cameraTimelineArtifactId, identity_index_artifact_id: identityIndexArtifactId, visual_quality_artifact_id: visualQualityArtifactId, interviewer_identity_id: interviewerIdentityId, min_duration_seconds: 0.7 }) }),
-
-  startCameraPlan: (projectId: string, editPlanArtifactId: string, cameraTimelineArtifactId: string, identityIndexArtifactId: string, visualQualityArtifactId: string, reactionCandidateArtifactId?: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/camera-plans`, { method: "POST", body: JSON.stringify({ edit_plan_artifact_id: editPlanArtifactId, camera_timeline_artifact_id: cameraTimelineArtifactId, identity_index_artifact_id: identityIndexArtifactId, visual_quality_artifact_id: visualQualityArtifactId, reaction_candidate_artifact_id: reactionCandidateArtifactId ?? null }) }),
-
-  identityPreviewUrl: (projectId: string, artifactId: string, identityId: string) =>
-    `/api/v1/projects/${encodeURIComponent(projectId)}/identities/${encodeURIComponent(artifactId)}/${encodeURIComponent(identityId)}/preview`,
-
   sourcePreviewUrl: (projectId: string, sourceAssetId: string, timeSeconds: number) =>
     `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/preview?time_seconds=${encodeURIComponent(timeSeconds.toFixed(3))}`,
 
-  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, cameraEditPlanArtifactId?: string, confirmedVoice?: Record<string, unknown> | null, options: {purpose?: "draft" | "export"} = {}) =>
+  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, confirmedVoice?: Record<string, unknown> | null, options: {purpose?: "draft" | "export"} = {}) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/renders`, {
       method: "POST",
       body: JSON.stringify({
         edit_plan_artifact_id: editPlanArtifactId,
-        camera_edit_plan_artifact_id: cameraEditPlanArtifactId ?? null,
         render_settings: renderSettings,
         confirmed_voice: confirmedVoice ?? null,
         purpose: options.purpose ?? "export",
