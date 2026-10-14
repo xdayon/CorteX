@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from cortex.render.technical_quality import RenderTechnicalQualityReport
 from cortex.render.auto_framing import AutoFramingSpan, SceneFramingOverride
+from cortex.render.face_focus import FaceFocusSpan
 
 RENDER_SCHEMA_VERSION = 14
 RENDER_SETTINGS_SCHEMA_VERSION = 1
@@ -119,11 +120,18 @@ class RenderFramingSettings(BaseModel):
     # it into the display window (1.0 = whole frame, today's behaviour).
     zoom: float = Field(default=1.0, ge=1.0, le=3.2, allow_inf_nan=False)
     focus_x: float = Field(default=0.5, ge=0.0, le=1.0, allow_inf_nan=False)
+    # "faces": each scene of the clip gets its own static focus from detected
+    # faces; focus_x then only applies to scenes without a usable face.
+    focus_mode: Literal["manual", "faces"] = "manual"
     punch_in: RenderPunchInSettings = Field(default_factory=RenderPunchInSettings)
     scene_overrides: list[SceneFramingOverride] = Field(default_factory=list, max_length=500)
 
     @model_validator(mode="after")
     def _validate_punch_in_anchor(self) -> "RenderFramingSettings":
+        if self.focus_mode == "faces" and self.mode not in ("blurred_background", "vertical_crop"):
+            raise ValueError(
+                "foco automático nos rostos só vale para o quadro com fundo desfocado ou a tela cheia"
+            )
         if len({item.scene_index for item in self.scene_overrides}) != len(self.scene_overrides):
             raise ValueError("scene_overrides não aceita cenas duplicadas")
         if self.punch_in.anchor == "face" and self.mode != "face_static_crop":
@@ -329,6 +337,7 @@ class RenderFramingSettingsPatch(BaseModel):
     primary_side: Literal["left", "right"] | None = None
     zoom: float | None = Field(default=None, ge=1.0, le=3.2, allow_inf_nan=False)
     focus_x: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
+    focus_mode: Literal["manual", "faces"] | None = None
     # Whole-object override, matching how captions.animation / headline.animation
     # already behave in this patch model: no partial-field patch for nested
     # settings, the incoming object fully replaces punch_in when present.
@@ -543,6 +552,17 @@ class RenderQualityPublicationReport(BaseModel):
     technical: RenderTechnicalQualityReport | None = None
 
 
+class RenderFaceFocusInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requested_mode: Literal["manual", "faces"]
+    effective_mode: Literal["manual", "faces"]
+    algorithm_version: str | None = None
+    scene_threshold: float | None = None
+    crop_width_fraction: float | None = None
+    spans: list[FaceFocusSpan] = Field(default_factory=list)
+
+
 class RenderDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -557,6 +577,7 @@ class RenderDocument(BaseModel):
     static_face_crops: list[dict[str, object]] = Field(default_factory=list)
     auto_framing: list[AutoFramingSpan] = Field(default_factory=list)
     auto_framing_inputs: dict[str, str] = Field(default_factory=dict)
+    face_focus: RenderFaceFocusInfo | None = None
     sources: list[RenderSourceInfo] = Field(default_factory=list)
     input_hash: str
     output_path: str

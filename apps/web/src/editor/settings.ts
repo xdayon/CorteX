@@ -5,7 +5,7 @@ export const defaultRenderSettings: RenderSettings = {
   encoder: "libx264",
   canvas: { width: 1080, height: 1920, fps: 30 },
   framing: {
-    schema_version: 1, mode: "blurred_background", position_y: 0.37, zoom: 1, focus_x: 0.5,
+    schema_version: 1, mode: "blurred_background", position_y: 0.37, zoom: 1.45, focus_x: 0.5, focus_mode: "faces",
     punch_in: { enabled: true, scale: 1.12, anchor: "center", alternate_on_jump_cuts: true },
   },
   captions: {
@@ -49,6 +49,8 @@ function merge(raw: unknown, template: unknown): unknown {
 /** Fills fields missing from older drafts/revisions and replaces unsupported choices. */
 export function normalizeSettings(raw: unknown, defaults: RenderSettings = defaultRenderSettings, encoder?: RenderSettings["encoder"] | null): {settings: RenderSettings; legacyFraming: boolean} {
   const settings = merge(raw, defaults) as RenderSettings;
+  const rawFraming = isObject(raw) ? raw.framing : undefined;
+  if (isObject(rawFraming) && typeof rawFraming.focus_mode !== "string") settings.framing = { ...settings.framing, focus_mode: "manual" };
   if (encoder) settings.encoder = encoder;
   let legacyFraming = false;
   if (LEGACY_FRAMING.has(settings.framing.mode)) {

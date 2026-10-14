@@ -23,12 +23,20 @@ from cortex.domain.store import (
 from cortex.edit.camera_plan_schemas import CameraEditPlanDocument, CameraEditShot
 from cortex.edit.schemas import EditPlanDocument
 from cortex.ingest.ffprobe import duration_seconds, probe_media, usable_av_duration_seconds
-from cortex.paths import renders_dir
+from cortex.paths import cache_dir, renders_dir
+from cortex.render.face_focus import (
+    FACE_FOCUS_ALGORITHM_VERSION,
+    FaceFocusCancelled,
+    FaceFocusError,
+    FaceFocusSpan,
+    resolve_face_focus,
+)
 from cortex.render.schemas import (
     PUNCH_IN_MAX_SCALE,
     RENDER_SCHEMA_VERSION,
     RenderDocument,
     RenderEngineInfo,
+    RenderFaceFocusInfo,
     RenderOverlayInfo,
     RenderPunchInInfo,
     RenderPunchInSettings,
@@ -206,6 +214,19 @@ def _framing_geometry(
     if framing_mode == "blurred_background":
         return _blurred_geometry(*source_size, canvas_w, canvas_h, zoom, focus_x)
     return None
+
+
+def _focused_geometry(
+    framing_mode: str, source_size: tuple[int, int], canvas_w: int, canvas_h: int,
+    zoom: float, focus_x: float,
+) -> _CropGeometry:
+    """Same crop as the manual geometry, with the horizontal focus applied
+    to vertical_crop too (its manual geometry is always centred)."""
+    if framing_mode == "blurred_background":
+        return _blurred_geometry(*source_size, canvas_w, canvas_h, zoom, focus_x)
+    base = _cover_geometry(*source_size, canvas_w, canvas_h)
+    x = int(min(max(focus_x * source_size[0] - base.w / 2, 0), source_size[0] - base.w)) // 2 * 2
+    return _CropGeometry(x, base.y, base.w, base.h, base.window_w, base.window_h)
 
 
 def _resolve_segment_punch_in(
@@ -689,6 +710,9 @@ def _filtergraph(
     source_size: tuple[int, int] | None = None,
     framing_zoom: float = 1.0,
     framing_focus_x: float = 0.5,
+    face_spans: list[FaceFocusSpan] | None = None,
+    face_geometries: list[_CropGeometry] | None = None,
+    face_punches: list[_PunchInResolution | None] | None = None,
 ) -> tuple[str, str, str]:
     video_parts: list[str] = []
     audio_parts: list[str] = []
@@ -710,6 +734,7 @@ def _filtergraph(
     def compose_video(
         input_filter: str, output_label: str, segment_order: int,
         auto_span: AutoFramingSpan | None = None,
+        face_index: int | None = None,
     ) -> str:
         # Punch-in (Gate 5) is a single extra static scale/crop bolted onto
         # the existing per-mode chain below — never a second temporal
@@ -719,6 +744,10 @@ def _filtergraph(
         punch = (punch_ins or {}).get(segment_order)
         if punch is not None and not punch.applied:
             punch = None
+        geo = geometry
+        if face_index is not None:
+            assert face_geometries is not None and face_punches is not None
+            geo, punch = face_geometries[face_index], face_punches[face_index]
         effective_mode = framing_mode
         if framing_mode in {"speaker_auto", "speaker_face"}:
             if auto_span is None:
@@ -731,10 +760,16 @@ def _filtergraph(
                     f"setsar=1,format=yuv420p{output_label}"
                 )
             effective_mode = "blurred_background"
-        if effective_mode == "vertical_crop" and geometry is not None and punch is not None:
+        if effective_mode == "vertical_crop" and geo is not None and (
+            punch is not None or face_index is not None
+        ):
+            crop_box = (
+                (punch.crop_width, punch.crop_height, punch.anchor_x, punch.anchor_y)
+                if punch is not None else (geo.w, geo.h, geo.x, geo.y)
+            )
             return (
-                f"{input_filter},fps={fps},crop={punch.crop_width}:{punch.crop_height}:"
-                f"{punch.anchor_x}:{punch.anchor_y},scale={width}:{height},"
+                f"{input_filter},fps={fps},crop={crop_box[0]}:{crop_box[1]}:"
+                f"{crop_box[2]}:{crop_box[3]},scale={width}:{height},"
                 f"setsar=1,format=yuv420p{output_label}"
             )
         if effective_mode == "vertical_crop":
@@ -764,20 +799,20 @@ def _filtergraph(
             background = f"[{label_name}_bg]"
             foreground = f"[{label_name}_fg]"
             source_crop: tuple[int, int, int, int] | None = None
-            if framing_mode == "blurred_background" and geometry is not None:
+            if framing_mode == "blurred_background" and geo is not None:
                 if punch is not None:
                     source_crop = (
                         punch.crop_width, punch.crop_height, punch.anchor_x, punch.anchor_y,
                     )
-                elif framing_zoom != 1.0:
-                    source_crop = (geometry.w, geometry.h, geometry.x, geometry.y)
+                elif framing_zoom != 1.0 or face_index is not None:
+                    source_crop = (geo.w, geo.h, geo.x, geo.y)
             if source_crop is not None:
-                assert geometry is not None
+                assert geo is not None
                 # Crop in source pixels (zoom/focus and punch-in), then scale once
                 # into the fixed display window.
                 foreground_chain = (
                     f"crop={source_crop[0]}:{source_crop[1]}:{source_crop[2]}:{source_crop[3]},"
-                    f"scale={geometry.window_w}:{geometry.window_h},setsar=1"
+                    f"scale={geo.window_w}:{geo.window_h},setsar=1"
                 )
             elif punch is not None:
                 # Crop the source inside the fitted video window. Zoom must not
@@ -868,6 +903,44 @@ def _filtergraph(
                 video_parts.append(
                     f"{''.join(shot_labels)}concat=n={len(shot_labels)}:v=1:a=0[v{index}]"
                 )
+        elif face_spans:
+            indexed = [
+                position for position, span in enumerate(face_spans)
+                if span.segment_order == segment.timeline_order
+            ]
+            if not indexed:
+                raise RenderPreconditionError("foco nos rostos não cobre o segmento")
+            if len(indexed) == 1:
+                video_parts.append(compose_video(
+                    f"[0:v]trim=start={segment.video_start - source_time_offset:.6f}:"
+                    f"end={segment.video_end - source_time_offset:.6f},setpts=PTS-STARTPTS",
+                    f"[v{index}]", segment.timeline_order, face_index=indexed[0],
+                ))
+            else:
+                labels = []
+                elapsed = 0.0
+                frame_cursor = 0
+                for part, position in enumerate(indexed):
+                    span = face_spans[position]
+                    raw_label = f"[facefocus{index}_{part}]"
+                    label = f"[facetimed{index}_{part}]"
+                    elapsed += span.source_end - span.source_start
+                    frame_end = round(elapsed * fps)
+                    frame_count = frame_end - frame_cursor
+                    frame_cursor = frame_end
+                    if frame_count <= 0:
+                        continue
+                    labels.append(label)
+                    video_parts.append(compose_video(
+                        f"[0:v]trim=start={span.source_start - source_time_offset:.6f}:"
+                        f"end={span.source_end - source_time_offset:.6f},setpts=PTS-STARTPTS",
+                        raw_label, segment.timeline_order, face_index=position,
+                    ))
+                    video_parts.append(
+                        f"{raw_label}tpad=stop_mode=clone:stop_duration=1,"
+                        f"trim=end_frame={frame_count},setpts=PTS-STARTPTS{label}"
+                    )
+                video_parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[v{index}]")
         else:
             video_parts.append(compose_video(
                 f"[0:v]trim=start={segment.video_start - source_time_offset:.6f}:"
@@ -1619,6 +1692,44 @@ class RenderService:
             effective_settings.canvas.width, effective_settings.canvas.height,
             effective_settings.framing.zoom, effective_settings.framing.focus_x,
         )
+        face_spans: list[FaceFocusSpan] = []
+        face_geometries: list[_CropGeometry] = []
+        face_crop_fraction: float | None = None
+        requested_focus_mode = requested_settings.framing.focus_mode
+        effective_focus_mode = effective_settings.framing.focus_mode
+        if effective_focus_mode == "faces":
+            if source_size is None or crop_geometry is None:
+                raise RenderPreconditionError("foco nos rostos exige as dimensões da fonte")
+            if camera_plan is not None:
+                raise RenderPreconditionError(
+                    "foco automático nos rostos não combina com plano de câmeras; use o foco manual"
+                )
+            face_crop_fraction = crop_geometry.w / source_size[0]
+            try:
+                face_spans = resolve_face_focus(
+                    ffmpeg=self._config.render.ffmpeg, source_path=source_path,
+                    source_sha256=source.sha256, segments=plan.segments,
+                    scene_threshold=self._config.analysis.scene_threshold,
+                    cache_dir=cache_dir(self._config, plan.project_id),
+                    crop_width_fraction=face_crop_fraction,
+                    manual_focus_x=effective_settings.framing.focus_x,
+                    primary_side=effective_settings.framing.primary_side,
+                    should_cancel=should_cancel,
+                )
+            except FaceFocusCancelled as exc:
+                raise RenderJobCancelled() from exc
+            except FaceFocusError as exc:
+                raise RenderPreconditionError(
+                    f"não foi possível detectar rostos para o foco automático: {exc}"
+                ) from exc
+            face_geometries = [
+                _focused_geometry(
+                    effective_settings.framing.mode, source_size,
+                    effective_settings.canvas.width, effective_settings.canvas.height,
+                    effective_settings.framing.zoom, span.focus_x,
+                )
+                for span in face_spans
+            ]
         junction_orders = frozenset(
             plan.segments[position].timeline_order for position, _moment in piece_junctions(plan)
         ) if (
@@ -1635,6 +1746,20 @@ class RenderService:
         punch_in_by_segment = {
             resolution.segment_order: resolution for resolution in punch_in_resolutions
         }
+        face_punches: list[_PunchInResolution | None] = []
+        for span, span_geometry in zip(face_spans, face_geometries):
+            segment_punch = punch_in_by_segment.get(span.segment_order)
+            face_punches.append(
+                _resolve_segment_punch_in(
+                    span.segment_order, punch_in_settings,
+                    framing_mode=effective_settings.framing.mode,
+                    canvas_width=effective_settings.canvas.width,
+                    canvas_height=effective_settings.canvas.height,
+                    static_face_crop_map=None, geometry=span_geometry,
+                    scale_override=segment_punch.effective_scale,
+                )
+                if segment_punch is not None and segment_punch.applied else None
+            )
         punch_ins_manifest = [
             RenderPunchInInfo(
                 segment_order=resolution.segment_order,
@@ -1717,6 +1842,11 @@ class RenderService:
             "static_face_crops": static_face_crops,
             "auto_framing": [span.model_dump() for span in auto_framing],
             "auto_framing_inputs": auto_framing_inputs,
+            "face_focus": {
+                "mode": effective_focus_mode,
+                "algorithm_version": FACE_FOCUS_ALGORITHM_VERSION if face_spans else None,
+                "spans": [span.model_dump() for span in face_spans],
+            },
             "render_sources": {source.id: source.sha256},
             "encoder": requested_encoder,
             "render_settings": effective_settings.model_dump(mode="json"),
@@ -1828,6 +1958,9 @@ class RenderService:
             source_size=source_size,
             framing_zoom=effective_settings.framing.zoom,
             framing_focus_x=effective_settings.framing.focus_x,
+            face_spans=face_spans,
+            face_geometries=face_geometries,
+            face_punches=face_punches,
         )
         command = [str(self._config.render.ffmpeg), "-y", "-v", "error"]
         command.extend([
@@ -2195,6 +2328,17 @@ class RenderService:
                 static_face_crops=static_face_crops,
                 auto_framing=auto_framing,
                 auto_framing_inputs=auto_framing_inputs,
+                face_focus=RenderFaceFocusInfo(
+                    requested_mode=requested_focus_mode, effective_mode=effective_focus_mode,
+                    algorithm_version=FACE_FOCUS_ALGORITHM_VERSION if face_spans else None,
+                    scene_threshold=(
+                        self._config.analysis.scene_threshold if face_spans else None
+                    ),
+                    crop_width_fraction=(
+                        round(face_crop_fraction, 6) if face_crop_fraction is not None else None
+                    ),
+                    spans=face_spans,
+                ),
                 sources=[RenderSourceInfo(
                     source_asset_id=source.id,
                     sha256=source.sha256,

@@ -18,7 +18,7 @@ test("old shapes are merged with the new defaults instead of crashing", () => {
   old.captions.font_family = "Lato"; old.captions.font_size = 70;
   const { settings } = normalizeSettings(old);
   expect(settings.transitions).toEqual(defaultRenderSettings.transitions);
-  expect(settings.framing.zoom).toBe(1);
+  expect(settings.framing.zoom).toBe(1.45);
   expect(settings.captions).toMatchObject({ style: "pop", font_family: "Montserrat", font_size: 70 });
   expect(settings.headline.persistent).toBe(false);
 });
@@ -45,4 +45,14 @@ test("hotwords are split on commas, trimmed, deduplicated and capped", () => {
   expect(parseHotwords(Array.from({ length: 30 }, (_, i) => `t${i}`).join(","))).toHaveLength(20);
   expect(parseHotwords("x".repeat(60))[0]).toHaveLength(40);
   expect(parseHotwords("  ")).toEqual([]);
+});
+
+test("new sessions follow faces at 1.45x, while saved revisions without focus_mode stay manual", () => {
+  expect(defaultRenderSettings.framing).toMatchObject({ focus_mode: "faces", zoom: 1.45 });
+  const saved = structuredClone(defaultRenderSettings) as Record<string, any>;
+  delete saved.framing.focus_mode; saved.framing.zoom = 1.2;
+  expect(normalizeSettings(saved).settings.framing).toMatchObject({ focus_mode: "manual", zoom: 1.2 });
+  saved.framing.focus_mode = "faces";
+  expect(normalizeSettings(saved).settings.framing.focus_mode).toBe("faces");
+  expect(normalizeSettings(undefined).settings.framing.focus_mode).toBe("faces");
 });

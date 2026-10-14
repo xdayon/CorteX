@@ -18,9 +18,12 @@ export function FramingTab({ settings, update, disabled }: { settings: RenderSet
         aria-pressed={f.mode === mode.id} onClick={() => patch({ mode: mode.id })}>
         <b>{mode.name}</b><span>{mode.text}</span></button>)}
     </div>
+    <Toggle checked={f.focus_mode === "faces"} label="Seguir rostos automaticamente"
+      onChange={on => patch({ focus_mode: on ? "faces" : "manual" })}/>
+    {f.focus_mode === "faces" && <p className="field-help">Cada cena do corte é enquadrada em volta dos rostos detectados.</p>}
     {f.mode === "blurred_background" && <>
       <Range label="Zoom do vídeo" value={f.zoom} min={1} max={3.2} step={0.05} suffix="×" startLabel="Estúdio inteiro" endLabel="Tela cheia" onChange={zoom => patch({ zoom })}/>
-      <Range label="Foco horizontal" value={Math.round(f.focus_x * 100)} min={0} max={100} suffix="%" startLabel="Esquerda" endLabel="Direita" onChange={value => patch({ focus_x: value / 100 })}/>
+      <Range label={f.focus_mode === "faces" ? "Foco quando não houver rosto" : "Foco horizontal"} value={Math.round(f.focus_x * 100)} min={0} max={100} suffix="%" startLabel="Esquerda" endLabel="Direita" onChange={value => patch({ focus_x: value / 100 })}/>
       <Range label="Posição vertical" value={Math.round((f.position_y ?? .5) * 100)} min={0} max={100} suffix="%" onChange={value => patch({ position_y: value / 100 })}/>
     </>}
     <Toggle checked={f.punch_in.enabled} label="Zoom alternado nos cortes"

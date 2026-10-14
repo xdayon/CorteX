@@ -201,6 +201,7 @@ export type RenderSettings = {
     scene_overrides?: SceneFramingOverride[];
     zoom: number;
     focus_x: number;
+    focus_mode: "manual" | "faces";
     punch_in: {
       enabled: boolean;
       scale: number;
