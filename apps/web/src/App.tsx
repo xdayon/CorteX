@@ -4,7 +4,8 @@ import type { CaptionCorrection } from "./api";
 import { restoreEditorDraft, type EditorDraft, type VisualArtifacts } from "./editorDraft";
 import { ExportEditor } from "./editor/ExportEditor";
 import { Field, Range, Toggle } from "./editor/controls";
-import { clipDuration, clipKey } from "./editor/clips";
+import { clipDuration, clipKey, hookOf } from "./editor/clips";
+import { PublicationPanel, usePublications } from "./PublicationPanel";
 import { parseHotwords } from "./editor/hotwords";
 import { defaultRenderSettings, LEGACY_FRAMING_NOTICE, normalizeSettings } from "./editor/settings";
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
@@ -134,10 +135,11 @@ export default function App() {
   const [currentJob, setCurrentJob] = useState<ApiJob | null>(null);
   const [jobHistory, setJobHistory] = useState<JobActivity[]>([]);
   const [renderProgress, setRenderProgress] = useState(0);
-  const [rendered, setRendered] = useState<Array<{ title: string; url: string; subtitles: string }>>([]);
+  const [rendered, setRendered] = useState<EditorDraft["rendered"]>([]);
   const [visualArtifacts, setVisualArtifacts] = useState<VisualArtifacts | null>(null);
   const [, setRevisionId] = useState("");
   const [activeBatch, setActiveBatch] = useState<ExportBatch | null>(null);
+  const publications = usePublications();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -283,7 +285,9 @@ export default function App() {
         const outputs = latest.items.filter(item=>item.status==="succeeded"&&item.render_artifact_id);
         setRendered(outputs.map(item=>({title:item.title,
           url:api.renderMediaUrl(next.project_id,item.render_artifact_id!),
-          subtitles:api.renderSubtitlesUrl(next.project_id,item.render_artifact_id!)})));
+          subtitles:api.renderSubtitlesUrl(next.project_id,item.render_artifact_id!),
+          projectId:next.project_id,artifactId:item.render_artifact_id!,
+          hookText:hookOf(result.clips,item.clip_key)})));
       }
     } catch { /* lote ainda inexistente */ }
 
@@ -395,6 +399,8 @@ export default function App() {
       setRendered(completed.map(item => ({
         title:item.title,url:api.renderMediaUrl(run.project_id,item.render_artifact_id!),
         subtitles:api.renderSubtitlesUrl(run.project_id,item.render_artifact_id!),
+        projectId:run.project_id,artifactId:item.render_artifact_id!,
+        hookText:hookOf(selection.clips,item.clip_key),
       })));
       const failures = batch.items.filter(item => item.status === "failed");
       if (failures.length) setWarnings(items => [...items,...failures.map(item => `“${item.title}”: ${item.error || "falha na exportação"}`)]);
@@ -437,7 +443,7 @@ export default function App() {
         {(busy || currentJob) && <JobProgress job={currentJob} history={jobHistory} progress={renderProgress} completed={renderProgress === 100} label={busy ? currentJob?.message || "Preparando exportação" : renderProgress === 100 ? "Exportação concluída" : "Exportação interrompida"} busy={busy}/>}
         <div className="clip-preview-actions"><div className="export-actionbar"><button className="btn primary simple-primary" disabled={busy || !activeClips.length} onClick={() => void renderSelected()}><Icon name="play"/> {busy ? "Renderizando..." : `Renderizar ${activeClips.length} corte${activeClips.length === 1 ? "" : "s"}`}</button></div></div>
         {rendered.length > 1 && <div className="export-actionbar"><button className="btn primary" onClick={() => void downloadAll(rendered)}><Icon name="check"/> Baixar todos ({rendered.length} MP4)</button></div>}
-        {rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download={downloadName(item.title)}>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div></article>)}</div>}</section>}
+        {rendered.length > 0 && <div className="rendered-grid">{rendered.map((item) => <article key={item.url}><video controls src={item.url}/><h3>{item.title}</h3><div><a className="btn secondary" href={item.url} download={downloadName(item.title)}>Baixar MP4</a><a href={item.subtitles} download>Baixar SRT</a></div>{item.artifactId && item.projectId && <PublicationPanel projectId={item.projectId} artifactId={item.artifactId} publication={publications.items[item.artifactId]} hookText={item.hookText} onSaved={publications.save} onDeleted={publications.remove}/>}</article>)}</div>}</section>}
       {screen === "export" && warnings.length > 0 && <aside className="simple-warnings" role="status" aria-label="Avisos da exportação"><b>Avisos da exportação</b>{warnings.map((warning, index) => <p key={index}>{warning}</p>)}</aside>}
       {draftError && <p role="alert">{draftError}</p>}
       {encoderError && <p role="alert">{encoderError}</p>}

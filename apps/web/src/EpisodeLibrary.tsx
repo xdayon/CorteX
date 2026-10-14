@@ -1,6 +1,7 @@
 import { VoiceSelector } from "./VoiceSelector";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type EpisodeEntry, type WorkflowRun } from "./api";
+import { PublicationBadges, PublicationPanel, usePublications } from "./PublicationPanel";
 
 function EpisodeThumbnail({ entry }: { entry: EpisodeEntry }) {
   const [failed, setFailed] = useState(false);
@@ -21,6 +22,7 @@ export function EpisodeLibrary({ busy, onOpen, onUse }: {
   const [query, setQuery] = useState("");
   const [includeArchived, setIncludeArchived] = useState(false);
   const [pending, setPending] = useState<Record<string, string>>({});
+  const publications = usePublications();
   const generation = useRef(0);
   const mounted = useRef(false);
   const fetching = useRef(false);
@@ -95,7 +97,7 @@ export function EpisodeLibrary({ busy, onOpen, onUse }: {
         <button className="btn secondary" disabled={disabled} onClick={() => void act(entry, "archive")}>{pending[entry.id] === "archive" ? "Salvando…" : entry.archived ? "Restaurar episódio" : "Arquivar"}</button></div>
         {entry.source && <VoiceSelector entry={entry} disabled={disabled || !!entry.archived}/>}
         {!!entry.runs.length && <details><summary>Seleções e processamentos ({entry.runs.length})</summary>{entry.runs.map(run => <button className="btn secondary" key={run.id} disabled={busy} onClick={() => onOpen(run)}>{run.status === "ready_for_review" ? "Abrir cortes" : "Ver processamento"} · {new Date(run.created_at || "").toLocaleString("pt-BR")} · {run.message}</button>)}</details>}
-        {!!entry.renders.length && <details><summary>Vídeos salvos ({entry.renders.length})</summary>{entry.renders.map(render => <p key={render.id}><a href={api.renderMediaUrl(render.project_id, render.id)} target="_blank" rel="noreferrer">{render.title} · {Math.round(render.duration || 0)}s</a></p>)}</details>}
+        {!!entry.renders.length && <details><summary>Vídeos salvos ({entry.renders.length})</summary>{entry.renders.map(render => <div className="pub-render" key={render.id}><p><a href={api.renderMediaUrl(render.project_id, render.id)} target="_blank" rel="noreferrer">{render.title} · {Math.round(render.duration || 0)}s</a> <PublicationBadges publication={publications.items[render.id]}/></p><PublicationPanel projectId={render.project_id} artifactId={render.id} publication={publications.items[render.id]} onSaved={publications.save} onDeleted={publications.remove}/></div>)}</details>}
       </article>;
     })}</div>
   </section>;

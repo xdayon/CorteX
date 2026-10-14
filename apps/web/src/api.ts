@@ -1,3 +1,21 @@
+export type PublicationPlatform = "instagram" | "tiktok";
+
+export type PublicationInput = {
+  title?: string | null; headline?: string | null; hook_text?: string;
+  duration_seconds?: number | null; published: boolean; platforms: PublicationPlatform[];
+  published_on: string | null; url: string | null;
+  views: number | null; likes: number | null; comments: number | null;
+  shares: number | null; saves: number | null;
+  retention_3s_pct: number | null; avg_watch_seconds: number | null;
+  rating: -1 | 0 | 1 | null; notes: string;
+};
+
+export type Publication = PublicationInput & {
+  id: string; project_id: string; render_artifact_id: string;
+  title: string; headline: string; hook_text: string; duration_seconds: number;
+  created_at: string; updated_at: string;
+};
+
 export type ApiJob = {
   id: string;
   type?: string;
@@ -410,6 +428,18 @@ export const api = {
 
   renderArtifact: (projectId: string, artifactId: string) =>
     request<ArtifactEnvelope<{ auto_framing?: Array<{ mode: string; reason: string }> }>>(`/api/v1/projects/${projectId}/renders/${artifactId}`),
+
+  publications: (limit = 500) => request<Publication[]>(`/api/v1/publications?limit=${limit}`),
+
+  savePublication: (projectId: string, artifactId: string, input: PublicationInput) =>
+    request<Publication>(`/api/v1/projects/${projectId}/renders/${artifactId}/publication`, {
+      method: "PUT", body: JSON.stringify(input),
+    }),
+
+  deletePublication: async (projectId: string, artifactId: string) => {
+    const response = await fetch(`/api/v1/projects/${projectId}/renders/${artifactId}/publication`, {method: "DELETE"});
+    if (!response.ok && response.status !== 404) throw new Error(`${response.status} ${response.statusText}`);
+  },
 
   renderMediaUrl: (projectId: string, artifactId: string) =>
     `/api/v1/projects/${projectId}/renders/${artifactId}/media`,

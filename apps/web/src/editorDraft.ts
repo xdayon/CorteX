@@ -10,7 +10,7 @@ export type EditorDraft = {
   headlines: Record<string, string>;
   emphasisEdits: Record<string, number[]>;
   focusedKey: string;
-  rendered: Array<{title: string; url: string; subtitles: string}>;
+  rendered: Array<{title: string; url: string; subtitles: string; artifactId?: string; projectId?: string; hookText?: string}>;
   visualArtifacts: VisualArtifacts | null;
 };
 

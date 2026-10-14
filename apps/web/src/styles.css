@@ -288,3 +288,23 @@ input[type=range]::-moz-range-thumb { width:15px; height:15px; border:2px solid 
   .tab-bar button { font-size: 12px; }
   .card-grid, .color-grid { grid-template-columns: 1fr; }
 }
+
+.pub-panel { margin-top: 12px; font-size: 13px; }
+.pub-panel summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pub-badges { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.pub-badge { padding: 2px 8px; border: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }
+.pub-badge.on { color: var(--green); border-color: rgba(103,245,139,.35); }
+.pub-badge.rating-1 { color: var(--green); }
+.pub-badge.rating-0 { color: var(--amber); }
+.pub-badge.rating--1 { color: var(--red); }
+.pub-panel form { display: grid; gap: 12px; margin-top: 12px; }
+.pub-row { display: flex; flex-wrap: wrap; gap: 16px; }
+.pub-check { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.pub-field { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; }
+.pub-field input, .pub-field select, .pub-field textarea { width: 100%; min-height: 42px; padding: 0 10px; border: 1px solid var(--line); background: #070b0c; color: var(--text); font-size: 14px; box-sizing: border-box; }
+.pub-field textarea { padding: 10px; resize: vertical; }
+.pub-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.pub-errors { margin: 0; padding-left: 18px; color: var(--red); font-size: 12px; }
+.pub-status { margin: 0; color: var(--green); font-size: 12px; }
+.pub-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.pub-render { margin-bottom: 14px; min-width: 0; overflow-wrap: anywhere; }

@@ -13,3 +13,8 @@ export function clipDuration(seconds: number) {
 export function effectiveHeadline(clip: SuggestedClip, edited?: string) {
   return (edited?.trim() || clip.headline || clip.title).slice(0, 120);
 }
+
+export function hookOf(clips: SuggestedClip[], key: string) {
+  const clip = clips.find(item => clipKey(item) === key);
+  return clip?.hook?.summary?.slice(0, 200) || undefined;
+}
