@@ -137,13 +137,12 @@ O planner recebe a EDL resolvida, diarizacao e indice visual. Ele deve:
 ## Pipeline de render
 
 FFmpeg e responsavel por decode, trims, audio, crop/reframe, color e encode final.
-Remotion e responsavel por headline, legendas animadas e overlays de marca.
+libass (`render/ass_overlay.py`) desenha headline e legendas animadas no mesmo encode do FFmpeg.
 
 Pipeline alvo:
 
 1. Gerar proxy apenas para preview, sem afetar o master.
 2. Resolver EDL e crop tracks antes do render.
-3. Produzir no maximo um intermediario visual quando Remotion precisar de alpha.
 4. Compor headline e captions na mesma passagem grafica.
 5. Aplicar loudness e encode no composite final, evitando reencodes sucessivos.
 6. Usar NVDEC/NVENC somente apos probe funcional; fallback de CPU deve ser

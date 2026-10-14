@@ -1,122 +1,88 @@
 # CorteX
 
-Editor pessoal Dayon News/HiTechX para transformar podcasts do YouTube ou arquivos
-locais em cortes para Reels/TikTok, usando o notebook e sua GPU.
-
-**Estado:** MVP com artefatos reais, revisão e lote de exportação persistidos no
-servidor. Ainda falta avaliação editorial ampla com podcasts reais.
-[Roadmap](docs/ROADMAP.md) · [Revisão completa](docs/REVIEW_DAYON_NEWS.md).
+Editor pessoal de cortes virais do @dayon.news: transforma entrevistas de podcast
+(link do YouTube ou arquivo local) em cortes 9:16 para Reels e TikTok, com IA para
+escolher e enxugar as falas, legenda animada, manchete e edição seca — tudo
+processado no seu computador. [Roadmap](docs/ROADMAP.md) ·
+[Estado atual](docs/HANDOFF.md).
 
 ## Usar
 
-1. Abrir a biblioteca, adicionar o link ou arquivo e preparar o episódio.
-2. Para focar em Dayon, separar vozes e confirmar sua amostra antes de gerar
-   sugestões; [diarização opcional](docs/DIARIZATION.md).
-3. Processar com Claude Code CLI (assinatura, sem API), revisar sugestões e escolher os cortes.
-4. Ajustar legendas, texto da headline por corte e enquadramento; gerar prévia
-   curta real e exportar MP4/SRT. Resultados e mídia permanecem locais.
+1. **Novo episódio:** cole o link (ou envie o arquivo), defina quantidade e faixa de
+   duração, nomes próprios do episódio (ajudam a transcrição) e a direção editorial.
+2. **Escolher cortes:** a IA entrega até 25 cortes com manchete recomendada, opções
+   alternativas, trechos montados e começo limpo; marque os que quer.
+3. **Exportar:** para cada corte, a prévia é o vídeo real da edição com a legenda
+   exata da exportação. Revise a legenda por blocos (corrigir palavra, destacar,
+   ocultar, localizar e substituir), escolha estilo, enquadramento e manchete, e
+   renderize. O lote continua no servidor mesmo se a aba for fechada.
 
-Selecionar fonte/configuração não inicia processamento. O workflow persiste até
-revisão. Ajustes, seleção, headlines e correções têm autosave versionado no
-servidor, além do fallback local do navegador. Um único envio agenda o lote
-inteiro; fechar a aba não interrompe os próximos cortes.
+## O que a edição faz
 
-## Edição disponível
-
-- Fonte única do YouTube, biblioteca e galeria dos renders persistidos.
-- Transcrição por palavra e seleção Claude com prompt PT-BR/saída validada.
-- Correção textual por corte preservando áudio/timestamps; tamanho, altura,
-  fonte/peso, cores, outline, sombra, karaoke/pop e SRT.
-- Headline manual por corte, sugestão IA quando vazia e botão de restaurar sugestão.
-- Quadro inteiro com **Gaussian blur** por padrão, sem exigir análise facial.
-- Automático opcional, limitado aos cortes selecionados + 3 s de margem; correção
-  por cena esquerda/direita/ambos e zoom discreto. Em dúvida preserva quadro inteiro.
-- Reutilizar reações é opcional, requer entrevistador confirmado e usa só vídeo.
-- EDL e motores de pausas, J/L-cut, punch-in e presets; a UI não expõe todos os
-  controles avançados da API. Não existem câmeras ISO além do master recebido.
-- Prévia curta (~10 s) e QA técnico do MP4. Preview tipográfico não demonstra
-  enquadramento/headline finais; confira o vídeo renderizado.
+- Seleção por IA (Claude Code CLI na assinatura, sem API): uma chamada por episódio,
+  transcrição em cache; refino por corte exportado (gancho mais forte, sem gordura).
+- Corte seco: pausas ≥ 0,25 s e muletas removidas; muletas do começo do corte saem.
+- Legenda libass com estilos clássico, palavra a palavra, pop e caixa; palavras de
+  destaque em amarelo; manchete com selo (temporizada ou o corte inteiro).
+- Fundo desfocado com zoom e foco horizontal (rosto maior mantendo o estúdio) ou tela
+  cheia; zoom alternado nos cortes; flash ou zoom na junção entre trechos.
+- QA técnico: loudness −14 LUFS/−1 dBTP, sincronia, e legenda fora das áreas da
+  interface do Instagram/TikTok. Exporta MP4 + SRT + manifest.
 
 ## Instalação
 
-Python 3.11–3.14 (3.12 recomendado para instalar a stack principal), Node instalado,
-FFmpeg/ffprobe e Claude Code CLI autenticado na assinatura. A máquina atual tem GTX 1060 Max-Q 6 GB:
-transcrição CUDA `int8`, encode H.264 NVENC. Visão/diarização usam CPU.
+Python 3.12, Node, FFmpeg/ffprobe com libass e Claude Code CLI logado na assinatura.
+Máquina atual: GTX 1060 (transcrição CUDA `int8`); encode em `libx264` porque o FFmpeg
+do sistema não abre NVENC com o driver da placa
+([detalhes](docs/evidence/2026-10-14-host-nvenc.md)).
 
 ```bash
 python3.12 -m venv .venv
 .venv/bin/pip install -e '.[dev,transcription,analysis,youtube]'
 (cd apps/web && npm ci && npm run build)
-(cd apps/remotion && npm ci && npm run build)
 ```
 
-O lock reproduzível do backend é `uv.lock`; com `uv` instalado, valide sem
-alterar o ambiente com `uv sync --locked --dry-run`.
-
-Configuração em `config/cortex.yaml` e overrides `CORTEX__SECAO__CHAVE`.
-Legendas usam libass no FFmpeg (`render.overlay_renderer: libass`, padrão); o FFmpeg
-precisa do filtro `subtitles`. Só no modo `remotion`, `render.remotion_browser` deve
-apontar para um `chrome-headless-shell` executável;
-o renderer não baixa browser nem troca silenciosamente para libass.
-O processo não carrega `.env` sozinho; o serviço systemd o carrega.
-Nunca versionar tokens, login Claude ou mídia.
+Configuração em `config/cortex.yaml` (fonte da verdade para modelos, esforços,
+durações e caminhos), com overrides `CORTEX__SECAO__CHAVE`. O processo não carrega
+`.env` sozinho; o serviço systemd carrega. Nunca versionar tokens, login ou mídia.
 
 ## Abrir sem terminal
-
-Instalar uma vez o serviço de usuário e o atalho do menu de aplicativos:
 
 ```bash
 .venv/bin/python scripts/install_local_service.py --install
 ```
 
-Clique **CorteX** no menu: o atalho inicia o serviço, aguarda a API e abre o
-navegador. O serviço também inicia no login. Endereço padrão:
-[Studio local](http://127.0.0.1:8787). Requer notebook ligado e acordado.
+O atalho **CorteX** no menu inicia o serviço e abre o
+[Studio local](http://127.0.0.1:8787); o serviço também sobe no login. Para atualizar
+dependências, rodar testes, recompilar e reiniciar com segurança (recusa se houver
+job em andamento):
 
 ```bash
-systemctl --user status cortex.service
-systemctl --user restart cortex.service
-systemctl --user disable --now cortex.service
+./scripts/update_and_verify.sh
 ```
 
-Após atualizar código, compilar Web/Remotion e reiniciar o serviço. Arquivos em
-`data/` não são backupados pelo GitHub. Backup, restauração segura e retenção do
-cache têm prévia explícita:
+Backup e retenção de cache (só aplicam com `--apply`):
 
 ```bash
 .venv/bin/python scripts/maintain_data.py backup --output /caminho/cortex.tar.gz
-.venv/bin/python scripts/maintain_data.py restore --archive /caminho/cortex.tar.gz --target /destino
 .venv/bin/python scripts/maintain_data.py prune-cache --max-age-days 30
 ```
 
-Restauração e remoção só são aplicadas com `--apply`. Tunnel/Access permanece
-fora da implementação atual.
-[Operação e Cloudflare](docs/LOCAL_AND_CLOUDFLARE.md).
-
 ## Desenvolvimento e verificação
 
-Pare o serviço antes de iniciar outro worker: `systemctl --user stop cortex.service`.
-`./scripts/dev.sh` inicia Vite em 5173, API em 8787 e worker. A interface usa a API
-real via `/api`; [OpenAPI local](http://127.0.0.1:8787/docs).
+Pare o serviço antes de iniciar outro worker (`systemctl --user stop cortex.service`).
+`./scripts/dev.sh` sobe Vite (5173), API (8787) e worker.
 
 ```bash
 .venv/bin/pytest -q
-(cd apps/web && npm test && npm run build)
-(cd apps/remotion && npm run build)
 .venv/bin/ruff check src/cortex scripts tests
+(cd apps/web && npm test && npm run build)
 git diff --check
-./scripts/check_gpu.sh
 ```
-
-No host com browser: `CORTEX_RUN_REMOTION_E2E=1 .venv/bin/pytest -q` habilita os
-três testes Remotion normalmente pulados. GPU smoke não comprova episódio E2E.
-[Resultados desta revisão](docs/evidence/2026-09-10-architecture-review.md).
 
 ## Para agentes
 
-Leia [AGENTS](AGENTS.md), [handoff curto](docs/HANDOFF.md) e o gate do
-[ROADMAP](docs/ROADMAP.md). O [mapa da arquitetura](docs/ARCHITECTURE.md) indica
-módulos e testes. Históricos ficam em `docs/history/`, fora da leitura inicial.
-A IA editorial usa o Claude Code CLI (Sonnet) com o login da assinatura;
-[provenance e contrato](docs/AI_PROVIDERS.md). Isso exige rede e consome o limite
-de uso da assinatura, mas não exige API key nem créditos. Não restaurar frontend PodCLI ou importar `mods/`.
+Leia [AGENTS](AGENTS.md), o [handoff](docs/HANDOFF.md) e a fase aberta do
+[ROADMAP](docs/ROADMAP.md); o [mapa da arquitetura](docs/ARCHITECTURE.md) indica
+módulos e testes, e [AI_PROVIDERS](docs/AI_PROVIDERS.md) o contrato da IA. Históricos
+ficam em `docs/history/`, fora da leitura inicial.

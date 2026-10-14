@@ -29,6 +29,9 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 - Visual: estilos de legenda, destaque por palavra, flash/zoom nas junções, zoom e
   foco no fundo desfocado, zoom alternado padrão, faixas seguras v2, API de prévia
   (`overlay-preview`, `overlay-fonts`, `safe-zones`, `render-defaults`), render draft.
+- Studio: editor de exportação com prévia real (draft + JASSUB, idêntica ao export em
+  Chrome), revisão de legenda estilo CapCut, abas de estilo/enquadramento/manchete,
+  layout de 390 px; Remotion removido.
 - Correções: primeiro item do lote sem refino, cortes abaixo do mínimo, hash de
   cache instável, fallback batched silencioso, script de atualização inseguro.
 - Host: NVENC indisponível (FFmpeg 8.1.3 × driver 580 da GTX 1060) →
@@ -37,11 +40,11 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 
 ## Em andamento / próximo gate
 
-1. Editor de exportação com prévia real (draft + JASSUB) e revisão de legenda estilo
-   CapCut — Fase 1 do [ROADMAP](ROADMAP.md).
-2. Remover Remotion depois do editor (app, renderer opcional, configs, testes).
-3. Fase 2: foco automático por rostos por cena; então apagar os modos congelados
-   (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de câmera, reações).
+1. Fase 2 do [ROADMAP](ROADMAP.md): foco automático por rostos por cena; então apagar
+   os modos congelados (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de
+   câmera, reações, identidade).
+2. Fase 3: acesso remoto por Cloudflare Tunnel + Access (escolha do usuário em 14/out),
+   com o PC de casa processando; falta o domínio e o login do `cloudflared`.
 
 ## Congelado (não evoluir)
 

@@ -63,6 +63,6 @@ sobe no login. Acesso remoto (Tailscale ou Cloudflare Tunnel + Access) é Fase 3
 
 ## Evolução sem reescrita
 
-Remover Remotion e os modos congelados quando substituídos; extrair routers do
+Remover os modos congelados quando substituídos pelo foco por rostos; extrair routers do
 `api.py` por domínio mantendo contratos. Não introduzir Redis, banco remoto, segundo
 renderer ou framework por conveniência. Prioridades em [ROADMAP](ROADMAP.md).

@@ -17,16 +17,17 @@ e publicação manual. Itens entregues antes de 14/out estão em
 - [x] `update_and_verify.sh` seguro; instalador do serviço sem Codex obrigatório.
 - [x] NVENC: pré-checagem explícita; host em libx264 (ver evidência host-nvenc).
 
-## Fase 1 — edição viral e prévia fiel (em andamento)
+## Fase 1 — edição viral e prévia fiel (entregue em 14/out)
 
 - [x] Estilos de legenda clássico/palavra a palavra/pop/caixa e destaque por palavra.
 - [x] Manchete persistente opcional; flash/zoom nas junções entre peças.
 - [x] Fundo desfocado com zoom e foco horizontal; zoom alternado nos cortes (padrão).
 - [x] Faixas seguras v2 (interface do Reels/TikTok) na QA e largura da legenda.
 - [x] API de prévia: `.ass` idêntico ao do render, fontes, faixas, render draft.
-- [ ] Editor de exportação: prévia real (draft + JASSUB), abas Legenda/Estilo/
-  Enquadramento/Manchete, revisão de legenda estilo CapCut, layout 390 px.
-- [ ] Remover Remotion (app, renderer opcional, configs e testes) após o editor.
+- [x] Editor de exportação: prévia real (draft + JASSUB), abas Legenda/Estilo/
+  Enquadramento/Manchete, revisão de legenda estilo CapCut, layout 390 px — prévia e
+  export conferidos lado a lado no Chrome.
+- [x] Remotion removido (app, renderer opcional, configs e testes).
 
 Aceite: prévia e export lado a lado sem diferença visível de legenda/manchete;
 corte real exportado pelo lote com refino, destaques e manchete editada.
@@ -47,8 +48,9 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   salvamentos) e usar exemplos aprovados/reprovados no prompt de seleção.
 - [ ] Imagens ilustrativas opcionais: IA sugere momentos e termos; imagem enviada
   pelo usuário ou de acervo livre (ex.: Wikimedia), com licença registrada.
-- [ ] Acesso remoto privado (Tailscale ou Cloudflare Tunnel + Access), com o PC
-  ligado fazendo o processamento; uploads grandes exigem envio em partes no Cloudflare.
+- [ ] Acesso remoto privado por Cloudflare Tunnel + Access (escolhido em 14/out), com o
+  PC ligado processando: validar o JWT do Access na origem, upload em partes (limite de
+  100 MB por requisição), serviço `cloudflared` de usuário. Depende do domínio.
 
 ## Regras de aceite
 

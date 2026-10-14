@@ -56,7 +56,6 @@ Depois de instalar dependências conforme README:
 
 ```bash
 cd apps/web && npm ci && npm run build
-cd ../remotion && npm ci && npm run build
 cd ../..
 .venv/bin/python scripts/install_local_service.py --install
 systemctl --user start cortex.service
@@ -64,9 +63,9 @@ systemctl --user start cortex.service
 
 O instalador habilita início no login e cria atalho. Não inicia jobs durante a
 instalação. O serviço executa `scripts/studio.sh`, mantém API e worker juntos e
-reinicia o conjunto se um deles encerrar. Usa o mesmo usuário do login Codex,
-resolve o PATH de Node/Codex instalado e lê `.env` via systemd sem copiar seus
-segredos. Reinicie o serviço depois de atualizar código; recompile a interface.
+reinicia o conjunto se um deles encerrar. Usa o mesmo usuário do login do Claude,
+coloca no PATH o alias estável do fnm (Node/Claude) e lê `.env` via systemd sem copiar
+seus segredos. Para atualizar, use `./scripts/update_and_verify.sh`.
 Não rode `dev.sh` ou outro worker simultaneamente com esse serviço.
 
 ```bash

@@ -5,8 +5,8 @@
 - Read `docs/HANDOFF.md` before changing pipeline behavior.
 - That file is the short current handoff. Do not preload `docs/history/`;
   historical instructions can be superseded. Use `docs/ARCHITECTURE.md` to find
-  the module and tests for the selected gate, and `docs/REVIEW_DAYON_NEWS.md`
-  for the rationale behind the current priorities.
+  the module and tests for the selected gate, and the dated files in
+  `docs/evidence/` for the measurements behind the current priorities.
 - Treat `docs/ROADMAP.md` and executable tests as the delivery contract.
 - `config/cortex.yaml` is the source of truth for models, efforts, durations and
   paths. Docs reference config keys instead of repeating their values.
