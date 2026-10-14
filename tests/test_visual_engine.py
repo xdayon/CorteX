@@ -985,3 +985,28 @@ def test_render_request_and_worker_pass_purpose_through(tmp_path, monkeypatch) -
     assert worker.process_next(config, jobs, domain, FakeTranscriptionEngine()) is True
     assert seen["purpose"] == "draft"
     assert jobs.get(response.json()["id"]).status == JobStatus.SUCCEEDED
+
+
+def test_overlay_preview_words_carry_original_text_and_confidence(tmp_path) -> None:
+    config, project, plan_artifact = _api_fixture(tmp_path)
+    client = TestClient(create_app(config))
+    settings = _settings_json()
+    settings["captions"]["corrections"] = [
+        {"word_index": 1, "original": "palavra1", "text": "Dayon"},
+    ]
+    body = client.post(
+        f"/api/v1/projects/{project.id}/overlay-preview",
+        json={"edit_plan_artifact_id": plan_artifact.id, "settings": settings},
+    ).json()
+    words = {w["index"]: w for p in body["pages"] for line in p["lines"] for w in line}
+    assert words[1]["text"] == "DAYON"
+    assert words[1]["original"] == "palavra1"
+    assert isinstance(words[1]["probability"], float)
+
+
+def test_safe_zones_endpoint_lists_platform_rects(tmp_path) -> None:
+    config, _project, _plan = _api_fixture(tmp_path)
+    body = TestClient(create_app(config)).get("/api/v1/safe-zones").json()
+    assert body["version"] == 2
+    assert body["platforms"]["instagram_reels"]["right_actions"] == [0.86, 0.43, 1.0, 0.90]
+    assert set(body["platforms"]) == {"instagram_reels", "tiktok"}

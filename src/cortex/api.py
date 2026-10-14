@@ -171,6 +171,12 @@ class EditPlanRequest(BaseModel):
     max_jl_offset_seconds: float | None = Field(default=None, ge=0.0)
     approximate_edl: list[dict[str, Any]] | None = Field(default=None, min_length=1, max_length=100)
     confirmed_voice: dict[str, Any] | None = None
+    # Export editor previews of a selected clip use the same refine pass and
+    # duration rules as its export, so the cached result is shared.
+    tighten: bool = False
+    minimum_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    headline: str | None = Field(default=None, max_length=120)
+    primary_subject: str | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def clip_order(self) -> "EditPlanRequest":
@@ -1505,6 +1511,10 @@ def create_app(config: CortexConfig | None = None):
                 "max_jl_offset_seconds": request.max_jl_offset_seconds,
                 "approximate_edl": request.approximate_edl,
                 "confirmed_voice": request.confirmed_voice,
+                "tighten": request.tighten,
+                "minimum_seconds": request.minimum_seconds,
+                "headline": request.headline,
+                "primary_subject": request.primary_subject,
             },
         ))
 

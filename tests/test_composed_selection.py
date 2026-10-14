@@ -264,10 +264,14 @@ def test_edit_plan_endpoint_forwards_approximate_edl(tmp_path: Path) -> None:
     response = client.post(f"/api/v1/projects/{project.id}/edit-plans", json={
         "transcript_artifact_id": transcript.id, "analysis_artifact_id": analysis.id,
         "start": 0.0, "end": 7.0, "profile": "balanced", "approximate_edl": edl,
+        "tighten": True, "minimum_seconds": 40, "headline": "Manchete", "primary_subject": "Dayon",
     })
     assert response.status_code == 201, response.text
     job = JobStore(config.paths.database).get(response.json()["id"])
     assert job.payload["approximate_edl"] == edl
+    assert (job.payload["tighten"], job.payload["minimum_seconds"], job.payload["headline"]) == (
+        True, 40, "Manchete",
+    )
 
 
 def _word_transcript(words: list[tuple[str, float, float]], duration: float = 120.0) -> dict:

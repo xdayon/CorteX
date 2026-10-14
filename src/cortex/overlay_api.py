@@ -23,6 +23,7 @@ from cortex.render.ass_overlay import (
     allowed_font_files,
     build_ass_overlay,
 )
+from cortex.render.safe_zones import PLATFORM_OCCLUSIONS, SAFE_ZONES_VERSION
 from cortex.render.schemas import RenderSettings
 from cortex.render.service import (
     build_plan_overlay,
@@ -118,6 +119,9 @@ def create_overlay_router(prefix: str, config: CortexConfig, domain: DomainStore
 
         emphasis = set(settings.captions.emphasis_word_indices)
         uppercase = settings.captions.uppercase
+        # Original (pre-correction) text and recognition confidence let the
+        # editor show what was corrected and flag words worth reviewing.
+        raw_words = [word for segment in transcript.segments for word in segment.words]
         pages = [
             {
                 "start": page.start,
@@ -130,6 +134,14 @@ def create_overlay_router(prefix: str, config: CortexConfig, domain: DomainStore
                             "start": word.start,
                             "end": word.end,
                             "emphasis": word.index in emphasis,
+                            "original": (
+                                raw_words[word.index].word
+                                if 0 <= word.index < len(raw_words) else word.text
+                            ),
+                            "probability": (
+                                raw_words[word.index].probability
+                                if 0 <= word.index < len(raw_words) else None
+                            ),
                         }
                         for word in line
                     ]
@@ -151,6 +163,16 @@ def create_overlay_router(prefix: str, config: CortexConfig, domain: DomainStore
             "pages": pages,
             "junctions": list(overlay.junctions),
             "fonts": fonts,
+        }
+
+    @router.get("/safe-zones")
+    def safe_zones():
+        return {
+            "version": SAFE_ZONES_VERSION,
+            "platforms": {
+                platform: {name: list(rect) for name, rect in rects.items()}
+                for platform, rects in PLATFORM_OCCLUSIONS.items()
+            },
         }
 
     @router.get("/overlay-fonts/{filename}")
