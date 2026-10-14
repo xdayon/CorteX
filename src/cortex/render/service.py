@@ -68,12 +68,6 @@ from cortex.render.captions import (
     piece_junctions,
     render_srt,
 )
-from cortex.render.remotion import (
-    RemotionOverlayCancelled,
-    RemotionOverlayError,
-    RemotionOverlayManifest,
-    RemotionOverlayService,
-)
 from cortex.transcribe.schemas import TranscriptDocument
 
 
@@ -107,9 +101,7 @@ class RenderExecutionError(RuntimeError):
 
 @dataclass(frozen=True)
 class _OverlaySummary:
-    """Normaliza o resultado do overlay tipográfico (Remotion webm ou libass
-    .ass) num único formato consumido pelo resto do pipeline, para que trocar
-    overlay_renderer não exija ramificar cada consumidor a jusante."""
+    """Resultado do overlay tipográfico libass (.ass) consumido pelo manifest."""
 
     renderer: str
     output_path: str
@@ -118,9 +110,6 @@ class _OverlaySummary:
     cache_key: str
     codec: str | None = None
     pixel_format: str | None = None
-    node_executable: str | None = None
-    node_version: str | None = None
-    remotion_version: str | None = None
     font_files: dict[str, str] | None = None
     generator_version: int | None = None
 
@@ -687,7 +676,6 @@ def _filtergraph(
     fps: int,
     loudness_target_lufs: float,
     true_peak_limit_dbfs: float,
-    overlay_input_index: int | None = None,
     ass_overlay_path: Path | None = None,
     ass_fonts_dir: Path | None = None,
     camera_plan: CameraEditPlanDocument | None = None,
@@ -999,15 +987,6 @@ def _filtergraph(
             value = value.replace(character, f"\\{character}")
         return value
 
-    if overlay_input_index is not None:
-        filters.append(
-            f"[{overlay_input_index}:v]setpts=PTS-STARTPTS,format=rgba[alphaoverlay]"
-        )
-        filters.append(
-            f"{video_label}[alphaoverlay]overlay=eof_action=pass:shortest=0:format=auto"
-            "[vremotion]"
-        )
-        video_label = "[vremotion]"
     if ass_overlay_path is not None:
         assert ass_fonts_dir is not None
         filters.append(
@@ -1015,9 +994,8 @@ def _filtergraph(
             f"fontsdir='{escaped(ass_fonts_dir)}'[vass]"
         )
         video_label = "[vass]"
-    # Remotion rounds its transparent composition up to whole frames. Trim
-    # after the overlay so that this padding cannot extend the encoded video
-    # beyond the physical EDL (and be mistaken for A/V drift by the gate).
+    # Trim after the overlay so nothing can extend the encoded video beyond the
+    # physical EDL (and be mistaken for A/V drift by the gate).
     filters.append(
         f"{video_label}trim=duration={video_duration_acc:.6f},"
         "setpts=PTS-STARTPTS[vfinal]"
@@ -1175,75 +1153,6 @@ _BBOX_ALPHA_MIN_VAL = 16
 _SAFE_ZONE_TOLERANCE_PX = 2
 
 
-def _measure_alpha_bbox(
-    ffmpeg: Path,
-    overlay_path: Path,
-    *,
-    crop: str,
-    sample_fps: float,
-) -> tuple[int, int, int, int] | None:
-    """Retorna a bounding box (x1, y1, x2, y2) dos pixels não-transparentes do
-    overlay dentro da região recortada, em coordenadas do recorte, amostrando o
-    canal alpha por FFmpeg. Retorna None quando a região é totalmente
-    transparente em todos os frames amostrados."""
-    with tempfile.NamedTemporaryFile("r", suffix=".txt", delete=False) as handle:
-        meta_path = Path(handle.name)
-    try:
-        vf = (
-            f"fps={sample_fps:.4f},crop={crop},alphaextract,"
-            f"bbox=min_val={_BBOX_ALPHA_MIN_VAL},"
-            f"metadata=print:file={meta_path.as_posix()}"
-        )
-        command = [
-            str(ffmpeg), "-hide_banner", "-nostats", "-v", "error",
-            # o decoder nativo vp9 descarta o plano alpha; libvpx-vp9 o preserva.
-            "-c:v", "libvpx-vp9", "-i", str(overlay_path),
-            "-map", "0:v:0", "-vf", vf, "-an", "-f", "null", "-",
-        ]
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RenderExecutionError(f"análise de safe zone falhou: {exc}") from exc
-        if result.returncode:
-            raise RenderExecutionError(
-                f"análise de safe zone falhou ({result.returncode}): {result.stderr[-4000:]}"
-            )
-        return _parse_bbox_metadata(meta_path.read_text(encoding="utf-8", errors="replace"))
-    finally:
-        meta_path.unlink(missing_ok=True)
-
-
-def _parse_bbox_metadata(text: str) -> tuple[int, int, int, int] | None:
-    x1 = y1 = None
-    x2 = y2 = None
-    current: dict[str, int] = {}
-
-    def commit(block: dict[str, int]) -> None:
-        nonlocal x1, y1, x2, y2
-        if block.get("w", 0) <= 0 or block.get("h", 0) <= 0:
-            return
-        if {"x1", "y1", "x2", "y2"} - block.keys():
-            return
-        x1 = block["x1"] if x1 is None else min(x1, block["x1"])
-        y1 = block["y1"] if y1 is None else min(y1, block["y1"])
-        x2 = block["x2"] if x2 is None else max(x2, block["x2"])
-        y2 = block["y2"] if y2 is None else max(y2, block["y2"])
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("frame:"):
-            commit(current)
-            current = {}
-            continue
-        match = re.match(r"lavfi\.bbox\.(x1|x2|y1|y2|w|h)=(-?\d+)", stripped)
-        if match:
-            current[match.group(1)] = int(match.group(2))
-    commit(current)
-    if x1 is None:
-        return None
-    return (x1, y1, x2, y2)
-
-
 def _run_ffmpeg(
     command: list[str], log_path: Path, should_cancel: Callable[[], bool], *,
     progress_cb: Callable[[float, str], None] | None = None,
@@ -1365,60 +1274,6 @@ class RenderService:
     def __init__(self, config: CortexConfig, domain: DomainStore) -> None:
         self._config = config
         self._domain = domain
-
-    def _safe_zone_issues(
-        self,
-        *,
-        overlay_path,
-        width: int,
-        height: int,
-        safe_zone,
-    ) -> list[str]:
-        """Valida geometricamente que o conteúdo desenhado no overlay alpha fica
-        dentro da safe zone, amostrando os pixels não-transparentes do WebM. A
-        headline é ancorada no topo e a legenda na base, então cada uma é medida
-        na sua metade do canvas e comparada às margens em pixels."""
-        if safe_zone is None:
-            return ["safe_zone_missing"]
-        if overlay_path is None:
-            return []
-        overlay = Path(overlay_path)
-        if not overlay.is_file():
-            raise RenderExecutionError("overlay para análise de safe zone não encontrado")
-
-        left_px = safe_zone.left * width
-        right_limit = (1.0 - safe_zone.right) * width
-        top_px = safe_zone.top * height
-        bottom_limit = (1.0 - safe_zone.bottom) * height
-        half = height // 2
-        tol = _SAFE_ZONE_TOLERANCE_PX
-        issues: list[str] = []
-
-        headline_bbox = _measure_alpha_bbox(
-            self._config.render.ffmpeg, overlay,
-            crop=f"{width}:{half}:0:0",
-            sample_fps=self._config.render.safe_zone_sample_fps,
-        )
-        if headline_bbox is not None:
-            hx1, hy1, hx2, hy2 = headline_bbox
-            if (hx1 < left_px - tol or hx2 > right_limit + tol
-                    or hy1 < top_px - tol or hy2 > bottom_limit + tol):
-                issues.append("headline_outside_safe_zone")
-
-        caption_bbox = _measure_alpha_bbox(
-            self._config.render.ffmpeg, overlay,
-            crop=f"{width}:{height - half}:0:{half}",
-            sample_fps=self._config.render.safe_zone_sample_fps,
-        )
-        if caption_bbox is not None:
-            cx1, cy1, cx2, cy2 = caption_bbox
-            cy1_abs = cy1 + half
-            cy2_abs = cy2 + half
-            if (cx1 < left_px - tol or cx2 > right_limit + tol
-                    or cy1_abs < top_px - tol or cy2_abs > bottom_limit + tol):
-                issues.append("caption_outside_safe_zone")
-
-        return issues
 
     def _safe_zone_issues_libass(
         self,
@@ -1649,7 +1504,7 @@ class RenderService:
                 ),
                 "subtitles": RenderSubtitleSettings(sidecar_srt=False),
             })
-        requested_renderer = self._config.render.overlay_renderer
+        requested_renderer = "libass"  # the only overlay renderer (kept in cache keys)
         fonts_dir = Path(self._config.render.fonts_dir)
         if not fonts_dir.is_absolute():
             fonts_dir = Path(__file__).resolve().parents[3] / fonts_dir
@@ -1818,42 +1673,10 @@ class RenderService:
             or (effective_settings.headline.enabled and headline_text)
             or plan_overlay.ass is not None
         )
-        overlay_artifact: StageArtifact | None = None
-        overlay_manifest: RemotionOverlayManifest | None = None
         overlay_summary: _OverlaySummary | None = None
         ass_path: Path | None = None
         ass_result: AssOverlayResult | None = None
-        if overlay_enabled and requested_renderer == "remotion":
-            progress_cb(10.0, "Gerando overlay tipográfico com Remotion")
-            overlay_started = time.monotonic()
-            try:
-                overlay_artifact, overlay_manifest, _overlay_cached = RemotionOverlayService(
-                    self._config, self._domain
-                ).run(
-                    project_id=plan.project_id,
-                    output_dir=output_dir,
-                    settings=effective_settings,
-                    duration_seconds_value=plan.timeline_duration_seconds,
-                    cues=cues,
-                    should_cancel=should_cancel,
-                    progress_cb=lambda percent, message: progress_cb(10 + percent * .14, message),
-                )
-            except RemotionOverlayCancelled as exc:
-                raise RenderJobCancelled() from exc
-            except RemotionOverlayError as exc:
-                raise RenderExecutionError(str(exc)) from exc
-            timings["overlay_seconds"] = round(time.monotonic() - overlay_started, 4)
-            overlay_summary = _OverlaySummary(
-                renderer="remotion", output_path=overlay_manifest.output_path,
-                output_sha256=overlay_manifest.output_sha256,
-                output_size_bytes=overlay_manifest.output_size_bytes,
-                cache_key=overlay_artifact.input_hash,
-                codec=overlay_manifest.codec, pixel_format=overlay_manifest.pixel_format,
-                node_executable=overlay_manifest.node_executable,
-                node_version=overlay_manifest.node_version,
-                remotion_version=overlay_manifest.remotion_version,
-            )
-        elif overlay_enabled and requested_renderer == "libass":
+        if overlay_enabled:
             progress_cb(10.0, "Gerando legendas")
             overlay_started = time.monotonic()
             ass_result = plan_overlay.ass
@@ -1996,7 +1819,6 @@ class RenderService:
             static_face_crops=static_face_crop_map,
             auto_framing=auto_framing,
             punch_ins=punch_in_by_segment,
-            overlay_input_index=(len(ordered_source_ids) if overlay_manifest is not None else None),
             ass_overlay_path=ass_path,
             ass_fonts_dir=(fonts_dir if ass_path is not None else None),
             camera_plan=camera_plan,
@@ -2012,8 +1834,6 @@ class RenderService:
             "-ss", f"{input_start:.6f}", "-t", f"{input_end - input_start:.6f}",
             "-i", str(source_path),
         ])
-        if overlay_manifest is not None:
-            command.extend(["-c:v", "libvpx-vp9", "-i", overlay_manifest.output_path])
         command.extend([
             "-filter_complex", filtergraph, "-map", video_label, "-map", audio_label,
             *_encoder_args(requested_encoder, draft=draft), "-c:a", "aac", "-b:a", "192k",
@@ -2141,14 +1961,7 @@ class RenderService:
                     issues.append("frozen_frame_detected")
                 elif visual_metrics["freeze_interval_count"]:
                     warnings.append("frozen_frame_detected")
-            if overlay_manifest is not None:
-                issues.extend(self._safe_zone_issues(
-                    overlay_path=overlay_manifest.output_path,
-                    width=effective_settings.canvas.width,
-                    height=effective_settings.canvas.height,
-                    safe_zone=safe_zone,
-                ))
-            elif ass_result is not None:
+            if ass_result is not None:
                 issues.extend(self._safe_zone_issues_libass(
                     caption_bbox=ass_result.caption_bbox,
                     headline_bbox=ass_result.headline_bbox,
@@ -2350,9 +2163,6 @@ class RenderService:
                     "ffprobe": str(self._config.render.ffprobe),
                     "overlay_renderer_requested": requested_renderer,
                     "overlay_renderer_effective": overlay_summary.renderer if overlay_summary else "none",
-                    "node": overlay_summary.node_executable if overlay_summary else None,
-                    "node_version": overlay_summary.node_version if overlay_summary else None,
-                    "remotion_version": overlay_summary.remotion_version if overlay_summary else None,
                 },
                 punch_in={
                     "piece_junction_zoom": bool(junction_orders),
@@ -2478,13 +2288,6 @@ class RenderService:
                     input_hash=(overlay_summary.cache_key if overlay_summary else None),
                     codec=(overlay_summary.codec if overlay_summary else None),
                     pixel_format=(overlay_summary.pixel_format if overlay_summary else None),
-                    node_executable=(
-                        overlay_summary.node_executable if overlay_summary else None
-                    ),
-                    node_version=(overlay_summary.node_version if overlay_summary else None),
-                    remotion_version=(
-                        overlay_summary.remotion_version if overlay_summary else None
-                    ),
                 ),
                 quality=quality,
                 publication=publication,
@@ -2512,9 +2315,6 @@ class RenderService:
                           "quality_warnings": publication.warnings,
                           "quality_check_count": len(publication.checks),
                           "output_path": str(output_path),
-                          "overlay_artifact_id": (
-                              overlay_artifact.id if overlay_artifact else None
-                          ),
                           "timings": {
                               **timings,
                               "quality_seconds": round(time.monotonic() - quality_started, 4),

@@ -29,7 +29,6 @@ from cortex.render.schemas import (
 )
 from cortex.render.service import RenderService
 from cortex.transcribe.schemas import EngineInfo, TranscriptDocument
-from conftest import requires_remotion_e2e
 
 
 def _config(tmp_path: Path) -> CortexConfig:
@@ -57,7 +56,6 @@ def _config(tmp_path: Path) -> CortexConfig:
     not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
     reason="ffmpeg and ffprobe required",
 )
-@requires_remotion_e2e
 def test_multi_segment_crossfade_persists_av_quality_and_headline(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config.ensure_runtime_dirs()

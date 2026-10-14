@@ -47,7 +47,7 @@ from cortex.transcribe.schemas import (
 )
 from cortex.worker import process_next
 
-from conftest import FakeTranscriptionEngine, requires_remotion_e2e
+from conftest import FakeTranscriptionEngine
 
 
 def _config(tmp_path: Path) -> CortexConfig:
@@ -66,20 +66,6 @@ def _config(tmp_path: Path) -> CortexConfig:
             "encoder": "libx264", "width": 320, "height": 320, "fps": 30,
         }),
     })
-
-
-def _alpha_plane(ffmpeg: Path, overlay_path: Path, timestamp: float) -> bytes:
-    result = subprocess.run(
-        [
-            str(ffmpeg), "-v", "error", "-c:v", "libvpx-vp9", "-i", str(overlay_path),
-            "-ss", str(timestamp), "-frames:v", "1", "-vf", "alphaextract",
-            "-pix_fmt", "gray", "-f", "rawvideo", "-",
-        ],
-        capture_output=True,
-        check=True,
-        timeout=30,
-    )
-    return result.stdout
 
 
 def _center_pixel(ffmpeg: Path, media_path: Path, timestamp: float) -> tuple[int, int, int]:
@@ -228,7 +214,6 @@ def test_camera_plan_v5_renders_reused_master_reaction_with_editorial_audio(tmp_
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
                     reason="ffmpeg and ffprobe required")
-@requires_remotion_e2e
 def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config.ensure_runtime_dirs()
@@ -349,7 +334,7 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
     assert document.quality.subtitles_present is True
     assert document.quality.headline_present is True
     assert document.overlays is not None
-    assert document.overlays.renderer == "remotion"
+    assert document.overlays.renderer == "libass"
     assert document.requested_settings == render_settings
     assert document.effective_settings == render_settings
     assert document.overlays.caption_font_size == 28
@@ -361,17 +346,9 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
     assert document.overlays.artifact_sha256 == hashlib.sha256(
         Path(document.overlays.artifact_path).read_bytes()
     ).hexdigest()
-    assert document.overlays.codec == "vp9"
-    assert document.overlays.pixel_format == "yuva420p"
-    assert document.overlays.node_version
-    assert document.overlays.remotion_version == "4.0.489"
-    overlay_path = Path(document.overlays.artifact_path)
-    early_alpha = _alpha_plane(config.render.ffmpeg, overlay_path, 0.2)
-    next_word_alpha = _alpha_plane(config.render.ffmpeg, overlay_path, 0.6)
-    blank_alpha = _alpha_plane(config.render.ffmpeg, overlay_path, 2.9)
-    assert max(early_alpha) > 0
-    assert early_alpha != next_word_alpha
-    assert max(blank_alpha, default=0) == 0
+    assert document.overlays.codec == "ass"
+    ass_text = Path(document.overlays.artifact_path).read_text(encoding="utf-8")
+    assert ass_text.count("Dialogue:") >= 2 and "Style: Caption," in ass_text
     assert document.subtitles_path is not None
     assert "CorteX" in Path(document.subtitles_path).read_text()
     assert TranscriptDocument.model_validate_json(transcript_path.read_text()).segments[0].words[0].word == "um"
@@ -388,7 +365,8 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
     assert second["cached"] is True
     assert second["render_artifact_id"] == first["render_artifact_id"]
     assert len(domain.list_stage_artifacts(project.id, "render")) == 1
-    assert len(domain.list_stage_artifacts(project.id, "render_overlay")) == 1
+    # libass overlays live in the render manifest; no separate overlay artifact.
+    assert domain.list_stage_artifacts(project.id, "render_overlay") == []
 
     jobs = JobStore(config.paths.database)
     job = jobs.create(JobCreate(
@@ -417,7 +395,6 @@ def test_render_rejects_missing_font_without_fallback() -> None:
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
                     reason="ffmpeg and ffprobe required")
-@requires_remotion_e2e
 def test_render_with_none_animations_does_not_hit_zero_range_interpolation(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config.ensure_runtime_dirs()

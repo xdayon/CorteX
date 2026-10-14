@@ -49,10 +49,6 @@ class RenderConfig(BaseModel):
 
     ffmpeg: Path = Path("/usr/bin/ffmpeg")
     ffprobe: Path = Path("/usr/bin/ffprobe")
-    remotion_node: Path = Path("node")
-    remotion_browser: Path | None = None
-    remotion_app_dir: Path = Path("apps/remotion")
-    overlay_renderer: Literal["libass", "remotion"] = "libass"
     fonts_dir: str = "assets/fonts"
     encoder: str = "h264_nvenc"
     allow_cpu_fallback: bool = False

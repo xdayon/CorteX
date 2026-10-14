@@ -29,10 +29,6 @@ ingest:
 render:
   ffmpeg: /usr/bin/ffmpeg
   ffprobe: /usr/bin/ffprobe
-  remotion_node: node
-  remotion_browser: /var/home/dx/.cache/puppeteer/chrome-headless-shell/linux-147.0.7727.57/chrome-headless-shell-linux64/chrome-headless-shell
-  remotion_app_dir: apps/remotion
-  overlay_renderer: libass
   fonts_dir: assets/fonts
   # NVENC indisponível desde 02/out/2026: o FFmpeg 8.1.3 do Bazzite exige a API
   # NVENC 13.1 (driver >= 610) e a GTX 1060 (Pascal) termina no driver 580 (API 13.0).
