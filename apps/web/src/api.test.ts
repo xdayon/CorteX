@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { api } from "./api";
+import { api, isRemoteOrigin } from "./api";
 
 class Events extends EventTarget {
   static instances: Events[] = [];
@@ -53,4 +53,10 @@ test("identity requests explicitly name the interviewer and preserve the artifac
     speaker_timeline_artifact_id: "speaker", camera_timeline_artifact_id: "camera",
     visual_quality_artifact_id: "quality", identity_index_artifact_id: "identity",
   });
+});
+
+test("only loopback hosts skip the remote upload limit", () => {
+  expect(isRemoteOrigin("127.0.0.1")).toBe(false);
+  expect(isRemoteOrigin("localhost")).toBe(false);
+  expect(isRemoteOrigin("cortex.synapses.academy")).toBe(true);
 });

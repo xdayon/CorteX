@@ -34,9 +34,10 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
 
 ## Fase 2 — enquadramento e gancho
 
-- [ ] Foco automático por cena: rostos (YuNet) em poucas amostras por cena do corte;
-  todos os rostos cabem → centraliza; senão → lado do Dayon. Um recorte estático por
-  cena, motivo registrado. Substitui `speaker_auto`/`speaker_face`/`face_static_crop`.
+- [x] Foco automático por cena (`framing.focus_mode: faces`, padrão no Studio com zoom
+  1,45): rostos YuNet em poucas amostras por cena; todos cabem → centraliza; senão →
+  lado do Dayon ou maior rosto; um recorte estático por cena, motivo no manifest.
+  Validado com rostos reais ([evidência](evidence/2026-10-14-studio-editor-and-framing.md)).
 - [ ] Depois de validado: apagar modos congelados (planos de câmera, reações
   emprestadas, identidade) e decidir sobre a diarização (hoje 6 falhas em 7).
 - [ ] Teaser de abertura opcional (repete 2–4 s do payoff; nunca muda o sentido).
@@ -50,8 +51,8 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   pelo usuário ou de acervo livre (ex.: Wikimedia), com licença registrada.
 - [x] Acesso remoto por Cloudflare Tunnel + Access no código: JWT validado na origem,
   `scripts/setup_remote_access.py`, serviço `cortex-tunnel`, `cloudflared` instalado.
-- [ ] Ativar no painel (Access app → túnel → rota) e testar do iPhone; mensagem clara
-  na UI para upload acima de 100 MB pelo túnel (usar link do YouTube fora de casa).
+- [x] Mensagem clara na UI para upload acima de 100 MB pelo túnel (antes de enviar).
+- [ ] Ativar no painel (Access app → túnel → rota) e testar do iPhone.
 
 ## Regras de aceite
 

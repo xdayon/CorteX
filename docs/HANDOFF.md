@@ -40,9 +40,10 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 
 ## Em andamento / próximo gate
 
-1. Fase 2 do [ROADMAP](ROADMAP.md): foco automático por rostos por cena; então apagar
-   os modos congelados (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de
-   câmera, reações, identidade).
+1. Fase 2 do [ROADMAP](ROADMAP.md): foco por rosto entregue; apagar os modos
+   congelados (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de câmera,
+   reações, identidade) mantendo valores de enum antigos legíveis no SQLite; decidir
+   com o usuário entre consertar ou remover a diarização.
 2. Acesso remoto (`cortex.synapses.academy`): código, guarda JWT na origem, script e
    `cloudflared` prontos; faltam os passos do usuário no painel e
    `scripts/setup_remote_access.py` — [guia](LOCAL_AND_CLOUDFLARE.md).

@@ -287,6 +287,16 @@ export type RefineStatus = {status: "accepted" | "skipped" | "rejected"; reason?
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
+// Cloudflare's Free plan rejects request bodies above 100 MB (HTTP 413) on the
+// remote (tunnel) address; on the PC itself there is no such limit.
+export const REMOTE_UPLOAD_LIMIT_BYTES = 95 * 1024 * 1024;
+export const REMOTE_UPLOAD_MESSAGE =
+  "Fora de casa, o acesso remoto aceita arquivos de até 100 MB. Use o link do YouTube do episódio ou envie o arquivo pelo próprio PC.";
+
+export function isRemoteOrigin(hostname: string): boolean {
+  return !["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -473,6 +483,10 @@ export const api = {
   // Upload via XHR para ter progresso real de envio (fetch não expõe upload progress).
   uploadSource: (projectId: string, file: File, onProgress?: (fraction: number) => void) =>
     new Promise<SourceAsset>((resolve, reject) => {
+      if (isRemoteOrigin(window.location.hostname) && file.size > REMOTE_UPLOAD_LIMIT_BYTES) {
+        reject(new Error(REMOTE_UPLOAD_MESSAGE));
+        return;
+      }
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `/api/v1/projects/${projectId}/sources/upload`);
       xhr.upload.onprogress = (event) => {
@@ -481,6 +495,8 @@ export const api = {
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(JSON.parse(xhr.responseText) as SourceAsset);
+        } else if (xhr.status === 413) {
+          reject(new Error(REMOTE_UPLOAD_MESSAGE));
         } else {
           let detail = `${xhr.status}`;
           try { detail = JSON.parse(xhr.responseText).detail ?? detail; } catch { /* mantém status */ }
