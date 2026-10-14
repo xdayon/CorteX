@@ -337,6 +337,9 @@ def create_app(config: CortexConfig | None = None):
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    from cortex.remote_access import install_remote_access
+    # Outermost layer: tunnel requests are checked before anything else runs.
+    install_remote_access(app, settings.remote_access)
     router_prefix = settings.app.api_prefix.rstrip("/")
 
     @app.get(f"{router_prefix}/episodes")
