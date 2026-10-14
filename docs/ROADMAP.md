@@ -41,7 +41,8 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
 - [x] Modos congelados apagados (planos de câmera, reações emprestadas, identidade,
   `speaker_auto`/`speaker_face`/`face_static_crop`); dados antigos seguem legíveis.
 - [ ] Decidir sobre a diarização (hoje 6 falhas em 7).
-- [ ] Teaser de abertura opcional (repete 2–4 s do payoff; nunca muda o sentido).
+- [x] Teaser de abertura opcional (`transitions.teaser`, IA escolhe 1,2–4,5 s dentro do
+  corte; entrada separada no render; validado em vídeo real com flash na virada).
 - [ ] Capa JPG separada opcional (frame escolhido + manchete); nunca no 1º frame.
 
 ## Fase 3 — aprendizado e acesso
