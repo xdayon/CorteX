@@ -22,7 +22,7 @@ from cortex.domain.store import DomainStore, SourceAssetNotFoundError
 from cortex.paths import suggestions_dir
 from cortex.suggest.provider import SuggestionProvider, SuggestionProviderCancelled
 
-SUGGESTION_ARTIFACT_VERSION = 3
+SUGGESTION_ARTIFACT_VERSION = 4
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 # Whole-word hesitation fillers stripped from the transcript sent to the LLM.
@@ -68,7 +68,7 @@ def _unit_speaker_label(
     if not overlap:
         return None
     dominant = max(overlap, key=lambda speaker: overlap[speaker])
-    return primary_subject if dominant == voice.speaker else "Outro"
+    return "D" if dominant == voice.speaker else "O"
 
 
 def _selection_units(
@@ -121,11 +121,96 @@ def _selection_units(
 
 
 def _transcript_lines(units: list[dict[str, Any]]) -> str:
+    """One line per unit: ``#id [start|duration] text``. The duration is given so
+    the model sums seconds instead of subtracting timestamps, and the speaker
+    code (D/O) is written only when it changes, to save tokens."""
     lines = []
+    previous_label = None
     for unit in units:
-        label = f"{unit['speaker_label']}: " if unit.get("speaker_label") else ""
-        lines.append(f"#{unit['id']} [{float(unit['start']):.1f}] {label}{unit['text']}")
+        label = unit.get("speaker_label")
+        prefix = f"{label}: " if label and label != previous_label else ""
+        if label:
+            previous_label = label
+        start = float(unit["start"])
+        duration = float(unit["end"]) - start
+        lines.append(f"#{unit['id']} [{start:.1f}|{duration:.1f}] {prefix}{unit['text']}")
     return "\n".join(lines)
+
+
+# Connectors and fillers that make a weak cold open. Removed only from the very
+# start of a clip, at most a few words, never "é" (a verb) or "porque" (meaning).
+_LEADING_FILLERS = frozenset({
+    "então", "né", "tipo", "aí", "daí", "e", "mas", "cara", "assim", "bom", "olha",
+    "enfim", "pois", "mano", "ah", "eh", "ã", "hum", "hã",
+})
+_MAX_LEADING_FILLER_WORDS = 4
+_MAX_LEADING_FILLER_SECONDS = 1.5
+
+
+def _flat_words(transcript: dict[str, Any]) -> list[dict[str, Any]]:
+    """Transcript words with their global index (same convention as caption
+    corrections: position in the segment-ordered word list)."""
+    words = []
+    for segment in transcript.get("segments") or []:
+        for word in segment.get("words") or []:
+            words.append({**word, "index": len(words)})
+    return words
+
+
+def _word_key(text: str) -> str:
+    return re.sub(r"[^\w]", "", str(text).casefold())
+
+
+def _trim_leading_fillers(
+    piece: dict[str, Any], words: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    inside = [
+        word for word in words
+        if float(word["start"]) >= float(piece["start"]) - 0.01
+        and float(word["start"]) < float(piece["end"])
+    ]
+    removed: list[str] = []
+    for word in inside[:_MAX_LEADING_FILLER_WORDS + 1]:
+        if _word_key(word["word"]) not in _LEADING_FILLERS:
+            break
+        removed.append(str(word["word"]).strip())
+    if not removed or len(removed) > _MAX_LEADING_FILLER_WORDS or len(removed) >= len(inside):
+        return piece, []
+    new_start = float(inside[len(removed)]["start"])
+    if (
+        new_start - float(piece["start"]) > _MAX_LEADING_FILLER_SECONDS
+        or float(piece["end"]) - new_start < _MIN_PIECE_SECONDS
+    ):
+        return piece, []
+    text_words = str(piece["text"]).split()
+    return {**piece, "start": new_start, "text": " ".join(text_words[len(removed):])}, removed
+
+
+def _emphasis_indices(
+    phrases: list[str], pieces: list[dict[str, Any]], words: list[dict[str, Any]],
+) -> list[int]:
+    """Map the model's literal emphasis phrases to transcript word indices inside
+    the clip's pieces. Phrases that are not found are ignored."""
+    inside = [
+        word for word in words
+        if any(
+            float(word["start"]) >= float(piece["start"]) - 0.01
+            and float(word["end"]) <= float(piece["end"]) + 0.01
+            for piece in pieces
+        )
+    ]
+    keys = [_word_key(word["word"]) for word in inside]
+    found: set[int] = set()
+    for phrase in phrases[:6]:
+        tokens = [_word_key(token) for token in str(phrase).split()]
+        tokens = [token for token in tokens if token]
+        if not tokens or len(tokens) > 3:
+            continue
+        for start in range(len(keys) - len(tokens) + 1):
+            if keys[start:start + len(tokens)] == tokens:
+                found.update(inside[start + offset]["index"] for offset in range(len(tokens)))
+                break
+    return sorted(found)
 
 
 def _selection_rules(config: CortexConfig) -> dict[str, Any]:
@@ -194,13 +279,8 @@ def _resolve_pieces(
 
 
 def _piece_warnings(clip: dict[str, Any], pieces: list[dict[str, Any]]) -> list[str]:
+    del clip
     warnings: list[str] = []
-    hook = _normalize_text(str(clip.get("hook_quote") or ""))
-    if hook and hook not in _normalize_text(pieces[0]["text"]):
-        warnings.append("Gancho não encontrado literalmente na primeira peça.")
-    payoff = _normalize_text(str(clip.get("payoff_quote") or ""))
-    if payoff and payoff not in _normalize_text(pieces[-1]["text"]):
-        warnings.append("Desfecho não encontrado literalmente na última peça.")
     for number, piece in enumerate(pieces[1:], start=2):
         words = piece["text"].split()
         first = _normalize_text(words[0]) if words else ""
@@ -211,10 +291,22 @@ def _piece_warnings(clip: dict[str, Any], pieces: list[dict[str, Any]]) -> list[
     return warnings
 
 
+def _headline_options(clip: dict[str, Any]) -> list[str]:
+    raw = clip.get("headlines")
+    if not isinstance(raw, list):
+        raw = [clip.get("headline")]
+    options: list[str] = []
+    for item in raw:
+        text = " ".join(str(item or "").split())[:120]
+        if text and text.casefold() not in {option.casefold() for option in options}:
+            options.append(text)
+    return options[:3]
+
+
 def _resolve_clip(
     clip: dict[str, Any], *, units: list[dict[str, Any]], minimum_seconds: float | None,
     maximum_seconds: float | None, duration_seconds: float | None,
-    max_envelope_seconds: float | None,
+    max_envelope_seconds: float | None, words: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     score = clip.get("score")
     raw_pieces = clip.get("pieces")
@@ -222,9 +314,15 @@ def _resolve_clip(
         return None
     if not isinstance(raw_pieces, list) or not raw_pieces or len(raw_pieces) > _MAX_PIECES:
         return None
+    headlines = _headline_options(clip)
+    if not headlines:
+        return None
     pieces, dropped = _resolve_pieces(raw_pieces, units)
     if not pieces:
         return None
+    lead_trimmed: list[str] = []
+    if words:
+        pieces[0], lead_trimmed = _trim_leading_fillers(pieces[0], words)
     total = sum(piece["end"] - piece["start"] for piece in pieces)
     if minimum_seconds is not None and total < float(minimum_seconds):
         return None
@@ -235,8 +333,11 @@ def _resolve_clip(
         return None
     if duration_seconds is not None and pieces[-1]["end"] > float(duration_seconds):
         return None
+    emphasis = [str(item) for item in (clip.get("emphasis") or []) if str(item).strip()][:6]
     return {
-        **clip, "pieces": pieces,
+        **clip, "pieces": pieces, "headlines": headlines, "emphasis": emphasis,
+        "emphasis_word_indices": _emphasis_indices(emphasis, pieces, words) if words else [],
+        "lead_trimmed": " ".join(lead_trimmed),
         "warnings": [*(clip.get("warnings") or []), *dropped, *_piece_warnings(clip, pieces)],
     }
 
@@ -256,8 +357,11 @@ def _drop_overlaps(clips: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], i
 def _normalize_clip(rank: int, clip: dict[str, Any], brief: dict[str, Any]) -> dict[str, Any]:
     pieces = clip["pieces"]
     start, end = float(pieces[0]["start"]), float(pieces[-1]["end"])
-    hook_quote = str(clip["hook_quote"])
-    payoff_quote = str(clip["payoff_quote"])
+    first_words = str(pieces[0]["text"]).split()
+    hook_quote = str(clip.get("hook_quote") or " ".join(first_words[:14]))
+    last_words = str(pieces[-1]["text"]).split()
+    payoff_quote = str(clip.get("payoff_quote") or " ".join(last_words[-14:]))
+    headlines = clip.get("headlines") or [clip.get("headline") or clip["title"]]
     hook_end = min(start + 5.0, float(pieces[0]["end"]))
     payoff_start = max(end - 8.0, float(pieces[-1]["start"]))
     count = len(pieces)
@@ -270,7 +374,11 @@ def _normalize_clip(rank: int, clip: dict[str, Any], brief: dict[str, Any]) -> d
     return {
         "rank": rank,
         "title": clip["title"],
-        "headline": clip["headline"],
+        "headline": headlines[0],
+        "headline_options": list(headlines),
+        "emphasis": list(clip.get("emphasis") or []),
+        "emphasis_word_indices": list(clip.get("emphasis_word_indices") or []),
+        "lead_trimmed": clip.get("lead_trimmed") or "",
         "start_second": start,
         "end_second": end,
         "estimated_duration": sum(float(p["end"]) - float(p["start"]) for p in pieces),
@@ -292,7 +400,7 @@ def _normalize_clip(rank: int, clip: dict[str, Any], brief: dict[str, Any]) -> d
             "summary": payoff_quote, "evidence": payoff_quote,
         },
         "approximate_edl": [{
-            "order": index, "source_start": float(piece["start"]),
+            "order": index, "piece": index, "source_start": float(piece["start"]),
             "source_end": float(piece["end"]),
             "purpose": purpose(index), "preferred_visual": "primary_speaker",
             "audio_mode": "source", "transition_in": "hard_cut",
@@ -315,12 +423,13 @@ def _validate_and_normalize_selection(
     maximum_seconds = brief.get("maximum_seconds")
     duration_seconds = transcript.get("duration_seconds")
     raw_clips = list(document["clips"])
+    words = _flat_words(transcript)
     resolved = [
         item for item in (
             _resolve_clip(
                 clip, units=units, minimum_seconds=minimum_seconds,
                 maximum_seconds=maximum_seconds, duration_seconds=duration_seconds,
-                max_envelope_seconds=max_envelope_seconds,
+                max_envelope_seconds=max_envelope_seconds, words=words,
             ) for clip in raw_clips
         ) if item is not None
     ]
@@ -345,6 +454,52 @@ def _validate_and_normalize_selection(
     }
 
 
+def provider_identity(config: CortexConfig, *, effort: str | None = None) -> dict[str, Any]:
+    """Only what changes the editorial output belongs in cache keys: binary paths
+    and timeouts must not invalidate (and re-bill) cached selections."""
+    ai = config.ai
+    if ai.provider == "claude_code_cli":
+        return {"provider": ai.provider, "model": ai.claude_model,
+                "effort": effort or ai.claude_effort}
+    return {"provider": ai.provider, "model": ai.codex_model,
+            "effort": effort or ai.codex_reasoning_effort}
+
+
+def selection_system_context(
+    prompt_template: str, units: list[dict[str, Any]], transcript: dict[str, Any],
+    *, episode_title: str | None,
+) -> str:
+    """Stable part of the selection request (cached by the CLI across calls on
+    the same episode): editorial instructions + the whole episode."""
+    duration = transcript.get("duration_seconds")
+    header = [f"Título: {episode_title}"] if episode_title else []
+    if isinstance(duration, (int, float)):
+        header.append(f"Duração: {float(duration) / 60:.0f} min")
+    return (
+        f"{prompt_template.strip()}\n\n## Episódio\n"
+        + ("\n".join(header) + "\n\n" if header else "")
+        + "## Transcrição\n" + _transcript_lines(units)
+    )
+
+
+def selection_request(
+    brief: dict[str, Any], config: CortexConfig, *, second_round: bool,
+) -> str:
+    payload = {
+        "brief": {key: value for key, value in brief.items() if key != "confirmed_voice"},
+        "selection_rules": _selection_rules(config),
+    }
+    round_note = (
+        "Segunda rodada: os intervalos em `brief.exclude_ranges` já foram escolhidos ou "
+        "sugeridos. Devolva só cortes novos, fora deles, até completar `brief.count`.\n\n"
+    ) if second_round else ""
+    return (
+        f"{round_note}Pedido atual:\n"
+        f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+        "Responda com o objeto JSON do schema."
+    )
+
+
 class SuggestionService:
     def __init__(
         self,
@@ -362,34 +517,19 @@ class SuggestionService:
         prompt_template: str, schema: dict[str, Any], second_round: bool,
         should_cancel: Callable[[], bool], episode_title: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, list[tuple[dict[str, Any], dict[str, Any]]]]:
-        request_payload = {
-            "brief": {key: value for key, value in brief.items() if key != "confirmed_voice"},
-            "transcript": _transcript_lines(units),
-            "transcript_metadata": {
-                "duration_seconds": transcript.get("duration_seconds"),
-                "language": transcript.get("language"),
-            },
-            "selection_rules": _selection_rules(self._config),
-            **({"episode_title": episode_title} if episode_title else {}),
-        }
-        round_note = (
-            "## Segunda rodada\n"
-            "Esta é uma segunda rodada: os intervalos em `brief.exclude_ranges` já foram "
-            "escolhidos (ou já foram sugeridos antes). Devolva apenas cortes novos, fora "
-            "desses intervalos, até completar `brief.count`.\n\n"
-        ) if second_round else ""
-        prompt = (
-            f"{prompt_template}\n\n{round_note}"
-            "## Pedido atual e transcrição\n"
-            f"{json.dumps(request_payload, ensure_ascii=False, separators=(',', ':'))}"
+        system_context = selection_system_context(
+            prompt_template, units, transcript, episode_title=episode_title,
         )
-        if len(prompt) > self._config.ai.max_input_chars:
+        prompt = selection_request(brief, self._config, second_round=second_round)
+        if len(system_context) + len(prompt) > self._config.ai.max_input_chars:
             raise ValueError(
                 "transcrição excede o limite do provider; análise em chunks ainda é necessária "
-                f"({len(prompt)} > {self._config.ai.max_input_chars} caracteres)"
+                f"({len(system_context) + len(prompt)} > {self._config.ai.max_input_chars} caracteres)"
             )
         try:
-            generated = self._provider.generate(prompt, schema, should_cancel=should_cancel)
+            generated = self._provider.generate(
+                prompt, schema, should_cancel=should_cancel, system_context=system_context,
+            )
         except SuggestionProviderCancelled as exc:
             raise SuggestionJobCancelled() from exc
         if should_cancel():
@@ -490,7 +630,7 @@ class SuggestionService:
                 ) from exc
         transcript = json.loads(Path(transcript_artifact.path).read_text(encoding="utf-8"))
         prompt_path = _PROJECT_ROOT / "prompts/clip_selection.pt-BR.md"
-        schema_path = _PROJECT_ROOT / "prompts/clip_selection.v3.schema.json"
+        schema_path = _PROJECT_ROOT / "prompts/clip_selection.v4.schema.json"
         prompt_template = prompt_path.read_text(encoding="utf-8")
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         units = _selection_units(
@@ -515,12 +655,14 @@ class SuggestionService:
             "schema_sha256": hashlib.sha256(
                 json.dumps(schema, sort_keys=True).encode()
             ).hexdigest(),
-            "provider": self._config.ai.model_dump(mode="json"),
-            "selection_mode": "composed_v1",
+            "provider": provider_identity(self._config),
+            "selection_mode": "composed_v2",
             "selection_rules": _selection_rules(self._config),
             "request": {
-                "brief": request_brief, "transcript": _transcript_lines(units),
-                "episode_title": episode_title,
+                "brief": request_brief,
+                "system_context_sha256": hashlib.sha256(selection_system_context(
+                    prompt_template, units, transcript, episode_title=episode_title,
+                ).encode()).hexdigest(),
             },
             **({"voice_attribution_version": VOICE_ATTRIBUTION_VERSION,
                 "confirmed_voice": brief["confirmed_voice"]} if voice else {}),

@@ -128,6 +128,8 @@ class AiConfig(BaseModel):
     claude_binary: str = "claude"
     claude_model: str = "sonnet"
     claude_effort: str | None = "low"
+    # Effort of the per-clip refine pass (one small call per exported clip).
+    refine_effort: str | None = "medium"
     tighten_enabled: bool = True
     codex_binary: str = "codex"
     codex_model: str = "gpt-5.5"

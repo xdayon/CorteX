@@ -104,6 +104,13 @@ def resolve_semantic_pieces(
     return semantic_ranges
 
 
+def _below_minimum(duration: float | None, minimum_seconds: float | None) -> bool:
+    return (
+        duration is not None and minimum_seconds is not None
+        and float(duration) < float(minimum_seconds) - 0.5
+    )
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -153,7 +160,10 @@ class EditPlanService:
         maximum_seconds: float | None = None,
         approximate_edl: list[dict] | None = None,
         confirmed_voice: dict | None = None,
+        minimum_seconds: float | None = None,
     ) -> dict:
+        """``minimum_seconds`` never changes the plan (cutting dead time wins);
+        a final timeline shorter than it is reported as ``below_minimum``."""
         if should_cancel():
             raise EditPlanJobCancelled()
         if end <= start:
@@ -288,9 +298,11 @@ class EditPlanService:
         )
         if cached is not None:
             progress_cb(100.0, "Plano de edição em cache reutilizado")
+            cached_duration = cached.metadata.get("timeline_duration_seconds")
             return {"cached": True, "edit_plan_artifact_id": cached.id, "edit_plan_path": cached.path, "schema_version": cached.schema_version,
                     "duration_limit_applied": cached.metadata.get("duration_limit_applied", False),
-                    "timeline_duration_seconds": cached.metadata.get("timeline_duration_seconds"),
+                    "timeline_duration_seconds": cached_duration,
+                    "below_minimum": _below_minimum(cached_duration, minimum_seconds),
                     "voice_validation": cached.metadata.get("voice_validation")}
 
         if should_cancel():
@@ -531,4 +543,5 @@ class EditPlanService:
         progress_cb(100.0, "Plano de edição concluído")
         return {"cached": False, "edit_plan_artifact_id": artifact.id, "edit_plan_path": artifact.path, "schema_version": artifact.schema_version,
                 "duration_limit_applied": bool(duration_issues), "timeline_duration_seconds": document.timeline_duration_seconds,
+                "below_minimum": _below_minimum(document.timeline_duration_seconds, minimum_seconds),
                 "voice_validation": voice_validation}

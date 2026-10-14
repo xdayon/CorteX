@@ -802,18 +802,23 @@ def run_edit_plan_job(
         return _job_is_cancelled(jobs, job.id)
 
     approximate_edl = job.payload.get("approximate_edl")
+    minimum_seconds = job.payload.get("minimum_seconds")
     tighten_artifact_id = None
-    if (
-        job.payload.get("tighten") is True and config.ai.tighten_enabled
-        and (not approximate_edl or len(approximate_edl) == 1)
-    ):
-        tighten_service = TightenService(config, domain, provider)
+    refine = None
+    if job.payload.get("tighten") is True and config.ai.tighten_enabled:
+        tighten_service = TightenService(
+            config, domain, provider, effort=config.ai.refine_effort,
+        )
         try:
             tighten_result = tighten_service.run(
                 transcript_artifact=transcript,
                 start=start,
                 end=end,
                 brief={"primary_subject": job.payload.get("primary_subject")},
+                ranges=approximate_edl,
+                headline=job.payload.get("headline"),
+                minimum_seconds=minimum_seconds,
+                maximum_seconds=job.payload.get("maximum_seconds"),
                 progress_cb=lambda percent, _message: _safe_progress(
                     jobs, job.id, percent * 0.3, "Enxugando o corte com IA", PipelineStage.EDIT
                 ),
@@ -822,7 +827,9 @@ def run_edit_plan_job(
         except TightenJobCancelled:
             return
         tighten_artifact_id = tighten_result["tighten_artifact_id"]
-        approximate_edl = tighten_result["ranges"]
+        refine = {"status": tighten_result["status"], "reason": tighten_result.get("reason")}
+        if tighten_result["status"] == "accepted":
+            approximate_edl = tighten_result["ranges"]
 
     try:
         result = service.run(
@@ -839,11 +846,13 @@ def run_edit_plan_job(
             max_jl_offset_seconds=job.payload.get("max_jl_offset_seconds"),
             approximate_edl=approximate_edl,
             confirmed_voice=job.payload.get("confirmed_voice"),
+            minimum_seconds=minimum_seconds,
         )
     except EditPlanJobCancelled:
         return
     if tighten_artifact_id is not None:
         result["tighten_artifact_id"] = tighten_artifact_id
+        result["refine"] = refine
     jobs.update(
         job.id,
         JobUpdate(
@@ -1046,8 +1055,11 @@ def process_next(
         if job.type == JobType.TRANSCRIPTION:
             handler(job, config, jobs, domain, engine)
         elif job.type in (JobType.SUGGESTION, JobType.EDIT_PLAN):
+            # Selection and the per-clip refine pass use their own configured
+            # effort; tests inject one fake provider for both.
             provider = suggestion_provider or build_suggestion_provider(
-                config.ai, cwd=Path(__file__).resolve().parents[2]
+                config.ai, cwd=Path(__file__).resolve().parents[2],
+                effort=config.ai.refine_effort if job.type == JobType.EDIT_PLAN else None,
             )
             handler(job, config, jobs, domain, provider)
         else:
@@ -1131,9 +1143,7 @@ def run_worker(
     domain = DomainStore(config.paths.database)
     reconcile_export_batches(jobs, domain)
     engine = FasterWhisperEngine()
-    suggestion_provider = build_suggestion_provider(
-        config.ai, cwd=Path(__file__).resolve().parents[2]
-    )
+    suggestion_provider = None  # built per job type (selection vs refine effort)
 
     state = {"running": True}
 

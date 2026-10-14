@@ -36,16 +36,14 @@ def _config(tmp_path: Path) -> CortexConfig:
 
 
 class _SuggestionProvider:
-    def generate(self, prompt, schema, *, should_cancel):
-        del prompt, schema
+    def generate(self, prompt, schema, *, should_cancel, system_context=None):
+        del prompt, schema, system_context
         assert not should_cancel()
         clip = {
             "title": "Ideia principal",
-            "headline": "Uma ideia que vale o corte",
+            "headlines": ["Uma ideia que vale o corte"],
             "pieces": [{"from_id": 0, "to_id": 0}],
-            "connective_logic": "Trecho único.",
-            "hook_quote": "Gancho",
-            "payoff_quote": "Conclusão",
+            "emphasis": [],
             "score": 8,
             "reason": "Trecho autocontido.",
             "warnings": [],

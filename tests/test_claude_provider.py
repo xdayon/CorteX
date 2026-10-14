@@ -150,9 +150,59 @@ def test_anthropic_api_key_is_stripped_from_child_env(tmp_path, monkeypatch):
     assert record["has_api_key"] is False
 
 
-def test_missing_binary_raises_explicit_error():
+def test_missing_binary_raises_explicit_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "empty-home")
     config = _config(Path("/does/not/exist/claude"))
     provider = ClaudeCodeCliProvider(config)
 
-    with pytest.raises(SuggestionProviderError, match="não encontrada no PATH"):
+    with pytest.raises(SuggestionProviderError, match="não está funcionando"):
         provider.generate("gere a seleção", {"type": "object"}, should_cancel=lambda: False)
+
+
+_BROKEN_STUB = """#!/bin/sh
+echo "Error: claude native binary not installed." >&2
+exit 1
+"""
+
+
+def test_broken_configured_stub_resolves_to_working_binary(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    working_dir = home / ".local/share/fnm/aliases/default/bin"
+    working_dir.mkdir(parents=True)
+    working, record_path = _fake_claude(working_dir, mode="success")
+    stub = tmp_path / "stub-claude"
+    stub.write_text(_BROKEN_STUB, encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    result = ClaudeCodeCliProvider(_config(stub)).generate(
+        "gere a seleção", {"type": "object"}, should_cancel=lambda: False,
+    )
+
+    assert result.provenance["binary_resolution"] == "fnm_default"
+    assert result.provenance["binary_version"] == "2.1.283 (Claude Code)"
+    assert json.loads(record_path.read_text(encoding="utf-8"))["prompt"] == "gere a seleção"
+
+
+def test_system_context_goes_to_cacheable_system_prompt_file(tmp_path):
+    binary, record_path = _fake_claude(tmp_path, mode="success")
+    ClaudeCodeCliProvider(_config(binary)).generate(
+        "pedido curto", {"type": "object"}, should_cancel=lambda: False,
+        system_context="## Transcrição\n#0 [0.0|2.0] olá",
+    )
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["prompt"] == "pedido curto"
+    assert "--system-prompt-file" in record["argv"]
+    assert "--system-prompt" not in record["argv"]
+
+
+def test_effort_override_applies_to_one_provider(tmp_path):
+    binary, record_path = _fake_claude(tmp_path, mode="success")
+    result = ClaudeCodeCliProvider(_config(binary), effort="high").generate(
+        "x", {"type": "object"}, should_cancel=lambda: False,
+    )
+
+    argv = json.loads(record_path.read_text(encoding="utf-8"))["argv"]
+    assert argv[argv.index("--effort") + 1] == "high"
+    assert result.provenance["effort"] == "high"

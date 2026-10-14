@@ -38,8 +38,8 @@ def _units(count: int = 12, size: float = 10.0) -> list[dict]:
 
 def _clip(pieces, **overrides) -> dict:
     clip = {
-        "title": "T", "headline": "H", "pieces": [{"from_id": a, "to_id": b} for a, b in pieces],
-        "hook_quote": "linha", "payoff_quote": "linha", "connective_logic": "x",
+        "title": "T", "headlines": ["H", "H2", "H3"],
+        "pieces": [{"from_id": a, "to_id": b} for a, b in pieces], "emphasis": [],
         "score": 7, "reason": "r", "warnings": [],
     }
     clip.update(overrides)
@@ -62,9 +62,9 @@ def test_fine_units_sequential_ids_and_line_format():
         voice=None, primary_subject="Dayon",
     )
     assert [(u["id"], u["text"]) for u in units] == [(0, "a,"), (1, "b"), (2, "c")]
-    assert _transcript_lines(units).splitlines()[0] == "#0 [0.0] a,"
-    labelled = [{**units[0], "speaker_label": "Dayon"}]
-    assert _transcript_lines(labelled) == "#0 [0.0] Dayon: a,"
+    assert _transcript_lines(units).splitlines()[0] == "#0 [0.0|1.3] a,"
+    labelled = [{**units[0], "speaker_label": "D"}, {**units[1], "speaker_label": "D"}]
+    assert _transcript_lines(labelled).splitlines() == ["#0 [0.0|1.3] D: a,", "#1 [1.3|0.3] b"]
 
 
 def test_pieces_resolution_discards_invalid_out_of_order_and_short():
@@ -131,15 +131,11 @@ def test_heuristic_warnings():
     units[0]["text"] = "Começo da ideia, com gancho."
     units[4]["text"] = "Isso muda tudo, de verdade."
     units[6]["text"] = "O desfecho final."
-    clip = _clip(
-        [(0, 0), (4, 4), (6, 6)], hook_quote="Outra frase", payoff_quote="o DESFECHO final",
-    )
+    clip = _clip([(0, 0), (4, 4), (6, 6)])
     warnings = _validate([clip], units)["clips"][0]["warnings"]
-    assert "Gancho não encontrado literalmente na primeira peça." in warnings
-    assert not any(w.startswith("Desfecho") for w in warnings)
     assert "A peça 2 começa com 'isso': confira se o referente ficou de fora." in warnings
 
-    clean = _clip([(0, 0)], hook_quote="começo da IDEIA com gancho", payoff_quote="gancho")
+    clean = _clip([(0, 0)])
     assert _validate([clean], units)["clips"][0]["warnings"] == []
 
 
@@ -149,11 +145,13 @@ def test_normalize_clip_builds_composed_fields():
     assert (clip["start_second"], clip["end_second"]) == (0.0, 90.0)
     assert clip["estimated_duration"] == 40.0
     assert clip["transcript_text"] == "linha 0. … linha 3. linha 4. … linha 8."
-    assert clip["connective_logic"] == "x"
+    assert clip["headline"] == "H"
+    assert clip["headline_options"] == ["H", "H2", "H3"]
     assert clip["pieces"][1] == {
         "from_id": 3, "to_id": 4, "start": 30.0, "end": 50.0, "text": "linha 3. linha 4.",
     }
     edl = clip["approximate_edl"]
+    assert [e["piece"] for e in edl] == [0, 1, 2]
     assert [(e["order"], e["source_start"], e["source_end"], e["purpose"]) for e in edl] == [
         (0, 0.0, 10.0, "hook"), (1, 30.0, 50.0, "development"), (2, 80.0, 90.0, "payoff"),
     ]
@@ -173,7 +171,7 @@ def test_normalize_clip_single_piece_is_hook():
 def test_prompt_carries_rules_and_numbered_lines():
     provider = ScriptedProvider([{"selection_notes": "ok", "clips": [_valid_clip()]}])
     _run(provider, {"count": 1, "minimum_seconds": 10, "maximum_seconds": 60})
-    assert "#0 [0.0] Uma ideia completa" in provider.prompts[0]
+    assert "#0 [0.0|10.0] Uma ideia completa" in provider.prompts[0]
     assert '"selection_rules":{"max_envelope_seconds":240.0,"max_pieces":15,"min_piece_seconds":0.6}' in provider.prompts[0]
 
 
@@ -216,7 +214,7 @@ def test_exclude_and_top_up_use_pieces():
     assert {tuple(p["from_id"] for p in c["pieces"]) for c in clips} == {(0, 4), (2, 6)}
 
 
-def test_tighten_skipped_for_composed_edl(tmp_path: Path) -> None:
+def test_refine_of_tiny_composed_edl_is_skipped_and_keeps_pieces(tmp_path: Path) -> None:
     config = _edit_plan_config(tmp_path)
     config.ensure_runtime_dirs()
     domain = DomainStore(config.paths.database)
@@ -243,16 +241,16 @@ def test_tighten_skipped_for_composed_edl(tmp_path: Path) -> None:
 
         def generate(self, *_args, **_kwargs):
             _NoCalls.calls += 1
-            raise AssertionError("tighten must not run for composed cuts")
+            raise AssertionError("a two-phrase clip has nothing to refine")
 
     assert process_next(config, jobs, domain, FakeTranscriptionEngine(), _NoCalls())
     final = jobs.get(job.id)
     assert final.status == JobStatus.SUCCEEDED, final.error
-    assert "tighten_artifact_id" not in final.result
+    assert final.result["refine"]["status"] == "skipped"
     assert _NoCalls.calls == 0
     artifact = domain.get_stage_artifact(final.result["edit_plan_artifact_id"])
     document = EditPlanDocument.model_validate_json(Path(artifact.path).read_text())
-    assert len(document.segments) == 2
+    assert [segment.piece_index for segment in document.segments] == [0, 1]
 
 
 def test_edit_plan_endpoint_forwards_approximate_edl(tmp_path: Path) -> None:
@@ -270,3 +268,77 @@ def test_edit_plan_endpoint_forwards_approximate_edl(tmp_path: Path) -> None:
     assert response.status_code == 201, response.text
     job = JobStore(config.paths.database).get(response.json()["id"])
     assert job.payload["approximate_edl"] == edl
+
+
+def _word_transcript(words: list[tuple[str, float, float]], duration: float = 120.0) -> dict:
+    return {"duration_seconds": duration, "segments": [{
+        "start": 0.0, "end": duration, "text": "",
+        "words": [{"word": w, "start": s, "end": e} for w, s, e in words],
+    }]}
+
+
+def test_leading_fillers_are_trimmed_from_the_cold_open():
+    words = [("Então,", 0.0, 0.4), ("né,", 0.5, 0.8), ("a", 1.0, 1.1), ("consciência", 1.2, 2.0)]
+    words += [(f"palavra{i}", 2.0 + i * 0.5, 2.4 + i * 0.5) for i in range(60)]
+    transcript = _word_transcript(words)
+    units = [{"id": 0, "start": 0.0, "end": 32.0, "text": "Então, né, a consciência …",
+              "speaker_label": None}]
+    result = _validate_and_normalize_selection(
+        {"selection_notes": "n", "clips": [_clip([(0, 0)])]}, brief=BRIEF,
+        transcript=transcript, units=units, max_envelope_seconds=240.0,
+    )
+    clip = result["clips"][0]
+    assert clip["start_second"] == 1.0
+    assert clip["lead_trimmed"] == "Então, né,"
+    assert clip["approximate_edl"][0]["source_start"] == 1.0
+
+
+def test_meaningful_first_word_is_never_trimmed():
+    words = [("É", 0.0, 0.3), ("impressionante", 0.4, 1.2)]
+    words += [(f"palavra{i}", 1.5 + i * 0.5, 1.9 + i * 0.5) for i in range(60)]
+    units = [{"id": 0, "start": 0.0, "end": 31.5, "text": "É impressionante …",
+              "speaker_label": None}]
+    result = _validate_and_normalize_selection(
+        {"selection_notes": "n", "clips": [_clip([(0, 0)])]}, brief=BRIEF,
+        transcript=_word_transcript(words), units=units, max_envelope_seconds=240.0,
+    )
+    assert result["clips"][0]["start_second"] == 0.0
+    assert result["clips"][0]["lead_trimmed"] == ""
+
+
+def test_emphasis_phrases_map_to_transcript_word_indices():
+    words = [("A", 0.0, 0.2), ("glândula", 0.3, 0.9), ("pineal", 1.0, 1.5), ("é", 1.6, 1.7)]
+    words += [(f"palavra{i}", 2.0 + i * 0.5, 2.4 + i * 0.5) for i in range(60)]
+    units = [{"id": 0, "start": 0.0, "end": 32.0, "text": "A glândula pineal é …",
+              "speaker_label": None}]
+    clip = _clip([(0, 0)], emphasis=["glândula pineal", "inexistente", "PALAVRA3"])
+    result = _validate_and_normalize_selection(
+        {"selection_notes": "n", "clips": [clip]}, brief=BRIEF,
+        transcript=_word_transcript(words), units=units, max_envelope_seconds=240.0,
+    )
+    assert result["clips"][0]["emphasis_word_indices"] == [1, 2, 7]
+
+
+def test_headline_options_are_deduplicated_and_first_is_recommended():
+    clip = _clip([(0, 2)], headlines=["  Uma  revelação ", "uma revelação", "Outra"])
+    normalized = _validate([clip])["clips"][0]
+    assert normalized["headline"] == "Uma revelação"
+    assert normalized["headline_options"] == ["Uma revelação", "Outra"]
+
+
+def test_clip_without_headline_is_discarded():
+    result = _validate([_clip([(0, 2)], headlines=[" "]), _clip([(4, 6)], title="ok")])
+    assert [clip["title"] for clip in result["clips"]] == ["ok"]
+
+
+def test_cache_identity_ignores_binary_path_and_timeout(tmp_path):
+    from cortex.suggest.service import provider_identity
+    from test_suggestion_cli import _config as suggestion_config
+
+    config = suggestion_config(tmp_path)
+    before = provider_identity(config)
+    config.ai.claude_binary = "/outro/caminho/claude"
+    config.ai.timeout_seconds = 1200
+    assert provider_identity(config) == before
+    config.ai.claude_effort = "high"
+    assert provider_identity(config) != before

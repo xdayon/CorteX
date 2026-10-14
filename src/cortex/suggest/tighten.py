@@ -1,8 +1,10 @@
-"""Per-clip "tighten" pass: drops digressions/restarts from a selected clip.
+"""Per-clip refine pass ("enxugar"): drops digressions, restarts and repetitions
+from a selected clip, phrase by phrase.
 
-Runs only for clips that are actually being exported (see
-``cortex.export_batches._queue_export_plan``), never for previews, so token
-spend stays tied to real deliverables.
+Runs only for clips the user is exporting (export batch or the export editor's
+preview of a selected clip); results are cached by input hash, so the export
+reuses what the editor already paid for. Phrases are built only inside the
+clip's pieces, so the model can never re-include material the selection cut.
 """
 
 from __future__ import annotations
@@ -21,15 +23,20 @@ from cortex.domain.models import StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
 from cortex.paths import suggestions_dir
 from cortex.suggest.provider import SuggestionProvider, SuggestionProviderCancelled
+from cortex.suggest.service import provider_identity
 
-TIGHTEN_ARTIFACT_VERSION = 1
-PHRASE_ALGORITHM_VERSION = 1
+TIGHTEN_ARTIFACT_VERSION = 2
+PHRASE_ALGORITHM_VERSION = 2
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 _SENTENCE_END_RE = re.compile(r"[.!?…,]$")
 _MAX_PHRASE_WORDS = 14
 _MAX_GAP_SECONDS = 0.25
-_MINIMUM_KEPT_RATIO = 0.4
+_MINIMUM_KEPT_RATIO = 0.55
+# Below this margin over the minimum duration there is nothing worth removing:
+# skip the call entirely instead of spending tokens on a refusal.
+_SKIP_MARGIN_SECONDS = 3.0
+_MIN_PHRASES = 3
 
 
 class TightenJobCancelled(RuntimeError):
@@ -91,7 +98,23 @@ def build_phrases(transcript: dict[str, Any], start: float, end: float) -> list[
     return phrases
 
 
+def build_piece_phrases(
+    transcript: dict[str, Any], ranges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Phrases of every piece, numbered globally and tagged with their piece."""
+    phrases: list[dict[str, Any]] = []
+    for position, entry in enumerate(ranges):
+        piece = entry.get("piece", entry.get("order", position))
+        for phrase in build_phrases(
+            transcript, float(entry["source_start"]), float(entry["source_end"]),
+        ):
+            phrases.append({**phrase, "id": len(phrases), "piece": piece})
+    return phrases
+
+
 def _merge_ranges(phrases: list[dict[str, Any]], keep_ids: list[int]) -> list[dict[str, Any]]:
+    """Contiguous kept phrases of the same piece become one range; a range never
+    bridges two pieces (that would re-include what the selection removed)."""
     keep_set = set(keep_ids)
     ranges: list[dict[str, Any]] = []
     previous_index: int | None = None
@@ -99,16 +122,27 @@ def _merge_ranges(phrases: list[dict[str, Any]], keep_ids: list[int]) -> list[di
         if phrase["id"] not in keep_set:
             previous_index = None
             continue
-        if previous_index is not None and index == previous_index + 1:
+        same_piece = bool(ranges) and ranges[-1].get("piece") == phrase.get("piece")
+        if previous_index is not None and index == previous_index + 1 and same_piece:
             ranges[-1]["source_end"] = phrase["end"]
         else:
-            ranges.append({
+            entry = {
                 "source_start": phrase["start"],
                 "source_end": phrase["end"],
                 "audio_mode": "source",
-            })
+            }
+            if phrase.get("piece") is not None:
+                entry["piece"] = phrase["piece"]
+            ranges.append(entry)
         previous_index = index
     return ranges
+
+
+def _speech_seconds(phrases: list[dict[str, Any]], ids: set[int] | None = None) -> float:
+    return sum(
+        phrase["end"] - phrase["start"] for phrase in phrases
+        if ids is None or phrase["id"] in ids
+    )
 
 
 class TightenService:
@@ -117,10 +151,13 @@ class TightenService:
         config: CortexConfig,
         domain: DomainStore,
         provider: SuggestionProvider,
+        *,
+        effort: str | None = None,
     ) -> None:
         self._config = config
         self._domain = domain
         self._provider = provider
+        self._effort = effort
 
     def run(
         self,
@@ -131,12 +168,25 @@ class TightenService:
         brief: dict[str, Any] | None,
         progress_cb: Callable[[float, str], None],
         should_cancel: Callable[[], bool],
+        ranges: list[dict[str, Any]] | None = None,
+        headline: str | None = None,
+        minimum_seconds: float | None = None,
+        maximum_seconds: float | None = None,
     ) -> dict[str, Any]:
+        """Return ``status`` accepted (with ``ranges``), skipped or rejected.
+
+        A rejected or skipped refine leaves the clip exactly as selected; the
+        reason is persisted and shown, never hidden.
+        """
         if should_cancel():
             raise TightenJobCancelled()
         start, end = float(start), float(end)
         transcript = json.loads(Path(transcript_artifact.path).read_text(encoding="utf-8"))
-        phrases = build_phrases(transcript, start, end)
+        piece_ranges = [
+            entry for entry in (ranges or [])
+            if entry.get("audio_mode") != "room_tone"
+        ] or [{"source_start": start, "source_end": end, "piece": 0}]
+        phrases = build_piece_phrases(transcript, piece_ranges)
         if not phrases:
             raise ValueError("Não há frases na janela do corte para enxugar.")
 
@@ -147,11 +197,18 @@ class TightenService:
         prompt_sha256 = hashlib.sha256(prompt_template.encode()).hexdigest()
         schema_sha256 = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
 
-        primary_subject = (brief or {}).get("primary_subject")
+        original_seconds = _speech_seconds(phrases)
         request_payload = {
-            "primary_subject": primary_subject,
+            "primary_subject": (brief or {}).get("primary_subject"),
+            "headline": headline or None,
+            "target": {
+                "minimum_seconds": minimum_seconds,
+                "maximum_seconds": maximum_seconds,
+                "original_seconds": round(original_seconds, 1),
+            },
             "phrases": [
-                {"id": p["id"], "start": round(p["start"], 3), "end": round(p["end"], 3), "text": p["text"]}
+                {"id": p["id"], "piece": p["piece"], "dur": round(p["end"] - p["start"], 1),
+                 "text": p["text"]}
                 for p in phrases
             ],
         }
@@ -159,11 +216,10 @@ class TightenService:
             "artifact_version": TIGHTEN_ARTIFACT_VERSION,
             "phrase_algorithm_version": PHRASE_ALGORITHM_VERSION,
             "transcript_sha256": transcript_artifact.audio_sha256,
-            "start": start,
-            "end": end,
+            "ranges": [(p["start"], p["end"], p["piece"]) for p in phrases],
             "prompt_sha256": prompt_sha256,
             "schema_sha256": schema_sha256,
-            "provider": self._config.ai.model_dump(mode="json"),
+            "provider": provider_identity(self._config, effort=self._effort),
             "request": request_payload,
         })
 
@@ -180,18 +236,79 @@ class TightenService:
                 "cached": True,
                 "tighten_artifact_id": cached.id,
                 "tighten_path": cached.path,
-                "ranges": document["ranges"],
+                "status": document["status"],
+                "reason": document.get("reason"),
+                "ranges": document.get("ranges"),
                 "provenance": document.get("provenance"),
             }
 
-        prompt = (
-            f"{prompt_template}\n\n## Frases\n"
-            f"{json.dumps(request_payload, ensure_ascii=False, separators=(',', ':'))}"
-        )
+        def persist(status: str, *, reason: str | None, keep_ids: list[int] | None,
+                    ranges_out: list[dict[str, Any]] | None, notes: str = "",
+                    unknown_ids: list[int] | None = None,
+                    provenance: dict[str, Any] | None = None) -> dict[str, Any]:
+            kept_ratio = (
+                _speech_seconds(phrases, set(keep_ids)) / original_seconds
+                if keep_ids and original_seconds > 0 else None
+            )
+            artifact_document = {
+                "artifact_schema_version": TIGHTEN_ARTIFACT_VERSION,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "input_hash": input_hash,
+                "transcript_artifact_id": transcript_artifact.id,
+                "start": start,
+                "end": end,
+                "status": status,
+                "reason": reason,
+                "phrases": phrases,
+                "keep_ids": keep_ids,
+                "kept_ratio": kept_ratio,
+                "ignored_unknown_ids": unknown_ids or [],
+                "notes": notes,
+                "ranges": ranges_out,
+                "provenance": provenance,
+            }
+            out_dir = suggestions_dir(self._config, transcript_artifact.project_id)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"tighten-{input_hash[:12]}.json"
+            out_path.write_text(
+                json.dumps(artifact_document, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            artifact = self._domain.create_stage_artifact(StageArtifact(
+                project_id=transcript_artifact.project_id,
+                stage="tighten",
+                schema_version=TIGHTEN_ARTIFACT_VERSION,
+                path=str(out_path),
+                input_hash=input_hash,
+                metadata={"provenance": provenance, "status": status, "kept_ratio": kept_ratio},
+            ))
+            progress_cb(100.0, "Enxugamento do corte concluído")
+            return {
+                "cached": False,
+                "tighten_artifact_id": artifact.id,
+                "tighten_path": artifact.path,
+                "status": status,
+                "reason": reason,
+                "ranges": ranges_out,
+                "provenance": provenance,
+            }
 
+        floor = float(minimum_seconds) if minimum_seconds else 0.0
+        if len(phrases) < _MIN_PHRASES or original_seconds < floor + _SKIP_MARGIN_SECONDS:
+            return persist(
+                "skipped", keep_ids=None, ranges_out=None,
+                reason="Corte já está no limite mínimo de duração; nada para enxugar.",
+            )
+
+        prompt = (
+            "Corte a refinar:\n"
+            f"{json.dumps(request_payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+            "Responda com o objeto JSON do schema."
+        )
         progress_cb(10.0, "Preparando enxugamento do corte")
         try:
-            generated = self._provider.generate(prompt, schema, should_cancel=should_cancel)
+            generated = self._provider.generate(
+                prompt, schema, should_cancel=should_cancel, system_context=prompt_template,
+            )
         except SuggestionProviderCancelled as exc:
             raise TightenJobCancelled() from exc
         if should_cancel():
@@ -205,59 +322,33 @@ class TightenService:
             raise ValueError(f"resposta de enxugamento inválida em {location}: {first.message}")
 
         # Order and duplicates carry no editorial meaning (phrases are never
-        # reordered), so normalize them; ids that do not exist are dropped and
-        # recorded instead of blocking the export.
+        # reordered), so normalize them; unknown ids are dropped and recorded.
         valid_ids = {p["id"] for p in phrases}
         returned_ids = generated.document["keep_ids"]
         keep_ids = sorted(set(returned_ids) & valid_ids)
         unknown_ids = sorted(set(returned_ids) - valid_ids)
+        notes = str(generated.document.get("notes", ""))
+        kept_seconds = _speech_seconds(phrases, set(keep_ids))
+        reason = None
         if not keep_ids:
-            raise ValueError("Enxugamento não manteve nenhuma frase; nenhum corte foi enxugado.")
-
-        total_duration = sum(p["end"] - p["start"] for p in phrases)
-        kept_duration = sum(p["end"] - p["start"] for p in phrases if p["id"] in keep_ids)
-        kept_ratio = (kept_duration / total_duration) if total_duration > 0 else 0.0
-        if kept_ratio < _MINIMUM_KEPT_RATIO:
-            raise ValueError(
-                "Enxugamento removeu frases demais; duração mantida abaixo de "
-                f"{_MINIMUM_KEPT_RATIO:.0%} do original. Nenhum corte foi enxugado."
+            reason = "A IA não manteve nenhuma frase válida; o corte segue sem enxugar."
+        elif kept_seconds / original_seconds < _MINIMUM_KEPT_RATIO:
+            reason = (
+                f"A IA removeu mais de {1 - _MINIMUM_KEPT_RATIO:.0%} da fala; "
+                "o corte segue sem enxugar."
             )
-
-        ranges = _merge_ranges(phrases, keep_ids)
-
-        artifact_document = {
-            "artifact_schema_version": TIGHTEN_ARTIFACT_VERSION,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "input_hash": input_hash,
-            "transcript_artifact_id": transcript_artifact.id,
-            "start": start,
-            "end": end,
-            "phrases": phrases,
-            "keep_ids": keep_ids,
-            "ignored_unknown_ids": unknown_ids,
-            "notes": generated.document.get("notes", ""),
-            "ranges": ranges,
-            "provenance": generated.provenance,
-        }
-        out_dir = suggestions_dir(self._config, transcript_artifact.project_id)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"tighten-{input_hash[:12]}.json"
-        out_path.write_text(
-            json.dumps(artifact_document, ensure_ascii=False, indent=2), encoding="utf-8"
+        elif floor and kept_seconds < floor:
+            reason = (
+                f"Enxugado ficaria com {kept_seconds:.0f}s, abaixo do mínimo de {floor:.0f}s; "
+                "o corte segue sem enxugar."
+            )
+        if reason is not None:
+            return persist(
+                "rejected", reason=reason, keep_ids=keep_ids, ranges_out=None, notes=notes,
+                unknown_ids=unknown_ids, provenance=generated.provenance,
+            )
+        return persist(
+            "accepted", reason=None, keep_ids=keep_ids,
+            ranges_out=_merge_ranges(phrases, keep_ids), notes=notes,
+            unknown_ids=unknown_ids, provenance=generated.provenance,
         )
-        artifact = self._domain.create_stage_artifact(StageArtifact(
-            project_id=transcript_artifact.project_id,
-            stage="tighten",
-            schema_version=TIGHTEN_ARTIFACT_VERSION,
-            path=str(out_path),
-            input_hash=input_hash,
-            metadata={"provenance": generated.provenance, "kept_ratio": kept_ratio},
-        ))
-        progress_cb(100.0, "Enxugamento do corte concluído")
-        return {
-            "cached": False,
-            "tighten_artifact_id": artifact.id,
-            "tighten_path": artifact.path,
-            "ranges": ranges,
-            "provenance": generated.provenance,
-        }

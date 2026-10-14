@@ -52,7 +52,7 @@ def test_units_fallback_without_words_and_hesitation_strip():
     assert units == [
         {"id": 0, "start": 1.0, "end": 9.0, "text": "uma frase", "speaker_label": None},
     ]
-    assert _transcript_lines(units) == "#0 [1.0] uma frase"
+    assert _transcript_lines(units) == "#0 [1.0|8.0] uma frase"
 
 
 def test_units_speaker_labels_from_confirmed_voice():
@@ -66,9 +66,9 @@ def test_units_speaker_labels_from_confirmed_voice():
         {"start": 20, "end": 24, "text": "Sem turno"},
     ]
     units = _units(segments, voice)
-    assert [u["speaker_label"] for u in units] == ["Outro", "Dayon", None]
+    assert [u["speaker_label"] for u in units] == ["O", "D", None]
     assert _transcript_lines(units).splitlines() == [
-        "#0 [0.0] Outro: Pergunta aqui", "#1 [5.0] Dayon: Resposta aqui", "#2 [20.0] Sem turno",
+        "#0 [0.0|4.0] O: Pergunta aqui", "#1 [5.0|4.0] D: Resposta aqui", "#2 [20.0|4.0] Sem turno",
     ]
 
 
@@ -77,8 +77,8 @@ class ScriptedProvider:
         self.responses = list(responses)
         self.prompts: list[str] = []
 
-    def generate(self, prompt, schema, *, should_cancel):
-        self.prompts.append(prompt)
+    def generate(self, prompt, schema, *, should_cancel, system_context=None):
+        self.prompts.append(f"{system_context or ''}\n{prompt}")
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -115,7 +115,7 @@ def test_confirmed_voice_not_sent_to_provider():
     provider = ScriptedProvider([_doc((0, 10, 7))])
     _run(provider, {"count": 1}, voice=voice)
     assert "confirmed_voice" not in provider.prompts[0]
-    assert "Dayon: Uma ideia completa" in provider.prompts[0]
+    assert "D: Uma ideia completa" in provider.prompts[0]
 
 
 def test_top_up_adds_clips_and_renumbers():
@@ -126,7 +126,7 @@ def test_top_up_adds_clips_and_renumbers():
     result = _run(provider, {"count": 10})
     clips = result["selection"]["clips"]
     assert len(provider.prompts) == 2
-    assert "segunda rodada" in provider.prompts[1]
+    assert "Segunda rodada" in provider.prompts[1]
     assert '"count":8' in provider.prompts[1]
     assert [c["rank"] for c in clips] == [1, 2, 3, 4, 5][: len(clips)]
     assert [c["scores"]["total"] for c in clips] == sorted(

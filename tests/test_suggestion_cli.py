@@ -27,21 +27,19 @@ from conftest import FakeTranscriptionEngine
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CLIP_SELECTION_SCHEMA = json.loads(
-    (_PROJECT_ROOT / "prompts/clip_selection.v3.schema.json").read_text(encoding="utf-8")
+    (_PROJECT_ROOT / "prompts/clip_selection.v4.schema.json").read_text(encoding="utf-8")
 )
 
 
 def _valid_clip(**overrides) -> dict:
-    """Build a v3 clip; start_second/end_second map onto the fixture's 10 s units."""
+    """Build a v4 clip; start_second/end_second map onto the fixture's 10 s units."""
     start = overrides.pop("start_second", 0)
     end = overrides.pop("end_second", 30)
     clip = {
         "title": "Um corte de teste",
-        "headline": "Headline de teste",
+        "headlines": ["Headline de teste", "Outra manchete", "Terceira opção"],
         "pieces": [{"from_id": int(start // 10), "to_id": int(end // 10) - 1}],
-        "connective_logic": "Uma única ideia contínua.",
-        "hook_quote": "Frase de abertura.",
-        "payoff_quote": "Frase final.",
+        "emphasis": [],
         "score": 7,
         "reason": "Corte autocontido com abertura, desenvolvimento e conclusão claros.",
         "warnings": [],
@@ -57,10 +55,12 @@ class FakeSuggestionProvider:
             "clips": [_valid_clip()],
         }
         self.calls: list[tuple[str, dict]] = []
+        self.system_contexts: list[str | None] = []
 
-    def generate(self, prompt, schema, *, should_cancel):
+    def generate(self, prompt, schema, *, should_cancel, system_context=None):
         assert not should_cancel()
         self.calls.append((prompt, schema))
+        self.system_contexts.append(system_context)
         return SuggestionProviderResult(
             document=self.document,
             provenance={
@@ -161,6 +161,10 @@ def test_suggestion_service_validates_persists_and_reuses_cache():
         assert second["cached"] is True
         assert first["suggestion_artifact_id"] == second["suggestion_artifact_id"]
         assert len(provider.calls) == 1
+        system_context = provider.system_contexts[0]
+        assert "## Transcrição\n#0 [" in system_context
+        assert "## Transcrição" not in provider.calls[0][0]
+        assert '"brief"' in provider.calls[0][0]
         persisted = json.loads(Path(first["suggestion_path"]).read_text(encoding="utf-8"))
         assert persisted["provenance"]["provider"] == "fake"
         assert len(persisted["selection"]["clips"]) == 1
@@ -170,7 +174,7 @@ def test_suggestion_service_validates_persists_and_reuses_cache():
         assert clip["pacing"] == "dynamic"
         assert clip["scores"] == {"total": 7}
         assert clip["approximate_edl"] == [{
-            "order": 0, "source_start": 0.0, "source_end": 30.0, "purpose": "hook",
+            "order": 0, "piece": 0, "source_start": 0.0, "source_end": 30.0, "purpose": "hook",
             "preferred_visual": "primary_speaker", "audio_mode": "source",
             "transition_in": "hard_cut", "mask_jump_with": "none", "confidence": 1.0,
             "notes": "Peça 1 de 1; o motor de edição resolve o corte fino e o enxugamento.",
@@ -371,7 +375,7 @@ def test_suggestion_service_rejects_score_out_of_range():
         assert clips[0]["title"] == "Válido"
 
 
-def test_clip_selection_v3_schema_direct_validation():
+def test_clip_selection_v4_schema_direct_validation():
     valid_document = {"selection_notes": "notas", "clips": [_valid_clip()]}
     errors = list(Draft202012Validator(CLIP_SELECTION_SCHEMA).iter_errors(valid_document))
     assert errors == []

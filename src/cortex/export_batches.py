@@ -19,6 +19,12 @@ from cortex.jobs import JobStore
 from cortex.schemas import Job, JobCreate, JobStatus, JobType
 
 
+def _item_headline(item: ExportItem) -> str | None:
+    settings = item.render_settings or {}
+    text = str((settings.get("headline") or {}).get("text") or "").strip()
+    return text or item.clip.get("headline") or None
+
+
 def _queue_export_plan(
     *, batch: ExportBatch, item: ExportItem, revision, run, jobs: JobStore,
     domain: DomainStore, connection,
@@ -33,6 +39,8 @@ def _queue_export_plan(
             "start": item.clip["start_second"], "end": item.clip["end_second"],
             "profile": item.clip["pacing"],
             "maximum_seconds": run.brief.get("maximum_seconds"),
+            "minimum_seconds": run.brief.get("minimum_seconds"),
+            "headline": _item_headline(item),
             "approximate_edl": item.clip.get("approximate_edl"),
             "confirmed_voice": run.brief.get("confirmed_voice"),
             "primary_subject": run.brief.get("primary_subject"),

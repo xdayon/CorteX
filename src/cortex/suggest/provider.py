@@ -40,12 +40,18 @@ class SuggestionProviderResult:
 
 
 class SuggestionProvider(Protocol):
+    """``system_context`` carries the large, stable part of a request (editorial
+    instructions + episode transcript). Providers that support a cacheable system
+    prompt send it there so repeated calls on the same episode reuse the cache;
+    ``prompt`` is the small per-request part."""
+
     def generate(
         self,
         prompt: str,
         schema: dict[str, Any],
         *,
         should_cancel: Callable[[], bool],
+        system_context: str | None = None,
     ) -> SuggestionProviderResult: ...
 
 
@@ -56,6 +62,82 @@ def _binary_version(binary: str) -> str:
         ).stdout.strip()[:200] or "unknown"
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
+
+
+@dataclass(frozen=True)
+class ResolvedBinary:
+    path: str
+    version: str
+    source: str  # "configured" or the fallback location that answered
+
+
+def _working_version(binary: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=15, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = completed.stdout.strip()
+    if completed.returncode != 0 or "claude code" not in output.casefold():
+        return None
+    return output[:200]
+
+
+def _claude_binary_candidates(configured: str) -> list[tuple[str, str]]:
+    home = Path.home()
+    candidates: list[tuple[str, str]] = []
+    if "/" in configured:
+        candidates.append((configured, "configured"))
+    else:
+        found = shutil.which(configured)
+        if found:
+            candidates.append((found, "configured"))
+    for path, source in (
+        (home / ".local/bin/claude", "native_installer"),
+        (home / ".local/share/fnm/aliases/default/bin/claude", "fnm_default"),
+    ):
+        candidates.append((str(path), source))
+    extensions: list[Path] = []
+    for root in (".vscode/extensions", ".antigravity/extensions", ".vscode-oss/extensions"):
+        extensions.extend((home / root).glob("anthropic.claude-code-*/resources/native-binary/claude"))
+
+    def version_key(path: Path) -> tuple[int, ...]:
+        match = re.search(r"claude-code-(\d+(?:\.\d+)*)", str(path))
+        return tuple(int(part) for part in match.group(1).split(".")) if match else ()
+
+    for path in sorted(extensions, key=version_key, reverse=True):
+        candidates.append((str(path), "editor_extension"))
+    seen: set[str] = set()
+    unique = []
+    for path, source in candidates:
+        if path not in seen:
+            seen.add(path)
+            unique.append((path, source))
+    return unique
+
+
+def resolve_claude_binary(configured: str) -> ResolvedBinary:
+    """Find a Claude Code CLI that actually runs.
+
+    npm/fnm upgrades can leave the configured path as a stub that only prints
+    "native binary not installed". The resolution order is fixed and the chosen
+    path is recorded in provenance; the model, effort and subscription auth never
+    change, so this is not an editorial fallback.
+    """
+    tried = []
+    for path, source in _claude_binary_candidates(configured):
+        if not Path(path).is_file():
+            continue
+        version = _working_version(path)
+        if version is not None:
+            return ResolvedBinary(path=path, version=version, source=source)
+        tried.append(path)
+    detail = ", ".join(tried) if tried else configured
+    raise SuggestionProviderError(
+        "Claude Code CLI não está funcionando (testado: " + detail + "). "
+        "Reinstale ou repare o Claude Code e tente de novo."
+    )
 
 
 def _stop(process: subprocess.Popen[str]) -> None:
@@ -123,7 +205,10 @@ class CodexCliProvider:
         schema: dict[str, Any],
         *,
         should_cancel: Callable[[], bool],
+        system_context: str | None = None,
     ) -> SuggestionProviderResult:
+        if system_context:
+            prompt = f"{system_context}\n\n{prompt}"
         binary = shutil.which(self._config.codex_binary)
         if binary is None:
             raise SuggestionProviderError(
@@ -215,8 +300,9 @@ class ClaudeCodeCliProvider:
 
     name = "claude_code_cli"
 
-    def __init__(self, config: AiConfig) -> None:
+    def __init__(self, config: AiConfig, *, effort: str | None = None) -> None:
         self._config = config
+        self._effort_override = effort
 
     def generate(
         self,
@@ -224,12 +310,10 @@ class ClaudeCodeCliProvider:
         schema: dict[str, Any],
         *,
         should_cancel: Callable[[], bool],
+        system_context: str | None = None,
     ) -> SuggestionProviderResult:
-        binary = shutil.which(self._config.claude_binary)
-        if binary is None:
-            raise SuggestionProviderError(
-                f"CLI configurada não encontrada no PATH: {self._config.claude_binary}"
-            )
+        resolved = resolve_claude_binary(self._config.claude_binary)
+        binary = resolved.path
         command = [
             binary,
             "-p",
@@ -245,12 +329,11 @@ class ClaudeCodeCliProvider:
             "--setting-sources",
             "",
             "--disable-slash-commands",
-            "--system-prompt",
-            _CLAUDE_SYSTEM_PROMPT,
             "--no-session-persistence",
         ]
-        if self._config.claude_effort:
-            command += ["--effort", self._config.claude_effort]
+        effort = self._effort_override or self._config.claude_effort
+        if effort:
+            command += ["--effort", effort]
         env = {
             key: value
             for key, value in os.environ.items()
@@ -262,6 +345,17 @@ class ClaudeCodeCliProvider:
         env["ANTHROPIC_SMALL_FAST_MODEL"] = self._config.claude_model
         with tempfile.TemporaryDirectory(prefix="cortex-claude-") as directory:
             workdir = Path(directory)
+            if system_context:
+                # A file keeps long transcripts clear of the per-argument size
+                # limit, and the CLI caches the system prompt: a second call on the
+                # same episode (top-up round, new direction) reads it from cache.
+                system_path = workdir / "system.md"
+                system_path.write_text(
+                    f"{_CLAUDE_SYSTEM_PROMPT}\n\n{system_context}", encoding="utf-8"
+                )
+                command += ["--system-prompt-file", str(system_path)]
+            else:
+                command += ["--system-prompt", _CLAUDE_SYSTEM_PROMPT]
             try:
                 process = subprocess.Popen(
                     command,
@@ -326,9 +420,10 @@ class ClaudeCodeCliProvider:
             provenance={
                 "provider": self.name,
                 "model": model,
-                "effort": self._config.claude_effort,
+                "effort": effort,
                 "binary": Path(binary).name,
-                "binary_version": _binary_version(binary),
+                "binary_version": resolved.version,
+                "binary_resolution": resolved.source,
                 "duration_ms": duration_ms,
                 "auth_mode": "claude_subscription_cli",
                 "usage": {
@@ -341,8 +436,15 @@ class ClaudeCodeCliProvider:
         )
 
 
-def build_suggestion_provider(config: AiConfig, *, cwd: Path) -> SuggestionProvider:
+def build_suggestion_provider(
+    config: AiConfig, *, cwd: Path, effort: str | None = None,
+) -> SuggestionProvider:
+    """The configured provider only; switching providers is a config change,
+    never an automatic fallback. ``effort`` overrides the configured effort for
+    one stage (e.g. the per-clip refine pass)."""
     del cwd
     if config.provider == "claude_code_cli":
-        return ClaudeCodeCliProvider(config)
-    return CodexCliProvider(config)
+        return ClaudeCodeCliProvider(config, effort=effort)
+    if config.provider == "codex_cli":
+        return CodexCliProvider(config)
+    raise SuggestionProviderError(f"provider de IA desconhecido: {config.provider}")

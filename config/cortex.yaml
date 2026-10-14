@@ -56,7 +56,7 @@ render:
   safe_zone_sample_fps: 4.0
 
 clips:
-  minimum_seconds: 50
+  minimum_seconds: 40
   maximum_seconds: 120
   count: 10
   pacing_profile: auto
@@ -84,9 +84,11 @@ edit:
 
 ai:
   provider: claude_code_cli
-  claude_binary: /home/dx/.local/share/fnm/node-versions/v26.8.1/installation/bin/claude
+  # Resolvido em ordem: PATH, ~/.local/bin, alias default do fnm, extensão do editor.
+  claude_binary: claude
   claude_model: claude-sonnet-5-5
   claude_effort: medium
+  refine_effort: medium
   tighten_enabled: true
   codex_binary: codex
   codex_model: gpt-5.5

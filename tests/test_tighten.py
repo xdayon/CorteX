@@ -4,7 +4,6 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from cortex.domain.models import TranscriptArtifact
 from cortex.domain.store import DomainStore
@@ -102,9 +101,10 @@ def test_tighten_service_merges_contiguous_kept_phrases_into_ranges():
             progress_cb=lambda *_args: None, should_cancel=lambda: False,
         )
 
+        assert result["status"] == "accepted"
         assert result["ranges"] == [
-            {"source_start": 0.5, "source_end": 1.5, "audio_mode": "source"},
-            {"source_start": 6.0, "source_end": 7.0, "audio_mode": "source"},
+            {"source_start": 0.5, "source_end": 1.5, "audio_mode": "source", "piece": 0},
+            {"source_start": 6.0, "source_end": 7.0, "audio_mode": "source", "piece": 0},
         ]
 
 
@@ -123,8 +123,10 @@ def _run_tighten(keep_ids):
 
 
 def test_tighten_service_rejects_only_unknown_ids():
-    with pytest.raises(ValueError, match="nenhuma frase"):
-        _run_tighten([99])
+    result = _run_tighten([99])
+    assert result["status"] == "rejected"
+    assert result["ranges"] is None
+    assert "nenhuma frase" in result["reason"]
 
 
 def test_tighten_service_normalizes_order_duplicates_and_unknown_ids():
@@ -143,11 +145,11 @@ def test_tighten_service_rejects_empty_keep_ids():
         provider = FakeSuggestionProvider({"keep_ids": [], "notes": "x"})
         service = TightenService(config, domain, provider)
 
-        with pytest.raises(ValueError, match="não manteve nenhuma frase"):
-            service.run(
-                transcript_artifact=transcript, start=0.0, end=7.0, brief=None,
-                progress_cb=lambda *_args: None, should_cancel=lambda: False,
-            )
+        result = service.run(
+            transcript_artifact=transcript, start=0.0, end=7.0, brief=None,
+            progress_cb=lambda *_args: None, should_cancel=lambda: False,
+        )
+        assert result["status"] == "rejected" and result["ranges"] is None
 
 
 def test_tighten_service_rejects_kept_ratio_below_minimum():
@@ -160,11 +162,18 @@ def test_tighten_service_rejects_kept_ratio_below_minimum():
         provider = FakeSuggestionProvider({"keep_ids": [0], "notes": "x"})
         service = TightenService(config, domain, provider)
 
-        with pytest.raises(ValueError, match="abaixo de 40%"):
-            service.run(
-                transcript_artifact=transcript, start=0.0, end=7.0, brief=None,
-                progress_cb=lambda *_args: None, should_cancel=lambda: False,
-            )
+        result = service.run(
+            transcript_artifact=transcript, start=0.0, end=7.0, brief=None,
+            progress_cb=lambda *_args: None, should_cancel=lambda: False,
+        )
+        assert result["status"] == "rejected"
+        assert "removeu mais de 45%" in result["reason"]
+        again = service.run(
+            transcript_artifact=transcript, start=0.0, end=7.0, brief=None,
+            progress_cb=lambda *_args: None, should_cancel=lambda: False,
+        )
+        assert again["cached"] is True and again["status"] == "rejected"
+        assert len(provider.calls) == 1
 
 
 def test_tighten_service_cache_hit_skips_provider():
@@ -222,3 +231,61 @@ def test_worker_edit_plan_job_with_tighten_uses_tighten_edl(tmp_path: Path) -> N
     edit_plan_artifact = domain.get_stage_artifact(final.result["edit_plan_artifact_id"])
     document = EditPlanDocument.model_validate_json(Path(edit_plan_artifact.path).read_text())
     assert len(document.segments) == 2
+
+
+def _service(tmp_dir: Path, document: dict):
+    config = _suggestion_config(tmp_dir)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    transcript = _transcript_artifact(domain, tmp_dir, _WORDS)
+    provider = FakeSuggestionProvider(document)
+    return TightenService(config, domain, provider), transcript, provider
+
+
+def test_refine_is_skipped_without_tokens_when_clip_is_at_the_minimum(tmp_path: Path):
+    service, transcript, provider = _service(tmp_path, {"keep_ids": [0], "notes": "x"})
+    result = service.run(
+        transcript_artifact=transcript, start=0.0, end=7.0, brief=None, minimum_seconds=2.0,
+        progress_cb=lambda *_args: None, should_cancel=lambda: False,
+    )
+    assert result["status"] == "skipped"
+    assert provider.calls == []
+
+
+def test_refine_below_minimum_seconds_is_rejected(tmp_path: Path):
+    words = [(float(i), float(i) + 0.9, f"frase{i}.") for i in range(40)]
+    config = _suggestion_config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    transcript = _transcript_artifact(domain, tmp_path, words)
+    provider = FakeSuggestionProvider({"keep_ids": list(range(28)), "notes": "x"})
+    result = TightenService(config, domain, provider).run(
+        transcript_artifact=transcript, start=0.0, end=40.0, brief=None, minimum_seconds=30.0,
+        progress_cb=lambda *_args: None, should_cancel=lambda: False,
+    )
+    assert result["status"] == "rejected"
+    assert "abaixo do mínimo de 30s" in result["reason"]
+
+
+def test_refine_of_composed_clip_never_bridges_pieces(tmp_path: Path):
+    words = [(float(i), float(i) + 0.9, f"frase{i}.") for i in range(30)]
+    config = _suggestion_config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    transcript = _transcript_artifact(domain, tmp_path, words)
+    pieces = [
+        {"piece": 0, "source_start": 0.0, "source_end": 5.0, "audio_mode": "source"},
+        {"piece": 1, "source_start": 20.0, "source_end": 25.0, "audio_mode": "source"},
+    ]
+    provider = FakeSuggestionProvider({"keep_ids": [0, 1, 2, 3, 4, 5, 6, 7, 8], "notes": "x"})
+    result = TightenService(config, domain, provider).run(
+        transcript_artifact=transcript, start=0.0, end=25.0, brief=None, ranges=pieces,
+        headline="Manchete", progress_cb=lambda *_args: None, should_cancel=lambda: False,
+    )
+    assert result["status"] == "accepted"
+    assert [(r["piece"], r["source_start"], r["source_end"]) for r in result["ranges"]] == [
+        (0, 0.0, 4.9), (1, 20.0, 23.9),
+    ]
+    request = provider.calls[0][0]
+    assert '"headline":"Manchete"' in request and '"piece":1' in request
+    assert provider.system_contexts[0].startswith("# Refino de corte")
