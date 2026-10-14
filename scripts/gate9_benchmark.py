@@ -21,8 +21,8 @@ REQUIRED_SETS = {
     "source_kinds": {"local", "youtube"},
     "duration_kinds": {"long", "short"},
     "clip_counts": {1, 10, 25},
-    "framing_modes": {"vertical_crop", "blurred_background", "face_static_crop"},
-    "editing_features": {"reaction", "j_cut", "l_cut", "punch_in"},
+    "framing_modes": {"vertical_crop", "blurred_background"},
+    "editing_features": {"j_cut", "l_cut", "punch_in"},
     "render_paths": {"nvenc", "cpu"},
 }
 REQUIRED_TOGGLES = {"captions", "karaoke", "headline"}

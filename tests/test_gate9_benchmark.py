@@ -86,7 +86,7 @@ def _complete_matrix(tmp_path: Path) -> dict:
         "scenarios": [
             _scenario(
                 "local-short-one", source_kind="local", duration_kind="short", clip_count=1,
-                framing_mode="vertical_crop", toggles=True, editing=["reaction", "j_cut"],
+                framing_mode="vertical_crop", toggles=True, editing=["j_cut"],
                 encoder="h264_nvenc", artifact=artifact, report=report,
                 lifecycle={"cancellation": True, "resume": False, "cache_hit": False},
             ),
@@ -98,7 +98,7 @@ def _complete_matrix(tmp_path: Path) -> dict:
             ),
             _scenario(
                 "local-long-twenty-five", source_kind="local", duration_kind="long", clip_count=25,
-                framing_mode="face_static_crop", toggles=True, editing=[],
+                framing_mode="vertical_crop", toggles=True, editing=[],
                 encoder="h264_nvenc", artifact=artifact, report=report,
                 lifecycle={"cancellation": False, "resume": False, "cache_hit": False},
             ),
@@ -189,7 +189,7 @@ def test_editing_evaluation_rejects_contradictory_not_applicable_status(tmp_path
 def test_editing_evaluation_rejects_invalid_or_inconsistent_applied_status(tmp_path: Path) -> None:
     invalid_matrix = _complete_matrix(tmp_path)
     invalid_matrix["scenarios"][0]["features"]["editing_evaluations"] = {
-        "reaction": {"status": "skipped"}
+        "j_cut": {"status": "skipped"}
     }
     invalid_report, invalid_passed = gate9.evaluate(
         invalid_matrix, base_dir=tmp_path, matrix_sha256="1" * 64
@@ -197,7 +197,7 @@ def test_editing_evaluation_rejects_invalid_or_inconsistent_applied_status(tmp_p
 
     inconsistent_matrix = _complete_matrix(tmp_path)
     inconsistent_matrix["scenarios"][2]["features"]["editing_evaluations"] = {
-        "reaction": {"status": "applied"}
+        "j_cut": {"status": "applied"}
     }
     inconsistent_report, inconsistent_passed = gate9.evaluate(
         inconsistent_matrix, base_dir=tmp_path, matrix_sha256="2" * 64
