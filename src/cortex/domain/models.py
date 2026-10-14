@@ -153,7 +153,7 @@ class ExportStatus(StrEnum):
 class ExportItemStatus(StrEnum):
     QUEUED = "queued"
     PLANNING = "planning"
-    CAMERA_PLANNING = "camera_planning"
+    CAMERA_PLANNING = "camera_planning"  # legacy: kept so old rows validate
     RENDERING = "rendering"
     SUCCEEDED = "succeeded"
     FAILED = "failed"

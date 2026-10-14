@@ -228,7 +228,6 @@ def test_scene_index_endpoint_rejects_missing_source(tmp_path: Path) -> None:
 
 
 def test_scoped_scene_job_seeks_and_persists_source_time_coverage(tmp_path: Path) -> None:
-    from cortex.analyze.face_service import _sample_timestamps
     from cortex.analyze.scope import intersect_chunks
     config = _config(tmp_path)
     config.ensure_runtime_dirs()
@@ -256,8 +255,6 @@ def test_scoped_scene_job_seeks_and_persists_source_time_coverage(tmp_path: Path
     assert len(doc.cuts) == 2
     assert doc.cuts[0].time == pytest.approx(3.5, abs=.1)
     assert doc.cuts[1].time == pytest.approx(6, abs=.1)
-    samples = _sample_timestamps(scenes=[s.model_dump() for s in doc.scenes], cuts=[c.model_dump() for c in doc.cuts], duration=3600, sample_fps=1)
-    assert samples and all(3 <= t < 4 or 5.5 <= t < 6.5 for t in samples)
     assert intersect_chunks([(0,3600)], doc.source_ranges) == [(3,4),(5.5,6.5)]
     cached = SceneIndexService(config,domain).run(source_asset=source,threshold=None,source_ranges=ranges[::-1],progress_cb=lambda *_:None,should_cancel=lambda:False)
     assert cached["cached"] and cached["scene_index_artifact_id"] == result["scene_index_artifact_id"]

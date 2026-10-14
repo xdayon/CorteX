@@ -57,8 +57,6 @@ class ClipRevisionCreate(BaseModel):
     headlines: dict[str, str] = Field(default_factory=dict)
     emphasis: dict[str, list[Annotated[int, Field(ge=0)]]] = Field(default_factory=dict)
     visual_artifacts: dict[str, str] = Field(default_factory=dict)
-    interviewer_identity_id: str | None = None
-    reuse_reactions: bool = False
 
 
 class ExportBatchCreate(BaseModel):
@@ -108,8 +106,6 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
             caption_edits=request.caption_edits, headlines=request.headlines,
             emphasis=request.emphasis,
             visual_artifacts=request.visual_artifacts,
-            interviewer_identity_id=request.interviewer_identity_id,
-            reuse_reactions=request.reuse_reactions,
         ))
 
     @router.get("/projects/{project_id}/runs/{run_id}/revision")
@@ -160,44 +156,20 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
             existing = domain.create_export_batch(batch, connection=connection)
             if existing.id != batch.id:
                 return existing
-            if revision.reuse_reactions:
-                required = {"speaker", "camera", "identity", "quality"}
-                if (not revision.interviewer_identity_id
-                        or not required <= revision.visual_artifacts.keys()):
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Reações exigem análise visual e entrevistador confirmado",
-                    )
-                job = jobs.create(JobCreate(
-                    type=JobType.REACTION_CANDIDATE_ANALYSIS, project_id=project_id,
-                    payload={
-                        "speaker_timeline_artifact_id": revision.visual_artifacts["speaker"],
-                        "camera_timeline_artifact_id": revision.visual_artifacts["camera"],
-                        "identity_index_artifact_id": revision.visual_artifacts["identity"],
-                        "visual_quality_artifact_id": revision.visual_artifacts["quality"],
-                        "interviewer_identity_id": revision.interviewer_identity_id,
-                        "min_duration_seconds": 0.7, "export_batch_id": batch.id,
-                    }, idempotency_key=f"export:{batch.id}:reactions",
-                ), connection=connection)
-                batch = domain.update_export_batch(
-                    batch.id, connection=connection, status=ExportStatus.RUNNING,
-                    active_job_id=job.id,
-                )
-            else:
-                first = items[0]
-                job = jobs.create(JobCreate(
-                    type=JobType.EDIT_PLAN, project_id=project_id,
-                    payload=export_plan_payload(batch, first, revision, run),
-                    idempotency_key=f"export:{batch.id}:item:{first.id}:plan:1",
-                ), connection=connection)
-                domain.update_export_item(
-                    first.id, connection=connection, status=ExportItemStatus.PLANNING,
-                    active_job_id=job.id,
-                )
-                batch = domain.update_export_batch(
-                    batch.id, connection=connection, status=ExportStatus.RUNNING,
-                    active_job_id=job.id,
-                )
+            first = items[0]
+            job = jobs.create(JobCreate(
+                type=JobType.EDIT_PLAN, project_id=project_id,
+                payload=export_plan_payload(batch, first, revision, run),
+                idempotency_key=f"export:{batch.id}:item:{first.id}:plan:1",
+            ), connection=connection)
+            domain.update_export_item(
+                first.id, connection=connection, status=ExportItemStatus.PLANNING,
+                active_job_id=job.id,
+            )
+            batch = domain.update_export_batch(
+                batch.id, connection=connection, status=ExportStatus.RUNNING,
+                active_job_id=job.id,
+            )
             domain.update_workflow_run(
                 run.id, connection=connection, status=WorkflowStatus.RENDERING,
                 stage="render", progress=0, active_job_id=job.id,

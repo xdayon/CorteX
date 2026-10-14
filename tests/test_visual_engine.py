@@ -726,7 +726,7 @@ def test_punch_in_resolves_in_source_pixels_and_keeps_the_window() -> None:
     geometry = _framing_geometry("vertical_crop", (1920, 1080), 1080, 1920, 1.0, 0.5)
     resolution = _resolve_segment_punch_in(
         0, RenderPunchInSettings(enabled=True, scale=1.12), framing_mode="vertical_crop",
-        canvas_width=1080, canvas_height=1920, static_face_crop_map=None, geometry=geometry,
+        canvas_width=1080, canvas_height=1920, geometry=geometry,
     )
     assert resolution.applied
     assert resolution.crop_width < geometry.w and resolution.crop_height < geometry.h
@@ -747,7 +747,7 @@ def test_punch_in_is_skipped_with_explicit_reason_past_the_upscale_limit() -> No
     geometry = _framing_geometry("vertical_crop", (360, 640), 1080, 1920, 1.0, 0.5)
     resolution = _resolve_segment_punch_in(
         3, RenderPunchInSettings(enabled=True, scale=1.12), framing_mode="vertical_crop",
-        canvas_width=1080, canvas_height=1920, static_face_crop_map=None, geometry=geometry,
+        canvas_width=1080, canvas_height=1920, geometry=geometry,
     )
     assert resolution.applied is False
     assert resolution.reason == "punch_in_resolution_limit"
@@ -773,9 +773,9 @@ def test_zoom_junction_pushes_harder_on_the_first_segment_after_the_jump() -> No
     plan = _three_piece_plan()
     geometry = _framing_geometry("vertical_crop", (1920, 1080), 1080, 1920, 1.0, 0.5)
     resolutions = _resolve_punch_ins(
-        plan, None, RenderPunchInSettings(enabled=True, scale=1.12),
+        plan, RenderPunchInSettings(enabled=True, scale=1.12),
         framing_mode="vertical_crop", canvas_width=1080, canvas_height=1920,
-        static_face_crop_map=None, geometry=geometry, junction_orders=frozenset({1}),
+        geometry=geometry, junction_orders=frozenset({1}),
     )
     by_order = {item.segment_order: item for item in resolutions}
     # order 1 is odd, so plain alternation would have skipped it
@@ -783,9 +783,9 @@ def test_zoom_junction_pushes_harder_on_the_first_segment_after_the_jump() -> No
     assert by_order[0].effective_scale == pytest.approx(1.12)
     assert by_order[2].effective_scale == pytest.approx(1.12)
     capped = _resolve_punch_ins(
-        plan, None, RenderPunchInSettings(enabled=True, scale=PUNCH_IN_MAX_SCALE),
+        plan, RenderPunchInSettings(enabled=True, scale=PUNCH_IN_MAX_SCALE),
         framing_mode="vertical_crop", canvas_width=1080, canvas_height=1920,
-        static_face_crop_map=None, geometry=geometry, junction_orders=frozenset({1}),
+        geometry=geometry, junction_orders=frozenset({1}),
     )
     assert {item.segment_order: item for item in capped}[1].effective_scale <= PUNCH_IN_MAX_SCALE
 
@@ -800,7 +800,7 @@ def test_encoder_args_draft_uses_the_fastest_presets() -> None:
 def test_punch_resolution_without_source_size_keeps_the_canvas_pixel_contract() -> None:
     resolution = _resolve_segment_punch_in(
         0, RenderPunchInSettings(enabled=True, scale=1.2), framing_mode="vertical_crop",
-        canvas_width=320, canvas_height=320, static_face_crop_map=None,
+        canvas_width=320, canvas_height=320,
     )
     assert isinstance(resolution, _PunchInResolution)
     assert (resolution.anchor_x, resolution.crop_width) == (26, 267)
@@ -848,7 +848,7 @@ def test_blurred_background_zoom_one_matches_today_and_zoom_changes_the_frame(tm
     geometry = _framing_geometry("blurred_background", (1280, 720), 540, 960, 1.0, 0.5)
     whole = _resolve_segment_punch_in(
         0, RenderPunchInSettings(enabled=True, scale=1.0), framing_mode="blurred_background",
-        canvas_width=540, canvas_height=960, static_face_crop_map=None, geometry=geometry,
+        canvas_width=540, canvas_height=960, geometry=geometry,
     )
     # the new source-pixel chain at zoom 1 / focus 0.5 reproduces the legacy frame
     modern = _graph_frame(source, tmp_path, "modern", punch_ins={0: whole}, **base)

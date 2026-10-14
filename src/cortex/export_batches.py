@@ -1,6 +1,6 @@
 """Durable export-batch orchestration.
 
-This module owns transitions between planning, camera planning, rendering, and
+This module owns transitions between planning, rendering, and
 the next item.  All state changes that enqueue a successor job share the same
 SQLite transaction, so a process restart cannot leave a batch half-advanced.
 """
@@ -71,7 +71,6 @@ def _queue_export_render(
         project_id=batch.project_id,
         payload={
             "edit_plan_artifact_id": item.edit_plan_artifact_id,
-            "camera_edit_plan_artifact_id": item.camera_edit_plan_artifact_id,
             "render_settings": item.render_settings,
             "confirmed_voice": run.brief.get("confirmed_voice"),
             "export_batch_id": batch.id, "export_item_id": item.id,
@@ -139,19 +138,12 @@ def advance_export_batch(job: Job, jobs: JobStore, domain: DomainStore) -> bool:
     with domain.transaction() as connection:
         batch = domain.get_export_batch(batch.id, connection=connection)
         if item_id is None:
-            if final.status == JobStatus.SUCCEEDED and final.result is not None:
-                batch = domain.update_export_batch(
-                    batch.id, connection=connection,
-                    reaction_candidate_artifact_id=final.result[
-                        "reaction_candidate_artifact_id"
-                    ],
-                    active_job_id=None,
-                )
-            else:
-                batch = domain.update_export_batch(
-                    batch.id, connection=connection, active_job_id=None,
-                    error="Reações indisponíveis; exportação seguirá sem elas",
-                )
+            # Batch-level job of a removed type (reaction candidates), only
+            # present in batches created before the camera stack was removed.
+            batch = domain.update_export_batch(
+                batch.id, connection=connection, active_job_id=None,
+                error="Reações descontinuadas; exportação segue sem elas",
+            )
             _queue_next_export_item(
                 batch=batch, revision=revision, run=run, jobs=jobs,
                 domain=domain, connection=connection,
@@ -178,61 +170,9 @@ def advance_export_batch(job: Job, jobs: JobStore, domain: DomainStore) -> bool:
                 edit_plan_artifact_id=final.result["edit_plan_artifact_id"],
                 active_job_id=None,
             )
-            framing_mode = item.render_settings.get("framing", {}).get("mode")
-            if framing_mode in {"speaker_auto", "speaker_face"}:
-                required = {"camera", "identity", "quality"}
-                if not required <= revision.visual_artifacts.keys():
-                    domain.update_export_item(
-                        item.id, connection=connection, status=ExportItemStatus.FAILED,
-                        error="Enquadramento automático sem artifacts visuais",
-                    )
-                    _queue_next_export_item(
-                        batch=batch, revision=revision, run=run, jobs=jobs,
-                        domain=domain, connection=connection,
-                    )
-                    return True
-                camera_job = jobs.create(JobCreate(
-                    type=JobType.CAMERA_PLANNING, project_id=batch.project_id,
-                    payload={
-                        "edit_plan_artifact_id": item.edit_plan_artifact_id,
-                        "camera_timeline_artifact_id": revision.visual_artifacts["camera"],
-                        "identity_index_artifact_id": revision.visual_artifacts["identity"],
-                        "visual_quality_artifact_id": revision.visual_artifacts["quality"],
-                        "reaction_candidate_artifact_id": (
-                            batch.reaction_candidate_artifact_id
-                        ),
-                        "export_batch_id": batch.id, "export_item_id": item.id,
-                    },
-                    idempotency_key=(
-                        f"export:{batch.id}:item:{item.id}:camera:{item.attempt}"
-                    ),
-                ), connection=connection)
-                domain.update_export_item(
-                    item.id, connection=connection,
-                    status=ExportItemStatus.CAMERA_PLANNING,
-                    active_job_id=camera_job.id,
-                )
-                domain.update_export_batch(
-                    batch.id, connection=connection, active_job_id=camera_job.id,
-                )
-            else:
-                _queue_export_render(
-                    batch=batch, item=item, run=run, jobs=jobs,
-                    domain=domain, connection=connection,
-                )
-            return True
-
-        if job.type == JobType.CAMERA_PLANNING:
-            item = domain.update_export_item(
-                item.id, connection=connection,
-                camera_edit_plan_artifact_id=final.result[
-                    "camera_edit_plan_artifact_id"
-                ],
-                active_job_id=None,
-            )
             _queue_export_render(
-                batch=batch, item=item, run=run, jobs=jobs,
-                domain=domain, connection=connection,
+                batch=batch, item=item, run=run, jobs=jobs, domain=domain,
+                connection=connection,
             )
             return True
 

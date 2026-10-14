@@ -13,14 +13,11 @@ from pathlib import Path
 from typing import Literal
 
 from cortex.config import CortexConfig
-from cortex.analyze.face_schemas import FaceIndexDocument
-from cortex.analyze.identity_schemas import IdentityIndexDocument
 from cortex.domain.models import StageArtifact
 from cortex.domain.store import (
     DomainStore,
     TranscriptArtifactNotFoundError,
 )
-from cortex.edit.camera_plan_schemas import CameraEditPlanDocument, CameraEditShot
 from cortex.edit.schemas import EditPlanDocument
 from cortex.ingest.ffprobe import duration_seconds, probe_media, usable_av_duration_seconds
 from cortex.paths import cache_dir, renders_dir
@@ -59,11 +56,6 @@ from cortex.render.technical_quality import (
     TechnicalQualityCancelled,
     measure_technical_quality,
 )
-from cortex.diarize.attribution import ConfirmedVoice
-from cortex.render.face_crop import resolve_static_face_crop
-from cortex.render.auto_framing import (
-    AUTO_FRAMING_VERSION, AutoFramingSpan, load_framing_inputs, resolve_auto_framing,
-)
 from cortex.render.ass_overlay import (
     AssOverlayError,
     AssOverlayResult,
@@ -93,6 +85,10 @@ _JL_AUDIO_MICROFADE_SECONDS = 0.02
 _HARD_CUT_DECLICK_SECONDS = 0.008
 _AAC_TRUE_PEAK_HEADROOM_DB = 0.5
 _INPUT_WINDOW_VERSION = 1
+LEGACY_FRAMING_MODES = frozenset({"face_static_crop", "speaker_auto", "speaker_face"})
+LEGACY_FRAMING_MODE_MESSAGE = (
+    "modo de enquadramento descontinuado; use Quadro com fundo desfocado ou Tela cheia"
+)
 
 
 class RenderJobCancelled(RuntimeError):
@@ -122,19 +118,8 @@ class _OverlaySummary:
     generator_version: int | None = None
 
 
-# Documented ceiling on how far a face_static_crop punch-in may shrink the
-# already-resolved native-pixel face crop before the source detail feeding
-# the canvas is judged unacceptably thin (Gate 5). Enforced only for
-# face_static_crop, the one framing mode where the crop rectangle is known
-# in native source pixels and directly comparable to canvas resolution;
-# vertical_crop/blurred_background already normalize to canvas resolution
-# before punch-in runs, so PUNCH_IN_MAX_SCALE (schemas.py) is their sole,
-# sufficient safety bound. This value is intentionally generous relative to
-# the 1.5x scale ceiling: a face_static_crop base crop can already be a
-# non-trivial upscale of the source on its own (source resolution vs.
-# canvas aspect fit), so the total-upscale ceiling only needs to catch a
-# genuinely undersized source, not the ordinary combination of a normal
-# source with the maximum punch-in scale.
+# Documented ceiling on how far a punch-in may shrink the source crop before
+# the detail feeding the canvas is judged unacceptably thin (Gate 5).
 PUNCH_IN_MAX_TOTAL_UPSCALE = 3.0
 
 
@@ -143,8 +128,7 @@ class _PunchInResolution:
     """Requested-vs-effective punch-in geometry for one EDL segment,
     resolved once (no keyframes) before the filtergraph or the manifest are
     built. Coordinates are in canvas pixels for vertical_crop and
-    blurred_background's foreground, and in native source pixels for
-    face_static_crop."""
+    blurred_background's foreground."""
 
     segment_order: int
     applied: bool
@@ -236,7 +220,6 @@ def _resolve_segment_punch_in(
     framing_mode: str,
     canvas_width: int,
     canvas_height: int,
-    static_face_crop_map: dict[int, dict[str, int]] | None,
     geometry: _CropGeometry | None = None,
     scale_override: float | None = None,
 ) -> _PunchInResolution:
@@ -246,38 +229,6 @@ def _resolve_segment_punch_in(
     # assert here rather than trust every caller to go through validation
     # (e.g. a future model_construct bypass).
     assert scale <= PUNCH_IN_MAX_SCALE
-    if framing_mode == "face_static_crop":
-        crop = (static_face_crop_map or {}).get(segment_order)
-        if crop is None:
-            raise RenderPreconditionError(
-                f"crop facial estático ausente para punch-in no segmento {segment_order}"
-            )
-        base_x, base_y = crop["crop_x"], crop["crop_y"]
-        base_w, base_h = crop["crop_width"], crop["crop_height"]
-        new_w = max(1, round(base_w / scale))
-        new_h = max(1, round(base_h / scale))
-        anchor_x = base_x + (base_w - new_w) // 2
-        anchor_y = base_y + (base_h - new_h) // 2
-        if (
-            anchor_x < base_x or anchor_y < base_y
-            or anchor_x + new_w > base_x + base_w
-            or anchor_y + new_h > base_y + base_h
-        ):
-            raise RenderPreconditionError(
-                f"retângulo de punch-in fora dos limites do crop facial no segmento {segment_order}"
-            )
-        upscale_x = canvas_width / new_w
-        upscale_y = canvas_height / new_h
-        if upscale_x > PUNCH_IN_MAX_TOTAL_UPSCALE or upscale_y > PUNCH_IN_MAX_TOTAL_UPSCALE:
-            raise RenderPreconditionError(
-                f"punch-in no segmento {segment_order} reduz a resolução efetiva da fonte "
-                f"abaixo do limite seguro (upscale {max(upscale_x, upscale_y):.2f}x > "
-                f"{PUNCH_IN_MAX_TOTAL_UPSCALE:.2f}x)"
-            )
-        return _PunchInResolution(
-            segment_order, True, scale, scale, anchor_x, anchor_y, new_w, new_h, None
-        )
-
     if framing_mode in ("vertical_crop", "blurred_background") and geometry is not None:
         # Punch-in in source pixels: shrink the base crop around its centre; the
         # display window keeps its size, so it never changes between cuts.
@@ -318,23 +269,19 @@ def _resolve_segment_punch_in(
 
 def _resolve_punch_ins(
     plan: EditPlanDocument,
-    camera_plan: CameraEditPlanDocument | None,
     punch_in: RenderPunchInSettings,
     *,
     framing_mode: str,
     canvas_width: int,
     canvas_height: int,
-    static_face_crop_map: dict[int, dict[str, int]] | None,
     geometry: _CropGeometry | None = None,
     junction_orders: frozenset[int] = frozenset(),
 ) -> list[_PunchInResolution]:
     """Resolve every segment's punch-in geometry up front (fail-closed on
     invalid crops before any encode starts) and decide, deterministically,
     which segments actually get the punch-in when alternate_on_jump_cuts is
-    set (Gate 5): alternation runs on the parity of the segment's position
-    within a scene — scene_index from the camera plan's shots when a camera
-    plan is present, else the parity of the segment's own global
-    timeline_order (no other scene concept exists on the plain EditPlanDocument).
+    set (Gate 5): alternation runs on the parity of the segment's own global
+    timeline_order.
     """
     if not punch_in.enabled and not junction_orders:
         return [
@@ -348,26 +295,11 @@ def _resolve_punch_ins(
     # the first segment after a content jump instead of following alternation.
     junction_scale = min(punch_in.scale + 0.08, PUNCH_IN_MAX_SCALE)
 
-    scene_by_segment: dict[int, int] | None = None
-    if camera_plan is not None:
-        scene_by_segment = {}
-        for shot in camera_plan.shots:
-            scene_by_segment.setdefault(shot.edit_segment_order, shot.scene_index)
-
     apply_flags: dict[int, bool] = {}
     if not punch_in.enabled:
         apply_flags = {segment.timeline_order: False for segment in plan.segments}
     elif not punch_in.alternate_on_jump_cuts:
         apply_flags = {segment.timeline_order: True for segment in plan.segments}
-    elif scene_by_segment is not None:
-        previous_scene: object = object()
-        position = -1
-        for segment in plan.segments:
-            order = segment.timeline_order
-            scene = scene_by_segment.get(order, order)
-            position = 0 if scene != previous_scene else position + 1
-            previous_scene = scene
-            apply_flags[order] = position % 2 == 0
     else:
         apply_flags = {
             segment.timeline_order: segment.timeline_order % 2 == 0
@@ -388,7 +320,7 @@ def _resolve_punch_ins(
         resolutions.append(_resolve_segment_punch_in(
             order, punch_in, framing_mode=framing_mode,
             canvas_width=canvas_width, canvas_height=canvas_height,
-            static_face_crop_map=static_face_crop_map, geometry=geometry,
+            geometry=geometry,
             scale_override=junction_scale if junction else None,
         ))
     return resolutions
@@ -658,33 +590,14 @@ def _publication_checks(
     ]
 
 
-def _source_input_window(
-    plan: EditPlanDocument,
-    camera_plan: CameraEditPlanDocument | None = None,
-    auto_framing: list[AutoFramingSpan] | None = None,
-) -> tuple[float, float]:
+def _source_input_window(plan: EditPlanDocument) -> tuple[float, float]:
     """Bound the decoded master using the clocks actually consumed by filters.
 
-    Borrowed reactions may precede/follow the editorial clip, and J/L cuts
-    have independent audio boundaries. Keep all persisted clocks absolute;
-    only the FFmpeg input and its trim expressions use this local origin.
+    J/L cuts have independent audio boundaries. Keep all persisted clocks
+    absolute; only the FFmpeg input and its trim expressions use this local origin.
     """
     intervals = [(segment.audio_start, segment.audio_end) for segment in plan.segments]
-    shots_by_segment: dict[int, list[CameraEditShot]] = {}
-    if camera_plan is not None:
-        for shot in camera_plan.shots:
-            shots_by_segment.setdefault(shot.edit_segment_order, []).append(shot)
-    for segment in plan.segments:
-        spans = [span for span in (auto_framing or []) if span.segment_order == segment.timeline_order]
-        shots = shots_by_segment.get(segment.timeline_order, [])
-        if spans:
-            intervals.extend((span.source_start_us / 1_000_000, span.source_end_us / 1_000_000)
-                             for span in spans)
-        elif shots:
-            intervals.extend((shot.source_start_us / 1_000_000, shot.source_end_us / 1_000_000)
-                             for shot in shots)
-        else:
-            intervals.append((segment.video_start, segment.video_end))
+    intervals.extend((segment.video_start, segment.video_end) for segment in plan.segments)
     if not intervals:
         raise RenderPreconditionError("plano sem intervalos de mídia para renderizar")
     return round(min(start for start, _ in intervals), 6), round(max(end for _, end in intervals), 6)
@@ -699,12 +612,8 @@ def _filtergraph(
     true_peak_limit_dbfs: float,
     ass_overlay_path: Path | None = None,
     ass_fonts_dir: Path | None = None,
-    camera_plan: CameraEditPlanDocument | None = None,
-    source_input_indices: dict[str, int] | None = None,
     framing_mode: str = "vertical_crop",
-    static_face_crops: dict[int, dict[str, int]] | None = None,
     punch_ins: dict[int, _PunchInResolution] | None = None,
-    auto_framing: list[AutoFramingSpan] | None = None,
     source_time_offset: float = 0.0,
     framing_position_y: float = 0.5,
     source_size: tuple[int, int] | None = None,
@@ -717,11 +626,6 @@ def _filtergraph(
     video_parts: list[str] = []
     audio_parts: list[str] = []
     durations: list[float] = []
-    shots_by_segment: dict[int, list[CameraEditShot]] = {}
-    if camera_plan is not None:
-        for shot in camera_plan.shots:
-            shots_by_segment.setdefault(shot.edit_segment_order, []).append(shot)
-    source_input_indices = source_input_indices or {plan.source_asset_id: 0}
     geometry = _framing_geometry(
         framing_mode, source_size, width, height, framing_zoom, framing_focus_x,
     )
@@ -733,7 +637,6 @@ def _filtergraph(
 
     def compose_video(
         input_filter: str, output_label: str, segment_order: int,
-        auto_span: AutoFramingSpan | None = None,
         face_index: int | None = None,
     ) -> str:
         # Punch-in (Gate 5) is a single extra static scale/crop bolted onto
@@ -749,17 +652,6 @@ def _filtergraph(
             assert face_geometries is not None and face_punches is not None
             geo, punch = face_geometries[face_index], face_punches[face_index]
         effective_mode = framing_mode
-        if framing_mode in {"speaker_auto", "speaker_face"}:
-            if auto_span is None:
-                raise RenderPreconditionError("enquadramento automático ausente para plano")
-            punch = None  # Geometry/zoom were resolved per shot, not per EDL segment.
-            if auto_span.mode == "face_crop":
-                return (
-                    f"{input_filter},fps={fps},crop={auto_span.crop_width}:{auto_span.crop_height}:"
-                    f"{auto_span.crop_x}:{auto_span.crop_y},scale={width}:{height},"
-                    f"setsar=1,format=yuv420p{output_label}"
-                )
-            effective_mode = "blurred_background"
         if effective_mode == "vertical_crop" and geo is not None and (
             punch is not None or face_index is not None
         ):
@@ -834,19 +726,6 @@ def _filtergraph(
                 f"{foreground_raw}{foreground_chain}{foreground};{background}{foreground}"
                 f"overlay=x=(W-w)/2:y='{foreground_y}':format=yuv420,format=yuv420p{output_label}"
             )
-        if framing_mode == "face_static_crop":
-            crop = (static_face_crops or {}).get(segment_order)
-            if crop is None:
-                raise RenderPreconditionError("crop facial estático ausente para segmento")
-            eff_w = punch.crop_width if punch is not None else crop["crop_width"]
-            eff_h = punch.crop_height if punch is not None else crop["crop_height"]
-            eff_x = punch.anchor_x if punch is not None else crop["crop_x"]
-            eff_y = punch.anchor_y if punch is not None else crop["crop_y"]
-            return (
-                f"{input_filter},fps={fps},crop={eff_w}:{eff_h}:"
-                f"{eff_x}:{eff_y},scale={width}:{height},"
-                f"setsar=1,format=yuv420p{output_label}"
-            )
         raise RenderPreconditionError(f"modo de enquadramento não suportado: {framing_mode}")
     audio_durations: list[float] = []
     for index, segment in enumerate(plan.segments):
@@ -856,54 +735,7 @@ def _filtergraph(
             raise RenderPreconditionError(f"segmento {index} possui duração inválida")
         durations.append(video_duration)
         audio_durations.append(audio_duration)
-        segment_shots = shots_by_segment.get(segment.timeline_order)
-        if framing_mode in {"speaker_auto", "speaker_face"}:
-            spans = [span for span in (auto_framing or [])
-                     if span.segment_order == segment.timeline_order]
-            if not spans:
-                raise RenderPreconditionError("enquadramento automático não cobre segmento")
-            labels = []
-            elapsed = 0.0
-            frame_cursor = 0
-            for span_index, span in enumerate(spans):
-                raw_label = f"[autoframe{index}_{span_index}]"
-                label = f"[autotimed{index}_{span_index}]"
-                elapsed += (span.source_end_us - span.source_start_us) / 1_000_000
-                frame_end = round(elapsed * fps)
-                frame_count = frame_end - frame_cursor
-                frame_cursor = frame_end
-                if frame_count <= 0:
-                    continue
-                labels.append(label)
-                video_parts.append(compose_video(
-                    f"[0:v]trim=start={span.source_start_us / 1_000_000 - source_time_offset:.6f}:"
-                    f"end={span.source_end_us / 1_000_000 - source_time_offset:.6f},setpts=PTS-STARTPTS",
-                    raw_label, segment.timeline_order, span,
-                ))
-                # Round cumulative boundaries, avoiding one rounding error per shot.
-                video_parts.append(
-                    f"{raw_label}tpad=stop_mode=clone:stop_duration=1,"
-                    f"trim=end_frame={frame_count},setpts=PTS-STARTPTS{label}"
-                )
-            video_parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[v{index}]")
-        elif segment_shots:
-            shot_labels: list[str] = []
-            for shot_index, shot in enumerate(segment_shots):
-                input_index = source_input_indices[shot.video_source_asset_id]
-                label = f"[vs{index}_{shot_index}]"
-                shot_labels.append(label)
-                video_parts.append(compose_video(
-                    f"[{input_index}:v]trim=start={shot.source_start_us / 1_000_000 - source_time_offset:.6f}:"
-                    f"end={shot.source_end_us / 1_000_000 - source_time_offset:.6f},setpts=PTS-STARTPTS",
-                    label, segment.timeline_order,
-                ))
-            if len(shot_labels) == 1:
-                video_parts.append(f"{shot_labels[0]}null[v{index}]")
-            else:
-                video_parts.append(
-                    f"{''.join(shot_labels)}concat=n={len(shot_labels)}:v=1:a=0[v{index}]"
-                )
-        elif face_spans:
+        if face_spans:
             indexed = [
                 position for position, span in enumerate(face_spans)
                 if span.segment_order == segment.timeline_order
@@ -948,10 +780,8 @@ def _filtergraph(
                 "setpts=PTS-STARTPTS",
                 f"[v{index}]", segment.timeline_order,
             ))
-        # Audio always follows the segment's own audio clock, independent of
-        # whether video came from the primary source or a camera-plan shot
-        # (Gate 4): a jl_cut boundary only ever shifts audio_start/audio_end,
-        # never which source or which video clock feeds a segment.
+        # Audio always follows the segment's own audio clock: a jl_cut boundary
+        # only ever shifts audio_start/audio_end.
         audio_parts.append(
             f"[0:a]atrim=start={segment.audio_start - source_time_offset:.6f}:"
             f"end={segment.audio_end - source_time_offset:.6f},"
@@ -1392,10 +1222,6 @@ class RenderService:
         self,
         *,
         edit_plan_artifact: StageArtifact,
-        camera_edit_plan_artifact: StageArtifact | None = None,
-        face_index_artifact: StageArtifact | None = None,
-        identity_index_artifact: StageArtifact | None = None,
-        target_identity_id: str | None = None,
         encoder: str | None,
         headline: str | None,
         progress_cb: Callable[[float, str], None],
@@ -1403,7 +1229,6 @@ class RenderService:
         render_settings: RenderSettings | None = None,
         render_settings_override: RenderSettingsPatch | None = None,
         export_directory: str | None = None,
-        confirmed_voice: dict | None = None,
         purpose: Literal["export", "draft"] = "export",
     ) -> dict:
         draft = purpose == "draft"
@@ -1436,11 +1261,8 @@ class RenderService:
                     "NVENC indisponível neste FFmpeg/driver; configure render.encoder: "
                     f"libx264. Detalhe: {reason}"
                 )
-        if (
-            requested_settings.framing.mode == "face_static_crop"
-            and camera_edit_plan_artifact is not None
-        ):
-            raise RenderPreconditionError("face_static_crop ainda não aceita camera_edit_plan")
+        if requested_settings.framing.mode in LEGACY_FRAMING_MODES:
+            raise RenderPreconditionError(LEGACY_FRAMING_MODE_MESSAGE)
         source_probe = source.probe or probe_media(self._config.render.ffprobe, source_path)
         source_duration = usable_av_duration_seconds(source_probe)
         if source_duration <= 0:
@@ -1470,69 +1292,6 @@ class RenderService:
             "clip_end": min(plan.clip_end, source_duration),
             "timeline_duration_seconds": round(max(0.0, effective_duration), 4),
         })
-
-        camera_plan: CameraEditPlanDocument | None = None
-        if camera_edit_plan_artifact is not None:
-            if camera_edit_plan_artifact.stage != "camera_edit_plan":
-                raise RenderPreconditionError(
-                    "artifact informado não é um CameraEditPlanArtifact"
-                )
-            camera_plan_path = Path(camera_edit_plan_artifact.path)
-            if not camera_plan_path.is_file():
-                raise RenderPreconditionError(
-                    "arquivo do CameraEditPlanArtifact não está disponível"
-                )
-            camera_plan = CameraEditPlanDocument.model_validate_json(
-                camera_plan_path.read_text(encoding="utf-8")
-            )
-            if (
-                camera_plan.schema_version != 5
-                or camera_edit_plan_artifact.schema_version != 5
-                or camera_plan.project_id != plan.project_id
-                or camera_edit_plan_artifact.project_id != plan.project_id
-                or camera_plan.source_asset_id != source.id
-                or camera_plan.edit_plan_artifact_id != edit_plan_artifact.id
-                or camera_plan.edit_plan_input_hash != edit_plan_artifact.input_hash
-                or camera_plan.engine.audio_continuity_mode != "primary_source_continuous"
-            ):
-                raise RenderPreconditionError(
-                    "CameraEditPlanArtifact não corresponde ao plano de edição primário"
-                )
-
-            segment_orders = {segment.timeline_order for segment in plan.segments}
-            if any(shot.edit_segment_order not in segment_orders for shot in camera_plan.shots):
-                raise RenderPreconditionError("camera plan referencia segmento inexistente")
-            normalized_shots: list[CameraEditShot] = []
-            for segment in plan.segments:
-                shots = sorted(
-                    (
-                        shot for shot in camera_plan.shots
-                        if shot.edit_segment_order == segment.timeline_order
-                    ),
-                    key=lambda shot: (shot.audio_source_start_us, shot.audio_source_end_us),
-                )
-                expected_start = round(segment.start * 1_000_000)
-                expected_end = round(segment.end * 1_000_000)
-                cursor = expected_start
-                for shot in shots:
-                    if (
-                        shot.audio_source_asset_id != source.id
-                        or shot.video_source_asset_id != source.id
-                    ):
-                        raise RenderPreconditionError(
-                            "camera plan não mantém áudio e vídeo no master single-source"
-                        )
-                    if shot.audio_source_start_us != cursor:
-                        raise RenderPreconditionError(
-                            "camera plan possui gap ou sobreposição na cobertura do segmento"
-                        )
-                    cursor = shot.audio_source_end_us
-                if not shots or cursor != expected_end:
-                    raise RenderPreconditionError(
-                        "camera plan não cobre integralmente o segmento da EDL"
-                    )
-                normalized_shots.extend(shots)
-            camera_plan = camera_plan.model_copy(update={"shots": normalized_shots})
 
         try:
             transcript_artifact = self._domain.get_transcript_artifact(plan.transcript_artifact_id)
@@ -1594,85 +1353,6 @@ class RenderService:
                     resolve_headline_font(fonts_dir, effective_settings.headline.font_family)
             except AssOverlayError as exc:
                 raise RenderPreconditionError(str(exc)) from exc
-        static_face_crops: list[dict[str, object]] = []
-        static_face_crop_map: dict[int, dict[str, int]] = {}
-        if effective_settings.framing.mode == "face_static_crop":
-            if camera_edit_plan_artifact is not None:
-                raise RenderPreconditionError("face_static_crop ainda não aceita camera_edit_plan")
-            if not (face_index_artifact and identity_index_artifact and target_identity_id):
-                raise RenderPreconditionError(
-                    "face_static_crop exige face_index, identity_index e identidade alvo explícita"
-                )
-            if face_index_artifact.stage != "face_index" or identity_index_artifact.stage != "identity_index":
-                raise RenderPreconditionError("artifacts inválidos para face_static_crop")
-            face_doc = FaceIndexDocument.model_validate_json(Path(face_index_artifact.path).read_text())
-            identity_doc = IdentityIndexDocument.model_validate_json(Path(identity_index_artifact.path).read_text())
-            if (
-                face_index_artifact.project_id != plan.project_id
-                or identity_index_artifact.project_id != plan.project_id
-                or face_doc.project_id != plan.project_id
-                or identity_doc.project_id != plan.project_id
-                or face_doc.source_asset_id != source.id
-                or identity_doc.source_asset_id != source.id
-                or identity_doc.face_index_artifact_id != face_index_artifact.id
-                or identity_doc.face_index_input_hash != face_index_artifact.input_hash
-                or face_doc.source_sha256 != source.sha256
-                or identity_doc.source_sha256 != source.sha256
-            ):
-                raise RenderPreconditionError("cadeia de face/identidade não corresponde à fonte")
-            if not any(item.identity_id == target_identity_id and item.status == "confirmed" for item in identity_doc.identities):
-                raise RenderPreconditionError("identidade alvo não está confirmada")
-            probe = source.probe or probe_media(self._config.render.ffprobe, source_path)
-            video_stream = next((item for item in probe.get("streams", []) if item.get("codec_type") == "video"), None)
-            if not video_stream:
-                raise RenderPreconditionError("fonte sem dimensões de vídeo para crop facial")
-            for segment in plan.segments:
-                resolved = resolve_static_face_crop(
-                    face_doc, start_seconds=segment.start, end_seconds=segment.end,
-                    source_width=int(video_stream["width"]), source_height=int(video_stream["height"]),
-                    canvas_width=effective_settings.canvas.width, canvas_height=effective_settings.canvas.height,
-                    identity_index=identity_doc, target_identity_id=target_identity_id,
-                )
-                crop = {"crop_x": resolved.crop_x, "crop_y": resolved.crop_y,
-                        "crop_width": resolved.crop_width, "crop_height": resolved.crop_height}
-                static_face_crop_map[segment.timeline_order] = crop
-                static_face_crops.append({"segment_order": segment.timeline_order, **crop,
-                                          "provenance": resolved.provenance})
-        auto_framing: list[AutoFramingSpan] = []
-        auto_framing_inputs: dict[str, str] = {}
-        framing_mode_name = effective_settings.framing.mode
-        if framing_mode_name in {"speaker_auto", "speaker_face"}:
-            if camera_plan is None:
-                raise RenderPreconditionError(f"{framing_mode_name} exige análise e plano de câmeras")
-            if any(segment.video_start != segment.start or segment.video_end != segment.end
-                   for segment in plan.segments):
-                raise RenderPreconditionError(f"{framing_mode_name} exige vídeo alinhado ao plano de câmeras")
-            faces, speakers, auto_framing_inputs = load_framing_inputs(self._domain, camera_plan, source)
-            stream = next(item for item in source_probe["streams"] if item.get("codec_type") == "video")
-            auto_framing_inputs["algorithm_version"] = AUTO_FRAMING_VERSION
-            face_first_kwargs: dict = {}
-            if framing_mode_name == "speaker_face":
-                voice = ConfirmedVoice.model_validate(confirmed_voice) if confirmed_voice else None
-                face_first_kwargs = {
-                    "policy": "face_first", "confirmed_voice": voice,
-                    "primary_side": effective_settings.framing.primary_side,
-                }
-                auto_framing_inputs["policy"] = "face_first"
-                auto_framing_inputs["primary_side"] = str(effective_settings.framing.primary_side)
-                auto_framing_inputs["confirmed_voice"] = (
-                    hashlib.sha256(voice.model_dump_json().encode()).hexdigest() if voice else "none"
-                )
-            auto_framing = resolve_auto_framing(
-                camera_plan, faces, speakers,
-                source_width=int(stream["width"]), source_height=int(stream["height"]),
-                width=effective_settings.canvas.width, height=effective_settings.canvas.height,
-                fps=effective_settings.canvas.fps,
-                zoom=(effective_settings.framing.punch_in.scale
-                      if effective_settings.framing.punch_in.enabled else 1.0),
-                alternate=effective_settings.framing.punch_in.alternate_on_jump_cuts,
-                overrides=effective_settings.framing.scene_overrides,
-                **face_first_kwargs,
-            )
         # Punch-in (Gate 5): resolved once, up front, so an invalid crop or
         # an unsafe upscale fails closed before any ffmpeg process starts.
         punch_in_settings = effective_settings.framing.punch_in
@@ -1700,10 +1380,6 @@ class RenderService:
         if effective_focus_mode == "faces":
             if source_size is None or crop_geometry is None:
                 raise RenderPreconditionError("foco nos rostos exige as dimensões da fonte")
-            if camera_plan is not None:
-                raise RenderPreconditionError(
-                    "foco automático nos rostos não combina com plano de câmeras; use o foco manual"
-                )
             face_crop_fraction = crop_geometry.w / source_size[0]
             try:
                 face_spans = resolve_face_focus(
@@ -1733,14 +1409,13 @@ class RenderService:
         junction_orders = frozenset(
             plan.segments[position].timeline_order for position, _moment in piece_junctions(plan)
         ) if (
-            effective_settings.transitions.piece_junction == "zoom" and not draft and not auto_framing
+            effective_settings.transitions.piece_junction == "zoom" and not draft
         ) else frozenset()
-        punch_in_resolutions = [] if auto_framing else _resolve_punch_ins(
-            plan, camera_plan, punch_in_settings,
+        punch_in_resolutions = _resolve_punch_ins(
+            plan, punch_in_settings,
             framing_mode=effective_settings.framing.mode,
             canvas_width=effective_settings.canvas.width,
             canvas_height=effective_settings.canvas.height,
-            static_face_crop_map=static_face_crop_map,
             geometry=crop_geometry, junction_orders=junction_orders,
         )
         punch_in_by_segment = {
@@ -1755,7 +1430,7 @@ class RenderService:
                     framing_mode=effective_settings.framing.mode,
                     canvas_width=effective_settings.canvas.width,
                     canvas_height=effective_settings.canvas.height,
-                    static_face_crop_map=None, geometry=span_geometry,
+                    geometry=span_geometry,
                     scale_override=segment_punch.effective_scale,
                 )
                 if segment_punch is not None and segment_punch.applied else None
@@ -1826,22 +1501,12 @@ class RenderService:
                 generator_version=ass_result.generator_version,
             )
             timings["overlay_seconds"] = round(time.monotonic() - overlay_started, 4)
-        input_start, input_end = _source_input_window(plan, camera_plan, auto_framing)
+        input_start, input_end = _source_input_window(plan)
         input_payload = {
             "schema_version": RENDER_SCHEMA_VERSION,
             "input_window": {"version": _INPUT_WINDOW_VERSION, "start": input_start, "end": input_end},
             "edit_plan_sha256": _sha256(plan_path),
             "source_sha256": source.sha256,
-            "camera_edit_plan_sha256": (
-                _sha256(Path(camera_edit_plan_artifact.path))
-                if camera_edit_plan_artifact is not None else None
-            ),
-            "face_index_sha256": _sha256(Path(face_index_artifact.path)) if face_index_artifact else None,
-            "identity_index_sha256": _sha256(Path(identity_index_artifact.path)) if identity_index_artifact else None,
-            "target_identity_id": target_identity_id,
-            "static_face_crops": static_face_crops,
-            "auto_framing": [span.model_dump() for span in auto_framing],
-            "auto_framing_inputs": auto_framing_inputs,
             "face_focus": {
                 "mode": effective_focus_mode,
                 "algorithm_version": FACE_FOCUS_ALGORITHM_VERSION if face_spans else None,
@@ -1921,14 +1586,6 @@ class RenderService:
         }
         if not {"video", "audio"}.issubset(stream_types):
             raise RenderPreconditionError("render requer fonte com streams de áudio e vídeo")
-        if camera_plan is not None:
-            for shot in camera_plan.shots:
-                available_us = round(duration_seconds(source_probe) * 1_000_000)
-                if shot.source_end_us > available_us:
-                    raise RenderPreconditionError(
-                        f"shot excede duração da fonte de vídeo: {shot.video_source_asset_id}"
-                    )
-
         stem = f"{'draft-' if draft else ''}render-{input_hash[:16]}"
         output_path = output_dir / f"{stem}.mp4"
         temporary_path = output_path.with_suffix(".tmp.mp4")
@@ -1937,7 +1594,6 @@ class RenderService:
         if cues:
             temporary_subtitles_path.write_text(render_srt(cues), encoding="utf-8")
         ordered_source_ids = [source.id]
-        source_input_indices = {source.id: 0}
         filtergraph, video_label, audio_label = _filtergraph(
             plan,
             effective_settings.canvas.width,
@@ -1946,13 +1602,9 @@ class RenderService:
             self._config.render.loudness_target_lufs,
             self._config.render.true_peak_limit_dbfs,
             framing_mode=effective_settings.framing.mode,
-            static_face_crops=static_face_crop_map,
-            auto_framing=auto_framing,
             punch_ins=punch_in_by_segment,
             ass_overlay_path=ass_path,
             ass_fonts_dir=(fonts_dir if ass_path is not None else None),
-            camera_plan=camera_plan,
-            source_input_indices=source_input_indices,
             source_time_offset=input_start,
             framing_position_y=effective_settings.framing.position_y,
             source_size=source_size,
@@ -1990,13 +1642,6 @@ class RenderService:
             delta = abs(actual_duration - plan.timeline_duration_seconds)
             issues: list[str] = []
             warnings: list[str] = []
-            context_spans = [span for span in auto_framing if span.mode == "blurred_background"
-                             and span.reason != "manual_full_frame"]
-            if context_spans:
-                warnings.append("auto_framing_context_preserved")
-            if any(item.get("provenance", {}).get("fallback") == "center_crop"
-                   for item in static_face_crops):
-                warnings.append("face_crop_center_fallback")
             integrated_loudness: float | None = None
             true_peak: float | None = None
             loudness_delta: float | None = None
@@ -2202,11 +1847,6 @@ class RenderService:
                 "audio_channels_inverted",
             ):
                 check_thresholds[code] = dict(technical.thresholds)
-            if context_spans:
-                check_evidence["auto_framing_context_preserved"] = {
-                    "shot_count": len(context_spans),
-                    "reasons": ", ".join(sorted({span.reason for span in context_spans})),
-                }
             if draft:
                 check_evidence["draft_render"] = {"purpose": purpose}
             checks = _publication_checks(
@@ -2304,8 +1944,7 @@ class RenderService:
                     "anchor": punch_in_settings.anchor,
                     "alternate_on_jump_cuts": punch_in_settings.alternate_on_jump_cuts,
                     "segments": [entry.model_dump() for entry in punch_ins_manifest],
-                    "scope": "camera_shot" if auto_framing else "edit_segment",
-                    "shots": [span.model_dump() for span in auto_framing],
+                    "scope": "edit_segment",
                     "source_size": list(source_size) if source_size else None,
                     "zoom": effective_settings.framing.zoom,
                     "focus_x": effective_settings.framing.focus_x,
@@ -2318,16 +1957,6 @@ class RenderService:
             document = RenderDocument(
                 project_id=plan.project_id, source_asset_id=source.id,
                 edit_plan_artifact_id=edit_plan_artifact.id, input_hash=input_hash,
-                camera_edit_plan_artifact_id=(
-                    camera_edit_plan_artifact.id
-                    if camera_edit_plan_artifact is not None else None
-                ),
-                face_index_artifact_id=face_index_artifact.id if face_index_artifact else None,
-                identity_index_artifact_id=identity_index_artifact.id if identity_index_artifact else None,
-                target_identity_id=target_identity_id,
-                static_face_crops=static_face_crops,
-                auto_framing=auto_framing,
-                auto_framing_inputs=auto_framing_inputs,
                 face_focus=RenderFaceFocusInfo(
                     requested_mode=requested_focus_mode, effective_mode=effective_focus_mode,
                     algorithm_version=FACE_FOCUS_ALGORITHM_VERSION if face_spans else None,
@@ -2446,10 +2075,6 @@ class RenderService:
                 project_id=plan.project_id, stage="render", schema_version=RENDER_SCHEMA_VERSION,
                 path=str(manifest_path), input_hash=input_hash,
                 metadata={"edit_plan_artifact_id": edit_plan_artifact.id,
-                          "camera_edit_plan_artifact_id": (
-                              camera_edit_plan_artifact.id
-                              if camera_edit_plan_artifact is not None else None
-                          ),
                           "source_asset_ids": ordered_source_ids,
                           "requested_encoder": requested_encoder,
                           "effective_encoder": requested_encoder,
@@ -2483,8 +2108,4 @@ class RenderService:
         return {"cached": False, "purpose": purpose, "render_artifact_id": artifact.id,
                 "render_path": str(output_path), "schema_version": artifact.schema_version,
                 "publish_ready": publication.publish_ready,
-                "context_shot_count": len([
-                    span for span in auto_framing
-                    if span.mode == "blurred_background" and span.reason != "manual_full_frame"
-                ]),
                 "timings": artifact.metadata.get("timings", {}), **exports}

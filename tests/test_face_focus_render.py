@@ -82,7 +82,7 @@ def test_filtergraph_split_segment_frame_counts_sum_and_punch_per_span():
     punches = [
         _resolve_segment_punch_in(
             0, punch_settings, framing_mode="blurred_background", canvas_width=CANVAS[0],
-            canvas_height=CANVAS[1], static_face_crop_map=None, geometry=geometry,
+            canvas_height=CANVAS[1], geometry=geometry,
         )
         for geometry in (left, right)
     ]

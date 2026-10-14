@@ -18,7 +18,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from cortex.analyze.face_detect import MODEL_PATH, FaceDetectionError, detect_faces, load_session
-from cortex.analyze.face_service import FRAME_EXTRACTION_WIDTH, _extract_frame_rgb
+from cortex.analyze.frames import FRAME_EXTRACTION_WIDTH, _extract_frame_rgb
 from cortex.analyze.scene_detect import SCENE_DETECT_FILTER, parse_scene_cuts
 
 FACE_FOCUS_ALGORITHM_VERSION = "1.0.0"

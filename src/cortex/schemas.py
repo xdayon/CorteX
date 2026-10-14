@@ -17,6 +17,8 @@ class JobType(StrEnum):
     TRANSCRIPTION = "transcription"
     ANALYSIS = "analysis"
     SCENE_ANALYSIS = "scene_analysis"
+    # Legacy types (camera dynamics, removed): kept so old rows still validate;
+    # the worker fails queued jobs of these types with an explicit message.
     FACE_ANALYSIS = "face_analysis"
     SPEAKER_ANALYSIS = "speaker_analysis"
     CAMERA_ANALYSIS = "camera_analysis"
@@ -24,6 +26,7 @@ class JobType(StrEnum):
     IDENTITY_ANALYSIS = "identity_analysis"
     REACTION_CANDIDATE_ANALYSIS = "reaction_candidate_analysis"
     CAMERA_PLANNING = "camera_planning"
+    # End of legacy types.
     SUGGESTION = "suggestion"
     EDIT_PLAN = "edit_plan"
     RENDER = "render"

@@ -11,7 +11,6 @@ import pytest
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind, StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
-from cortex.edit.camera_plan_schemas import CameraEditPlanDocument
 from cortex.edit.schemas import (
     EditPlanDiagnostics,
     EditPlanDocument,
@@ -97,93 +96,38 @@ def _dominant_audio_frequency(ffmpeg: Path, media_path: Path) -> float:
     return crossings / (2 * duration)
 
 
-@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
-                    reason="ffmpeg and ffprobe required")
-def test_camera_plan_v5_renders_reused_master_reaction_with_editorial_audio(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy_mode", ["face_static_crop", "speaker_auto", "speaker_face"])
+def test_render_refuses_legacy_framing_modes_with_clear_message(tmp_path: Path, legacy_mode: str) -> None:
     config = _config(tmp_path)
     config.ensure_runtime_dirs()
     domain = DomainStore(config.paths.database)
-    project = domain.create_project("Single master reaction render fixture")
+    project = domain.create_project("Legacy framing fixture")
     source_path = tmp_path / "projects" / project.id / "source" / "master.mp4"
     source_path.parent.mkdir(parents=True)
-    subprocess.run([
-        str(config.render.ffmpeg), "-y", "-v", "error",
-        "-f", "lavfi", "-i", "color=c=red:size=320x180:rate=30:duration=1",
-        "-f", "lavfi", "-i", "color=c=blue:size=320x180:rate=30:duration=1",
-        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
-        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]",
-        "-map", "[v]", "-map", "2:a", "-c:v", "libx264", "-preset", "ultrafast",
-        "-c:a", "aac", "-shortest", str(source_path),
-    ], check=True, timeout=60)
+    source_path.write_bytes(b"not decoded: the mode is refused first")
     source = domain.create_source_asset(SourceAsset(
         project_id=project.id, kind=SourceKind.UPLOAD, original_filename="master.mp4",
         stored_path=str(source_path.relative_to(tmp_path)),
         sha256=hashlib.sha256(source_path.read_bytes()).hexdigest(),
         size_bytes=source_path.stat().st_size,
-        probe=probe_media(config.render.ffprobe, source_path),
-    ))
-    transcript_path = tmp_path / "reaction-transcript.json"
-    transcript_path.write_text(TranscriptDocument(
-        language="pt", duration_seconds=2.0,
-        engine=EngineInfo(model="fixture", requested_device="cpu", effective_device="cpu",
-                          requested_compute_type="int8", effective_compute_type="int8",
-                          batch_size=1, vad=True),
-        segments=[],
-    ).model_dump_json(), encoding="utf-8")
-    transcript = domain.create_transcript_artifact(TranscriptArtifact(
-        project_id=project.id, source_asset_id=source.id, path=str(transcript_path),
-        audio_sha256="audio", engine="fixture", model="fixture", device="cpu",
-        compute_type="int8", language="pt", vad=True, batch_size=1, duration_seconds=2.0,
     ))
     plan = EditPlanDocument(
-        project_id=project.id, source_asset_id=source.id, transcript_artifact_id=transcript.id,
-        analysis_artifact_id="analysis", input_hash="reaction-edit", clip_start=0.0,
+        project_id=project.id, source_asset_id=source.id, transcript_artifact_id="transcript",
+        analysis_artifact_id="analysis", input_hash="legacy-edit", clip_start=0.0,
         clip_end=1.0, profile="balanced", segments=[EditSegment(start=0.0, end=1.0, timeline_order=0)],
         timeline_duration_seconds=1.0,
         diagnostics=EditPlanDiagnostics(profile="balanced", waveform_used=True, candidate_pauses=0,
                                         cuts=0, saved_seconds=0.0, crossfade=0.0, vad_used=True),
         quality=EditQualityReport(passed=True, issues=[], profile="balanced", degraded=False),
     )
-    plan_path = tmp_path / "reaction-plan.json"
+    plan_path = tmp_path / "legacy-plan.json"
     plan_path.write_text(plan.model_dump_json(), encoding="utf-8")
     plan_artifact = domain.create_stage_artifact(StageArtifact(
         project_id=project.id, stage="edit_plan", path=str(plan_path), input_hash=plan.input_hash,
     ))
-    camera_plan = CameraEditPlanDocument.model_validate({
-        "schema_version": 5, "project_id": project.id, "source_asset_id": source.id,
-        "edit_plan_artifact_id": plan_artifact.id, "edit_plan_input_hash": plan_artifact.input_hash,
-        "camera_timeline_artifact_id": "camera", "camera_timeline_input_hash": "camera-hash",
-        "identity_index_artifact_id": "identity", "identity_index_input_hash": "identity-hash",
-        "visual_quality_artifact_id": "quality", "visual_quality_input_hash": "quality-hash",
-        "reaction_candidate_artifact_id": "reaction-artifact",
-        "reaction_candidate_input_hash": "reaction-hash", "input_hash": "reaction-camera-plan",
-        "shots": [{
-            "edit_segment_order": 0, "video_source_asset_id": source.id,
-            "audio_source_asset_id": source.id, "source_start_us": 1_000_000,
-            "source_end_us": 2_000_000, "audio_source_start_us": 0,
-            "audio_source_end_us": 1_000_000, "scene_index": 1, "layout_id": "host-close",
-            "camera_role": "interviewer_reaction", "intent": "reaction",
-            "visual_origin": "reaction_reuse", "reaction_candidate_id": "reaction-safe",
-            "reaction_candidate_artifact_id": "reaction-artifact",
-            "reaction_candidate_input_hash": "reaction-hash", "interviewer_identity_id": "host",
-            "confirmed_identity_ids": ["host"], "visual_quality_usable": True, "evidence": [],
-        }],
-        "diagnostics": {"shot_count": 1, "speaker_shot_count": 0, "context_shot_count": 0,
-                        "fallback_shot_count": 0, "unusable_scene_count": 0,
-                        "reaction_shots_enabled": True, "reaction_shot_count": 1,
-                        "reused_candidate_ids": ["reaction-safe"], "reaction_shots_blocked_by": []},
-        "engine": {"algorithm": "fixture", "algorithm_version": "3",
-                   "temporal_reuse_allowed": True},
-    })
-    camera_path = tmp_path / "reaction-camera-plan.json"
-    camera_path.write_text(camera_plan.model_dump_json(), encoding="utf-8")
-    camera_artifact = domain.create_stage_artifact(StageArtifact(
-        project_id=project.id, stage="camera_edit_plan", schema_version=5,
-        path=str(camera_path), input_hash=camera_plan.input_hash,
-    ))
     settings = RenderSettings(
         encoder="libx264", canvas=RenderCanvasSettings(width=320, height=320, fps=30),
-        framing=RenderFramingSettings(mode="blurred_background"),
+        framing=RenderFramingSettings(mode=legacy_mode),
         captions=RenderCaptionSettings(enabled=False, font_family="Montserrat", font_size=28,
                                        words_per_cue=3, outline=False),
         headline=RenderHeadlineSettings(enabled=False, font_family="Montserrat", font_size=36,
@@ -191,25 +135,12 @@ def test_camera_plan_v5_renders_reused_master_reaction_with_editorial_audio(tmp_
         subtitles=RenderSubtitleSettings(sidecar_srt=False),
     )
 
-    result = RenderService(config, domain).run(
-        edit_plan_artifact=plan_artifact, camera_edit_plan_artifact=camera_artifact,
-        encoder=None, headline=None, progress_cb=lambda *_args: None,
-        should_cancel=lambda: False, render_settings=settings,
-    )
-    document = RenderDocument.model_validate_json(
-        Path(domain.get_stage_artifact(result["render_artifact_id"]).path).read_text()
-    )
-    pixel = _center_pixel(config.render.ffmpeg, Path(document.output_path), 0.5)
-
-    assert pixel[2] > pixel[0]
-    assert _dominant_audio_frequency(config.render.ffmpeg, Path(document.output_path)) == pytest.approx(440, abs=8)
-    assert [(item.source_asset_id, item.video_used, item.audio_used) for item in document.sources] == [
-        (source.id, True, True),
-    ]
-    assert document.publication is not None
-    assert document.publication.publish_ready is True
-    assert document.publication.checks
-    assert all(check.status != "fail" for check in document.publication.checks)
+    with pytest.raises(RenderPreconditionError, match="modo de enquadramento descontinuado"):
+        RenderService(config, domain).run(
+            edit_plan_artifact=plan_artifact, encoder=None, headline=None,
+            progress_cb=lambda *_args: None, should_cancel=lambda: False,
+            render_settings=settings,
+        )
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),

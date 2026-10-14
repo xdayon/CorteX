@@ -10,7 +10,6 @@ from pydantic import ValidationError
 
 from cortex.domain.models import SourceAsset, SourceKind, StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
-from cortex.edit.camera_plan_schemas import CameraEditPlanDocument
 from cortex.edit.schemas import (
     EditPlanDiagnostics,
     EditPlanDocument,
@@ -29,7 +28,6 @@ from cortex.render.schemas import (
     RenderSubtitleSettings,
 )
 from cortex.render.service import (
-    RenderPreconditionError,
     RenderService,
     _filtergraph,
     _PunchInResolution,
@@ -46,13 +44,12 @@ from test_render import _config
 # ---------------------------------------------------------------------------
 
 
-def test_punch_in_anchor_face_requires_face_static_crop_mode() -> None:
+def test_punch_in_anchor_face_only_reads_with_legacy_face_static_crop_mode() -> None:
     with pytest.raises(ValidationError, match="punch_in.anchor 'face'"):
         RenderFramingSettings(
             mode="vertical_crop",
             punch_in=RenderPunchInSettings(enabled=True, anchor="face"),
         )
-    # Same anchor is fine once the mode matches.
     settings = RenderFramingSettings(
         mode="face_static_crop", punch_in=RenderPunchInSettings(enabled=True, anchor="face"),
     )
@@ -98,7 +95,6 @@ def test_filtergraph_punch_in_vertical_crop_uses_constant_crop_and_no_temporal_e
     resolution = _resolve_segment_punch_in(
         0, RenderPunchInSettings(enabled=True, scale=1.2),
         framing_mode="vertical_crop", canvas_width=320, canvas_height=320,
-        static_face_crop_map=None,
     )
     assert resolution.applied is True
     assert resolution.crop_width == 267 and resolution.crop_height == 267
@@ -121,7 +117,6 @@ def test_filtergraph_blurred_background_zooms_fitted_foreground_without_invalid_
     resolution = _resolve_segment_punch_in(
         0, RenderPunchInSettings(enabled=True, scale=1.15, alternate_on_jump_cuts=False),
         framing_mode="blurred_background", canvas_width=1080, canvas_height=1920,
-        static_face_crop_map=None,
     )
 
     filtergraph, _video_label, _audio_label = _filtergraph(
@@ -144,58 +139,6 @@ def test_filtergraph_trims_loudnorm_tail_to_video_duration() -> None:
     assert audio_label == "[anorm]"
 
 
-def test_filtergraph_punch_in_face_static_crop_tightens_the_resolved_crop() -> None:
-    plan = _one_segment_plan()
-    static_face_crop_map = {0: {"crop_x": 10, "crop_y": 5, "crop_width": 200, "crop_height": 300}}
-    resolution = _resolve_segment_punch_in(
-        0, RenderPunchInSettings(enabled=True, scale=1.5, anchor="face"),
-        framing_mode="face_static_crop", canvas_width=320, canvas_height=568,
-        static_face_crop_map=static_face_crop_map,
-    )
-    assert resolution.applied is True
-    # Shrunk, centered within the original resolved crop rectangle.
-    assert resolution.crop_width == round(200 / 1.5)
-    assert resolution.crop_height == round(300 / 1.5)
-    assert resolution.anchor_x >= 10 and resolution.anchor_x + resolution.crop_width <= 210
-    assert resolution.anchor_y >= 5 and resolution.anchor_y + resolution.crop_height <= 305
-
-    filtergraph, _v, _a = _filtergraph(
-        plan, 320, 568, 30, -14.0, -1.0, framing_mode="face_static_crop",
-        static_face_crops=static_face_crop_map, punch_ins={0: resolution},
-    )
-    assert (
-        f"crop={resolution.crop_width}:{resolution.crop_height}:"
-        f"{resolution.anchor_x}:{resolution.anchor_y}"
-    ) in filtergraph
-    # The original, un-tightened crop must not remain in the graph.
-    assert "crop=200:300:10:5" not in filtergraph
-
-
-# ---------------------------------------------------------------------------
-# Fail-closed geometry / resolution floor.
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_segment_punch_in_rejects_crop_below_safe_resolution_floor() -> None:
-    static_face_crop_map = {0: {"crop_x": 0, "crop_y": 0, "crop_width": 56, "crop_height": 100}}
-    with pytest.raises(RenderPreconditionError, match="resolução efetiva"):
-        _resolve_segment_punch_in(
-            0, RenderPunchInSettings(enabled=True, scale=1.5, anchor="center"),
-            framing_mode="face_static_crop", canvas_width=320, canvas_height=568,
-            static_face_crop_map=static_face_crop_map,
-        )
-
-
-def test_resolve_punch_ins_raises_before_any_encode_when_face_crop_missing() -> None:
-    plan = _one_segment_plan()
-    with pytest.raises(RenderPreconditionError, match="crop facial estático ausente"):
-        _resolve_punch_ins(
-            plan, None, RenderPunchInSettings(enabled=True, scale=1.2),
-            framing_mode="face_static_crop", canvas_width=320, canvas_height=568,
-            static_face_crop_map=None,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Deterministic alternation.
 # ---------------------------------------------------------------------------
@@ -216,63 +159,28 @@ def _two_segment_plan() -> EditPlanDocument:
     )
 
 
-def test_alternation_without_camera_plan_uses_global_timeline_order_parity() -> None:
+def test_alternation_uses_global_timeline_order_parity() -> None:
     plan = _two_segment_plan()
     punch_in = RenderPunchInSettings(enabled=True, scale=1.2, alternate_on_jump_cuts=True)
     run_one = _resolve_punch_ins(
-        plan, None, punch_in, framing_mode="vertical_crop",
-        canvas_width=320, canvas_height=320, static_face_crop_map=None,
+        plan, punch_in, framing_mode="vertical_crop",
+        canvas_width=320, canvas_height=320,
     )
     run_two = _resolve_punch_ins(
-        plan, None, punch_in, framing_mode="vertical_crop",
-        canvas_width=320, canvas_height=320, static_face_crop_map=None,
+        plan, punch_in, framing_mode="vertical_crop",
+        canvas_width=320, canvas_height=320,
     )
     assert run_one == run_two  # deterministic across repeated calls
     assert run_one[0].applied is True and run_one[0].reason is None
     assert run_one[1].applied is False and run_one[1].reason == "alternation_skipped"
 
 
-def test_alternation_with_camera_plan_uses_scene_index_parity() -> None:
-    plan = _two_segment_plan()
-    camera_plan = CameraEditPlanDocument.model_validate({
-        "project_id": "p", "source_asset_id": "s", "edit_plan_artifact_id": "edit",
-        "edit_plan_input_hash": "h", "camera_timeline_artifact_id": "camera",
-        "camera_timeline_input_hash": "camera-hash", "identity_index_artifact_id": "identity",
-        "identity_index_input_hash": "identity-hash", "visual_quality_artifact_id": "quality",
-        "visual_quality_input_hash": "quality-hash", "input_hash": "camera-plan",
-        "shots": [
-            {"edit_segment_order": 0, "video_source_asset_id": "s", "audio_source_asset_id": "s",
-             "source_start_us": 0, "source_end_us": 1_000_000, "audio_source_start_us": 0,
-             "audio_source_end_us": 1_000_000, "scene_index": 0, "layout_id": "primary",
-             "camera_role": "speaker_close", "intent": "speaker", "confirmed_identity_ids": [],
-             "visual_quality_usable": True, "evidence": []},
-            {"edit_segment_order": 1, "video_source_asset_id": "s", "audio_source_asset_id": "s",
-             "source_start_us": 1_000_000, "source_end_us": 2_000_000, "audio_source_start_us": 1_000_000,
-             "audio_source_end_us": 2_000_000, "scene_index": 0, "layout_id": "primary",
-             "camera_role": "speaker_close", "intent": "speaker", "confirmed_identity_ids": [],
-             "visual_quality_usable": True, "evidence": []},
-        ],
-        "diagnostics": {"shot_count": 2, "speaker_shot_count": 2, "context_shot_count": 0,
-                        "fallback_shot_count": 0, "unusable_scene_count": 0,
-                        "reaction_shots_blocked_by": []},
-        "engine": {"algorithm": "fixture", "algorithm_version": "2"},
-    })
-    punch_in = RenderPunchInSettings(enabled=True, scale=1.2, alternate_on_jump_cuts=True)
-    resolutions = _resolve_punch_ins(
-        plan, camera_plan, punch_in, framing_mode="vertical_crop",
-        canvas_width=320, canvas_height=320, static_face_crop_map=None,
-    )
-    # Both segments share scene_index=0 -> alternate within that one scene.
-    assert resolutions[0].applied is True
-    assert resolutions[1].applied is False
-
-
 def test_alternate_on_jump_cuts_false_applies_to_every_segment() -> None:
     plan = _two_segment_plan()
     punch_in = RenderPunchInSettings(enabled=True, scale=1.2, alternate_on_jump_cuts=False)
     resolutions = _resolve_punch_ins(
-        plan, None, punch_in, framing_mode="vertical_crop",
-        canvas_width=320, canvas_height=320, static_face_crop_map=None,
+        plan, punch_in, framing_mode="vertical_crop",
+        canvas_width=320, canvas_height=320,
     )
     assert all(resolution.applied for resolution in resolutions)
 

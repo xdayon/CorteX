@@ -71,23 +71,19 @@ def test_render_request_accepts_explicit_export_directory() -> None:
     assert request.export_directory == "cortes/aprovados"
 
 
-def test_face_static_crop_request_requires_complete_explicit_identity_chain() -> None:
+def test_render_request_no_longer_accepts_camera_or_identity_fields() -> None:
+    for field in ("camera_edit_plan_artifact_id", "face_index_artifact_id",
+                  "identity_index_artifact_id", "target_identity_id"):
+        with pytest.raises(ValidationError):
+            RenderRequest(edit_plan_artifact_id="plan", **{field: "x"})
+
+
+def test_render_request_still_reads_legacy_framing_mode_in_settings() -> None:
     settings = RenderSettings.model_validate({
-        **_payload(), "framing": {"mode": "face_static_crop"},
+        **_payload(), "framing": {"mode": "speaker_face", "primary_side": "left"},
     })
-    with pytest.raises(ValidationError, match="face_static_crop exige"):
-        RenderRequest(edit_plan_artifact_id="plan", render_settings=settings)
-    with pytest.raises(ValidationError, match="face_static_crop exige"):
-        RenderRequest(
-            edit_plan_artifact_id="plan", render_settings=settings,
-            face_index_artifact_id="faces",
-        )
-    request = RenderRequest(
-        edit_plan_artifact_id="plan", render_settings=settings,
-        face_index_artifact_id="faces", identity_index_artifact_id="identities",
-        target_identity_id="identity-me",
-    )
-    assert request.target_identity_id == "identity-me"
+    request = RenderRequest(edit_plan_artifact_id="plan", render_settings=settings)
+    assert request.render_settings.framing.mode == "speaker_face"
 
 
 def test_export_render_files_copies_video_and_subtitles_atomically(tmp_path: Path) -> None:
@@ -157,12 +153,12 @@ def test_render_settings_patch_merges_nested_fields_field_by_field() -> None:
     assert merged.headline.animation.exit == "slide"
 
 
-def test_render_preset_with_face_static_crop_can_be_overridden_per_cut() -> None:
+def test_render_preset_with_legacy_framing_mode_can_be_overridden_per_cut() -> None:
     preset = RenderSettings.model_validate({
         **_payload(), "framing": {"mode": "face_static_crop"},
     })
 
-    # A specific cut turns face crop off for this one export, keeping the rest
+    # A specific cut replaces the legacy mode for this one export, keeping the rest
     # of the preset (canvas, captions) untouched.
     overridden = _merge_render_settings(
         preset, RenderSettingsPatch.model_validate({"framing": {"mode": "vertical_crop"}}),
@@ -171,13 +167,6 @@ def test_render_preset_with_face_static_crop_can_be_overridden_per_cut() -> None
     assert overridden.canvas == preset.canvas
     assert overridden.captions.font_size == preset.captions.font_size
 
-    # Another cut can re-enable it explicitly; overriding a value equal to the
-    # preset's own is a no-op, not a silent identity switch.
-    reapplied = _merge_render_settings(
-        overridden, RenderSettingsPatch.model_validate({"framing": {"mode": "face_static_crop"}}),
-    )
-    assert reapplied.framing.mode == "face_static_crop"
-    assert reapplied.canvas == preset.canvas
 
 
 def test_caption_weight_case_and_position_survive_patch_merge() -> None:

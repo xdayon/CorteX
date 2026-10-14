@@ -75,7 +75,7 @@ def test_revision_and_export_batch_are_idempotent_and_reconcilable(tmp_path: Pat
                 "start_second": 0, "end_second": 10, "pacing": "balanced",
             }],
             "render_settings": _settings(), "caption_edits": {}, "headlines": {},
-            "visual_artifacts": {}, "reuse_reactions": False,
+            "visual_artifacts": {},
         },
     )
     assert revision_response.status_code == 201, revision_response.text

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from cortex.render.technical_quality import RenderTechnicalQualityReport
-from cortex.render.auto_framing import AutoFramingSpan, SceneFramingOverride
 from cortex.render.face_focus import FaceFocusSpan
 
 RENDER_SCHEMA_VERSION = 14
@@ -80,10 +79,8 @@ class RenderCanvasSettings(BaseModel):
 # canvas-resolution frame: a 1.5x ceiling is a fixed product decision (not
 # computed per-source) capping how much of that canvas-resolution frame gets
 # thrown away, chosen so the upscaled result still reads as sharp on typical
-# 1080p+ source footage. face_static_crop already resolves its base crop in
-# native source pixels sized to the canvas aspect ratio; punch-in shrinks
-# that rectangle by up to the same 1.5x, which RenderService validates stays
-# within the source's bounds before encode (see PUNCH_IN_MAX_TOTAL_UPSCALE).
+# 1080p+ source footage. RenderService also caps the total upscale
+# (see PUNCH_IN_MAX_TOTAL_UPSCALE).
 PUNCH_IN_MAX_SCALE = 1.5
 PUNCH_IN_MIN_SCALE = 1.0
 
@@ -100,15 +97,27 @@ class RenderPunchInSettings(BaseModel):
     scale: float = Field(default=1.12, ge=PUNCH_IN_MIN_SCALE, le=PUNCH_IN_MAX_SCALE)
     anchor: Literal["center", "face"] = "center"
     # When true, punch-in alternates between consecutive segments of the same
-    # scene (by scene_index when a camera plan is present, else by parity of
-    # the segment's global timeline_order) so consecutive jump cuts read as a
+    # scene (by parity of the segment's global timeline_order) so consecutive jump cuts read as a
     # deliberate size change instead of a jarring repeat. When false, every
     # eligible segment gets the punch-in.
     alternate_on_jump_cuts: bool = True
 
 
+class SceneFramingOverride(BaseModel):
+    """Legacy per-scene choice; still readable from stored revisions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene_index: int = Field(ge=0)
+    target: Literal["left", "right", "full"]
+
+
 class RenderFramingSettings(BaseModel):
-    """Defines how a landscape source occupies a portrait render canvas."""
+    """Defines how a landscape source occupies a portrait render canvas.
+
+    face_static_crop, speaker_auto and speaker_face are legacy modes: they stay
+    readable in stored settings, but RenderService.run refuses them.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -417,8 +426,7 @@ class RenderPunchInInfo(BaseModel):
     elsewhere in this manifest. ``anchor_x``/``anchor_y`` are the constant
     top-left offset of the punch-in crop in the coordinate space the segment's
     framing mode operates in (canvas pixels for vertical_crop and the
-    foreground of blurred_background; native source pixels for
-    face_static_crop). ``applied=False`` means punch-in was configured but
+    foreground of blurred_background). ``applied=False`` means punch-in was configured but
     this specific segment was skipped (e.g. alternation parity), with
     ``reason`` explaining why."""
 
@@ -570,13 +578,14 @@ class RenderDocument(BaseModel):
     project_id: str
     source_asset_id: str
     edit_plan_artifact_id: str
+    # Legacy fields from the removed camera-dynamics stack: read-only, never written.
     camera_edit_plan_artifact_id: str | None = None
     face_index_artifact_id: str | None = None
     identity_index_artifact_id: str | None = None
     target_identity_id: str | None = None
-    static_face_crops: list[dict[str, object]] = Field(default_factory=list)
-    auto_framing: list[AutoFramingSpan] = Field(default_factory=list)
-    auto_framing_inputs: dict[str, str] = Field(default_factory=dict)
+    static_face_crops: list[dict[str, Any]] = Field(default_factory=list)
+    auto_framing: list[dict[str, Any]] = Field(default_factory=list)
+    auto_framing_inputs: dict[str, Any] = Field(default_factory=dict)
     face_focus: RenderFaceFocusInfo | None = None
     sources: list[RenderSourceInfo] = Field(default_factory=list)
     input_hash: str

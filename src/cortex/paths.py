@@ -39,31 +39,3 @@ def renders_dir(config: CortexConfig, project_id: str) -> Path:
 
 def scenes_dir(config: CortexConfig, project_id: str) -> Path:
     return project_dir(config, project_id) / "scenes"
-
-
-def faces_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "faces"
-
-
-def speakers_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "speakers"
-
-
-def cameras_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "cameras"
-
-
-def visual_quality_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "visual_quality"
-
-
-def identities_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "identities"
-
-
-def reaction_candidates_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "reaction_candidates"
-
-
-def camera_plans_dir(config: CortexConfig, project_id: str) -> Path:
-    return project_dir(config, project_id) / "camera_plans"
