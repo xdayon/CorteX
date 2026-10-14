@@ -48,9 +48,10 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   salvamentos) e usar exemplos aprovados/reprovados no prompt de seleção.
 - [ ] Imagens ilustrativas opcionais: IA sugere momentos e termos; imagem enviada
   pelo usuário ou de acervo livre (ex.: Wikimedia), com licença registrada.
-- [ ] Acesso remoto privado por Cloudflare Tunnel + Access (escolhido em 14/out), com o
-  PC ligado processando: validar o JWT do Access na origem, upload em partes (limite de
-  100 MB por requisição), serviço `cloudflared` de usuário. Depende do domínio.
+- [x] Acesso remoto por Cloudflare Tunnel + Access no código: JWT validado na origem,
+  `scripts/setup_remote_access.py`, serviço `cortex-tunnel`, `cloudflared` instalado.
+- [ ] Ativar no painel (Access app → túnel → rota) e testar do iPhone; mensagem clara
+  na UI para upload acima de 100 MB pelo túnel (usar link do YouTube fora de casa).
 
 ## Regras de aceite
 

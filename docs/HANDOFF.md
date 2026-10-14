@@ -43,8 +43,9 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 1. Fase 2 do [ROADMAP](ROADMAP.md): foco automático por rostos por cena; então apagar
    os modos congelados (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de
    câmera, reações, identidade).
-2. Fase 3: acesso remoto por Cloudflare Tunnel + Access (escolha do usuário em 14/out),
-   com o PC de casa processando; falta o domínio e o login do `cloudflared`.
+2. Acesso remoto (`cortex.synapses.academy`): código, guarda JWT na origem, script e
+   `cloudflared` prontos; faltam os passos do usuário no painel e
+   `scripts/setup_remote_access.py` — [guia](LOCAL_AND_CLOUDFLARE.md).
 
 ## Congelado (não evoluir)
 
