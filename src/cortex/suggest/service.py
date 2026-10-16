@@ -50,6 +50,7 @@ def _strip_hesitations(text: str) -> str:
     return " ".join(_HESITATION_PATTERN.sub(" ", text).split())
 
 
+_BRIEF_PRIVATE_KEYS = frozenset({"confirmed_voice", "voice_match"})
 _SENTENCE_END = (".", "?", "!", "…", ",", ";", ":")
 _UNIT_MIN_SENTENCE_SECONDS = 1.2
 _UNIT_MAX_SECONDS = 8.0
@@ -74,40 +75,24 @@ def _unit_speaker_label(
     return "D" if dominant == voice.speaker else "O"
 
 
-def _selection_units(
-    transcript: dict[str, Any], *, voice: ConfirmedVoice | None, primary_subject: str,
-) -> list[dict[str, Any]]:
-    """Group word timings into sentence-sized units the model can target precisely.
-
-    Whisper's batched segments span ~24 s, too coarse to compose a cut from, so
-    the model sees one numbered line per clause (or per 8 s / pause) instead.
-    """
-    units: list[dict[str, Any]] = []
+def _unit_chunks(transcript: dict[str, Any]) -> list[tuple[float, float, str]]:
+    chunks: list[tuple[float, float, str]] = []
     current: list[dict[str, Any]] = []
-
-    def emit(start: float, end: float, raw_text: str) -> None:
-        text = _strip_hesitations(raw_text)
-        if not text:
-            return
-        label = _unit_speaker_label(start, end, voice, primary_subject) if voice else None
-        units.append({
-            "id": len(units), "start": start, "end": end, "text": text, "speaker_label": label,
-        })
 
     def flush() -> None:
         if current:
-            emit(
+            chunks.append((
                 float(current[0]["start"]), float(current[-1]["end"]),
                 " ".join(str(word["word"]).strip() for word in current),
-            )
+            ))
             current.clear()
 
     for segment in transcript.get("segments") or []:
         words = segment.get("words") or []
         if not words:
             flush()
-            emit(float(segment.get("start", 0)), float(segment.get("end", 0)),
-                 str(segment.get("text") or ""))
+            chunks.append((float(segment.get("start", 0)), float(segment.get("end", 0)),
+                           str(segment.get("text") or "")))
             continue
         for word in words:
             if current and float(word["start"]) - float(current[-1]["end"]) >= _UNIT_PAUSE_SECONDS:
@@ -120,6 +105,34 @@ def _selection_units(
             ):
                 flush()
     flush()
+    return chunks
+
+
+def selection_unit_spans(transcript: dict[str, Any]) -> list[tuple[float, float]]:
+    """(start, end) of every numbered selection line, in order (same as unit ids)."""
+    return [
+        (start, end) for start, end, raw in _unit_chunks(transcript)
+        if _strip_hesitations(raw)
+    ]
+
+
+def _selection_units(
+    transcript: dict[str, Any], *, voice: ConfirmedVoice | None, primary_subject: str,
+) -> list[dict[str, Any]]:
+    """Group word timings into sentence-sized units the model can target precisely.
+
+    Whisper's batched segments span ~24 s, too coarse to compose a cut from, so
+    the model sees one numbered line per clause (or per 8 s / pause) instead.
+    """
+    units: list[dict[str, Any]] = []
+    for start, end, raw_text in _unit_chunks(transcript):
+        text = _strip_hesitations(raw_text)
+        if not text:
+            continue
+        label = _unit_speaker_label(start, end, voice, primary_subject) if voice else None
+        units.append({
+            "id": len(units), "start": start, "end": end, "text": text, "speaker_label": label,
+        })
     return units
 
 
@@ -524,7 +537,7 @@ def selection_request(
     brief: dict[str, Any], config: CortexConfig, *, second_round: bool,
 ) -> str:
     payload = {
-        "brief": {key: value for key, value in brief.items() if key != "confirmed_voice"},
+        "brief": {key: value for key, value in brief.items() if key not in _BRIEF_PRIVATE_KEYS},
         "selection_rules": _selection_rules(config),
     }
     round_note = (
@@ -687,7 +700,7 @@ class SuggestionService:
         learning = build_learning_context(self._domain)
 
         # The model never sees the (huge) diarization turns, but the hash must change with the voice.
-        request_brief = {key: value for key, value in brief.items() if key != "confirmed_voice"}
+        request_brief = {key: value for key, value in brief.items() if key not in _BRIEF_PRIVATE_KEYS}
         prompt_sha256 = hashlib.sha256(prompt_template.encode()).hexdigest()
         input_hash = _sha256_json({
             "artifact_version": SUGGESTION_ARTIFACT_VERSION,

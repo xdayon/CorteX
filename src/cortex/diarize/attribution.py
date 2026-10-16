@@ -18,6 +18,8 @@ class ConfirmedVoice(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     diarization_artifact_id: str | None = None
+    source: str | None = None
+    threshold: float | None = None
     speaker: str = Field(min_length=1, max_length=100, pattern=r"\S")
     turns: list[VoiceTurn] = Field(min_length=1)
 

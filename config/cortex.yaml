@@ -87,3 +87,11 @@ ai:
   timeout_seconds: 900
   max_input_chars: 800000
   selection_max_envelope_seconds: 240.0
+
+# Reconhecimento rápido da voz do protagonista (embeddings WeSpeaker no ambiente
+# .venv-diarization) no lugar da diarização completa; usa data/voice/profile.json.
+voice:
+  match_enabled: true
+  default_threshold: 0.37
+  max_threads: 8
+  timeout_seconds: 1800

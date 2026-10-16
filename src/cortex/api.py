@@ -88,6 +88,11 @@ class EpisodeVoiceSelection(BaseModel):
     speaker: str
 
 
+class VoiceProfileCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    episode_id: str
+
+
 class EpisodeCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     url: str = Field(max_length=2048)
@@ -328,6 +333,41 @@ def create_app(config: CortexConfig | None = None):
             return library.detail(entry)
         except (ValueError, LookupError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def voice_profile_summary(profile):
+        if profile is None:
+            return {"exists": False}
+        return {
+            "exists": True, "created_at": profile.created_at, "threshold": profile.threshold,
+            "episode_id": profile.source.get("episode_id"), "speaker": profile.source.get("speaker"),
+            "seconds": profile.source.get("seconds"), "model_revision": profile.model_revision,
+        }
+
+    @app.get(f"{router_prefix}/voice/profile")
+    def get_voice_profile():
+        from cortex.diarize.voice_match import load_profile
+        try:
+            return voice_profile_summary(load_profile(settings))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=f"Perfil de voz ilegível: {exc}") from exc
+
+    @app.post(f"{router_prefix}/voice/profile")
+    def create_voice_profile(request: VoiceProfileCreate):
+        # Synchronous: embedding <= 80 short turns takes seconds with a warm audio cache,
+        # and the runner is bounded by its own timeout.
+        from cortex.diarize.voice_match import build_profile_from_episode, save_profile
+        try:
+            entry = library.get(request.episode_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        try:
+            profile = build_profile_from_episode(settings, domain, entry)
+        except LookupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ValueError, OSError, RuntimeError, TimeoutError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        save_profile(settings, profile)
+        return voice_profile_summary(profile)
 
     @app.get(f"{router_prefix}/episodes/{{episode_id}}")
     def get_episode(episode_id: str):

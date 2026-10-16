@@ -24,6 +24,7 @@ Não há runtime PodCLI, multicam ISO, servidor editorial alternativo ou cloud G
 | Avaliação | `eval/`, `scripts/eval_selection.py` | eval_runner |
 | Operação local | `scripts/studio.sh`, `install_local_service.py`, `update_and_verify.sh` | — |
 | Foco por rostos | `render/face_focus.py`, `analyze/face_detect.py` (YuNet), `analyze/frames.py`, `analyze/scene_*` | face_focus, face_detect, face_focus_render, scene_index |
+| Voz do protagonista | `diarize/voice_match.py` (perfil + rótulos D/O por voz, `voice.*`), `diarize/voice_runner.py` (torch, subprocesso), `diarize/service.py` (pyannote manual) | voice_match, speaker_attribution |
 
 Python paths são relativos a `src/cortex/`; testes em `tests/`. Mídia/SQLite/cache
 ficam em `data/` (fora do Git).

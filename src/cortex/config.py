@@ -134,6 +134,15 @@ class AiConfig(BaseModel):
     selection_max_envelope_seconds: float = Field(default=240.0, gt=0)
 
 
+class VoiceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    match_enabled: bool = True
+    default_threshold: float = Field(default=0.37, ge=-1.0, le=1.0)
+    max_threads: int = Field(default=8, ge=1, le=64)
+    timeout_seconds: int = Field(default=1800, ge=30, le=86400)
+
+
 class RemoteAccessConfig(BaseModel):
     """Remote use through Cloudflare Tunnel + Access. Identifiers live in the
     untracked .env (CORTEX__REMOTE_ACCESS__*), never in the public repo."""
@@ -167,6 +176,7 @@ class CortexConfig(BaseModel):
     ai: AiConfig = AiConfig()
     analysis: AnalysisConfig = AnalysisConfig()
     edit: EditConfig = EditConfig()
+    voice: VoiceConfig = VoiceConfig()
     remote_access: RemoteAccessConfig = RemoteAccessConfig()
 
     def ensure_runtime_dirs(self) -> None:
