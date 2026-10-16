@@ -226,3 +226,28 @@ class ClipPublication(BaseModel):
     notes: str = Field(default="", max_length=300)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ClipDecision(StrEnum):
+    APPROVED = "approved"
+    DISCARDED = "discarded"
+
+
+class ClipState(BaseModel):
+    """Manual state the user sets on one suggested clip of a workflow run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    project_id: str
+    workflow_run_id: str
+    clip_key: str = Field(min_length=1, max_length=200)
+    decision: ClipDecision | None = None
+    discard_reason: Literal[
+        "weak_hook", "off_topic", "repeated", "bad_edit", "technical", "other"
+    ] | None = None
+    saved: bool = False
+    saved_at: datetime | None = None
+    notes: str = Field(default="", max_length=300)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)

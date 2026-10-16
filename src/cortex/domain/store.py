@@ -9,6 +9,7 @@ from pathlib import Path
 from cortex.domain.models import (
     ClipPublication,
     ClipRevision,
+    ClipState,
     ExportBatch,
     ExportItem,
     Project,
@@ -245,6 +246,21 @@ class DomainStore:
                 )"""
             )
             connection.execute(
+                """CREATE TABLE IF NOT EXISTS clip_states (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    workflow_run_id TEXT NOT NULL,
+                    clip_key TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(workflow_run_id, clip_key)
+                )"""
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_clip_states_project ON clip_states(project_id)"
+            )
+            connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_workflow_runs_project_created
                    ON workflow_runs (project_id, created_at DESC)"""
             )
@@ -276,6 +292,7 @@ class DomainStore:
                 "2026-09-13-export-batches-v1",
                 "2026-09-13-indexed-artifact-cache-v1",
                 "2026-10-14-clip-publications-v1",
+                "2026-10-16-clip-states-v1",
             ):
                 connection.execute(
                     "INSERT OR IGNORE INTO schema_migrations(id, applied_at) VALUES (?, ?)",
@@ -848,3 +865,50 @@ class DomainStore:
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [ClipPublication.model_validate_json(row["data"]) for row in rows]
+
+    # -- Clip states ----------------------------------------------------
+
+    def upsert_clip_state(self, state: ClipState) -> ClipState:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, created_at FROM clip_states WHERE workflow_run_id = ? AND clip_key = ?",
+                (state.workflow_run_id, state.clip_key),
+            ).fetchone()
+            if row is None:
+                saved = state
+                connection.execute(
+                    """INSERT INTO clip_states
+                       (id, project_id, workflow_run_id, clip_key, data, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        saved.id, saved.project_id, saved.workflow_run_id, saved.clip_key,
+                        json.dumps(saved.model_dump(mode="json"), ensure_ascii=False),
+                        saved.created_at.isoformat(), saved.updated_at.isoformat(),
+                    ),
+                )
+                return saved
+            saved = state.model_copy(update={
+                "id": row["id"],
+                "created_at": datetime.fromisoformat(row["created_at"]),
+                "updated_at": utc_now(),
+            })
+            connection.execute(
+                "UPDATE clip_states SET data = ?, updated_at = ? WHERE id = ?",
+                (
+                    json.dumps(saved.model_dump(mode="json"), ensure_ascii=False),
+                    saved.updated_at.isoformat(), saved.id,
+                ),
+            )
+            return saved
+
+    def list_clip_states(self, project_ids: list[str]) -> list[ClipState]:
+        if not project_ids:
+            return []
+        placeholders = ",".join("?" for _ in project_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT data FROM clip_states WHERE project_id IN ({placeholders}) "
+                "ORDER BY updated_at DESC, id",
+                project_ids,
+            ).fetchall()
+        return [ClipState.model_validate_json(row["data"]) for row in rows]

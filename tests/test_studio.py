@@ -41,3 +41,16 @@ def test_missing_build_fails_explicitly_and_api_only_mode_still_works(tmp_path):
     client = ASGITestClient(create_app(studio_config(tmp_path, None)))
     assert client.get("/").status_code == 404
     assert client.get("/api/v1/health").status_code == 200
+
+
+def test_client_routes_fall_back_to_index_but_api_and_assets_stay_404(tmp_path):
+    build = tmp_path / "dist"
+    build.mkdir()
+    (build / "index.html").write_text("<html>CorteX Studio</html>")
+    client = ASGITestClient(create_app(studio_config(tmp_path, build)))
+    page = client.get("/episodios/abc")
+    assert page.status_code == 200 and "CorteX Studio" in page.text
+    api = client.get("/api/v1/nope")
+    assert api.status_code == 404 and "CorteX Studio" not in api.text
+    assert api.headers["content-type"].startswith("application/json")
+    assert client.get("/assets/missing.js").status_code == 404

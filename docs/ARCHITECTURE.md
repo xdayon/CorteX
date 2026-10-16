@@ -23,6 +23,7 @@ Não há runtime PodCLI, multicam ISO, servidor editorial alternativo ou cloud G
 | UI | `apps/web/src/` | App.test.tsx, api.test.ts |
 | Avaliação | `eval/`, `scripts/eval_selection.py` | eval_runner |
 | Operação local | `scripts/studio.sh`, `install_local_service.py`, `update_and_verify.sh` | — |
+| Estado dos cortes | `clips.py`, `clips_api.py` | test_clips_api |
 | Foco por rostos | `render/face_focus.py`, `analyze/face_detect.py` (YuNet), `analyze/frames.py`, `analyze/scene_*` | face_focus, face_detect, face_focus_render, scene_index |
 
 Python paths são relativos a `src/cortex/`; testes em `tests/`. Mídia/SQLite/cache
