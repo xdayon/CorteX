@@ -1,59 +1,58 @@
 # CorteX — estado atual para agentes
 
-Atualizado em 2026-10-14. Histórico anterior em
+Atualizado em 2026-10-16. Histórico anterior em
 [history](history/HANDOFF_FABLE_5-before-2026-09-10.md) — não é fila de instruções.
 
 ## Produto e restrições
 
 Editor pessoal de cortes virais para @dayon.news (Instagram Reels/TikTok) a partir de
 entrevistas em que Dayon é convidado: master único do YouTube ou arquivo local,
-processamento local, revisão humana, publicação manual. Estilo: corte seco e
-dinâmico, legenda animada ligada, manchete, rosto grande com o estúdio visível;
-sem barra de progresso no vídeo, capa nunca como 1º frame. Modelos, esforços,
-durações e caminhos ficam em `config/cortex.yaml` (fonte da verdade).
+processamento local, revisão humana, publicação manual. Uso principal no PC (celular só
+não pode quebrar). Fluxo do usuário: escolhe vários cortes bons → exporta → guarda no
+Drive → posta depois, marcando cada corte como salvo/postado/descartado. Estilo: corte
+seco e dinâmico, legenda animada, manchete, rosto grande com o estúdio visível; sem
+barra de progresso no vídeo, capa nunca como 1º frame. Modelos, esforços, durações e
+caminhos ficam em `config/cortex.yaml` (fonte da verdade).
 
 ## Pipeline atual
 
 ```text
 YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
-→ analisa áudio → seleção Claude (1 chamada/episódio, transcrição em cache)
-→ revisão humana → editor de exportação (refino Claude por corte, prévia draft)
-→ plano de edição determinístico (corte seco, muletas, peças) → render libass
-→ QA técnico (loudness, sync, faixas do Reels/TikTok) → MP4/SRT/manifest
+→ analisa áudio → voz do protagonista (perfil de voz, rótulos D/O por frase)
+→ seleção Claude (1 chamada/episódio, transcrição em cache) → Studio: cortes integrados
+→ editor de estúdio (refino Claude por corte, fila de prévias draft) → plano de edição
+→ render libass com quadros exatos por segmento → QA técnico → MP4/SRT/manifest
 ```
 
-## Entregue em 14/out (detalhes nas evidências)
+## Entregue em 16/out
 
-- IA: seleção v4, refino v2, provider robusto e cache estável —
-  [ai-selection-v4](evidence/2026-10-14-ai-selection-v4.md), [AI_PROVIDERS](AI_PROVIDERS.md).
-- Visual: estilos de legenda, destaque por palavra, flash/zoom nas junções, zoom e
-  foco no fundo desfocado, zoom alternado padrão, faixas seguras v2, API de prévia
-  (`overlay-preview`, `overlay-fonts`, `safe-zones`, `render-defaults`), render draft.
-- Studio: editor de exportação com prévia real (draft + JASSUB, idêntica ao export em
-  Chrome), revisão de legenda estilo CapCut, abas de estilo/enquadramento/manchete,
-  layout de 390 px; Remotion removido.
-- Correções: primeiro item do lote sem refino, cortes abaixo do mínimo, hash de
-  cache instável, fallback batched silencioso, script de atualização inseguro.
-- Host: NVENC indisponível (FFmpeg 8.1.3 × driver 580 da GTX 1060) →
-  `render.encoder: libx264`; [host-nvenc](evidence/2026-10-14-host-nvenc.md).
-  Render real de 61 s: 43 s com x264, QA aprovado.
+- Cortes integrados: `GET /episodes/{id}/clips`, `GET /clips`, `/clips/summary`,
+  `PATCH /clip-states` (aprovado, descartado com motivo, salvo); exports e publicação
+  ligados ao corte; capa JPG dos exports (`/renders/{id}/poster`).
+- Studio novo (`apps/web/src`): design system, rotas reais com fallback SPA, episódios,
+  página do episódio em dois painéis com player instantâneo dos trechos na fonte,
+  quadro "Cortes", editor de estúdio (linha do tempo, ajustes por corte via
+  `clip_settings`, fila de prévias, seleções de várias rodadas, atalhos).
+- Voz do protagonista em ~3 min por episódio no lugar da diarização de ~1× a duração
+  ([voice-match](evidence/2026-10-16-voice-match.md)).
+- Render: deriva A/V em cortes com muitas junções corrigida, cache com
+  `timeline_version: 2` ([av-sync](evidence/2026-10-16-av-sync-drift.md)); drafts mais
+  rápidos e timings por etapa ([draft-speed](evidence/2026-10-16-draft-speed.md)).
+- Entregas de 14/out (IA v4/v5, visual, prévia JASSUB, NVENC → x264) seguem válidas.
 
-## Em andamento / próximo gate
+## Próximo gate
 
-1. Fase 2 do [ROADMAP](ROADMAP.md): foco por rosto entregue e modos congelados
-   (`speaker_auto`, `speaker_face`, `face_static_crop`, planos de câmera, reações,
-   identidade) removidos; valores de enum e campos antigos seguem legíveis no SQLite
-   e o render recusa os modos antigos. Falta decidir com o usuário entre consertar ou
-   remover a diarização.
-2. Acesso remoto (`cortex.synapses.academy`): código, guarda JWT na origem, script e
-   `cloudflared` prontos; faltam os passos do usuário no painel e
+1. Usuário: `./scripts/update_and_verify.sh` (instala as fontes novas do Studio, testa,
+   compila e reinicia com segurança) e cadastro único do perfil de voz a partir do
+   episódio confirmado `wk7PY31TQBc` (`POST /api/v1/voice/profile`, ~95 s).
+2. Botão no Studio para cadastrar/refazer o perfil de voz; Drive automático (rclone)
+   se o usuário pedir; QA mais barato e prévia progressiva nos drafts.
+3. Acesso remoto (`cortex.synapses.academy`): faltam os passos do usuário no painel e
    `scripts/setup_remote_access.py` — [guia](LOCAL_AND_CLOUDFLARE.md).
 
 ## Congelado (não evoluir)
 
-Diarização pyannote (opcional, CPU): ambiente verificado em 14/out (pyannote 4.0.6 +
-torch CPU respondem); as 6 falhas de 12/set foram antes da correção do interpretador
-do venv. Custa ~a duração do episódio em CPU. Mantida até a decisão do usuário.
+Diarização pyannote completa: só manual, para confirmar a voz de um episódio novo.
 (Análise de câmera/identidade/falante e reações emprestadas já foram removidas.)
 
 ## Operação
@@ -61,8 +60,10 @@ do venv. Custa ~a duração do episódio em CPU. Mantida até a decisão do usu�
 - `systemctl --user restart cortex.service` só sem job ativo; agentes pedem ao
   usuário. `./scripts/update_and_verify.sh` faz deps, Claude CLI, testes, build e
   reinício seguro.
-- Validação real sem tocar o banco: copiar `data/cortex.sqlite3` para o scratchpad e
-  sobrescrever `paths.database`/`paths.projects_dir` (ver scripts em evidências).
+- Validação real sem tocar os dados: clone CoW `cp -a --reflink=always data <dir>/data`
+  (btrfs, instantâneo) e API/worker com `CORTEX__PATHS__*` apontando para o clone,
+  `CORTEX_CONFIG=<repo>/config/cortex.yaml` (sem isso valem os padrões do código, com
+  NVENC) e o processo rodando em `<dir>` (caminhos de artefato são relativos).
 - Máquina: Dell G7, GTX 1060 Max-Q 6 GB, driver 580 (último para Pascal).
 
 ## Verificação

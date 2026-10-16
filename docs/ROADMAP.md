@@ -1,6 +1,6 @@
 # CorteX — contrato de entrega
 
-Atualizado em 2026-10-14 (auditoria completa). Objetivo: o melhor editor pessoal de
+Atualizado em 2026-10-16 (Studio integrado). Objetivo: o melhor editor pessoal de
 cortes virais para @dayon.news — master único, processamento local, revisão humana
 e publicação manual. Itens entregues antes de 14/out estão em
 [history](history/ROADMAP-before-2026-09-10.md) e no git log.
@@ -40,7 +40,9 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   Validado com rostos reais ([evidência](evidence/2026-10-14-studio-editor-and-framing.md)).
 - [x] Modos congelados apagados (planos de câmera, reações emprestadas, identidade,
   `speaker_auto`/`speaker_face`/`face_static_crop`); dados antigos seguem legíveis.
-- [ ] Decidir sobre a diarização (hoje 6 falhas em 7).
+- [x] Diarização substituída pelo reconhecimento da voz do protagonista (perfil de voz +
+  embeddings por frase, ~3 min por episódio de 2h45, 97,6 % retido); pyannote só manual
+  ([evidência](evidence/2026-10-16-voice-match.md)).
 - [x] Teaser de abertura opcional (`transitions.teaser`, IA escolhe 1,2–4,5 s dentro do
   corte; entrada separada no render; validado em vídeo real com flash na virada).
 - [ ] Capa JPG separada opcional (frame escolhido + manchete); nunca no 1º frame.
@@ -56,6 +58,22 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   `scripts/setup_remote_access.py`, serviço `cortex-tunnel`, `cloudflared` instalado.
 - [x] Mensagem clara na UI para upload acima de 100 MB pelo túnel (antes de enviar).
 - [ ] Ativar no painel (Access app → túnel → rota) e testar do iPhone.
+
+## Fase 4 — Studio integrado (entregue em 16/out)
+
+- [x] Cortes integrados por episódio: sugestões de todas as seleções + exports + publicação
+  e estado manual (aprovado, descartado com motivo, salvo); quadro global "Cortes".
+- [x] Studio novo: design system, rotas reais, episódios com status, tarefas em segundo
+  plano, player instantâneo dos trechos na fonte, ações em lote e atalhos.
+- [x] Editor de estúdio: linha do tempo (trechos, junções, legenda, manchete), ajustes por
+  corte (`clip_settings`), fila de prévias em segundo plano, seleções de várias rodadas.
+- [x] Correção da deriva A/V em cortes com muitas junções
+  ([evidência](evidence/2026-10-16-av-sync-drift.md)); drafts mais rápidos
+  ([evidência](evidence/2026-10-16-draft-speed.md)).
+- [ ] Usuário: reiniciar o serviço e cadastrar o perfil de voz (`POST /voice/profile`).
+- [ ] Botão no Studio para cadastrar/refazer o perfil de voz.
+- [ ] Salvar no Drive automaticamente (rclone com remoto do Google Drive) — opcional.
+- [ ] QA mais barato nos drafts (~4 s por prévia) e prévia progressiva enquanto renderiza.
 
 ## Regras de aceite
 
