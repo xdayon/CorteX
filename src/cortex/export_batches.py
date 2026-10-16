@@ -23,7 +23,8 @@ def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> 
     """The one edit-plan payload for export items (first item, next items and
     retries alike), so every exported clip gets the same refine/duration rules."""
     teaser = item.clip.get("teaser")
-    teaser_on = bool(((revision.render_settings or {}).get("transitions") or {}).get("teaser"))
+    settings = item.render_settings or revision.render_settings or {}
+    teaser_on = bool((settings.get("transitions") or {}).get("teaser"))
     return {
         "transcript_artifact_id": run.artifacts["transcript"],
         "analysis_artifact_id": run.artifacts["analysis"],
