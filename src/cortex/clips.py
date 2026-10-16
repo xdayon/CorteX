@@ -176,7 +176,7 @@ def _publication_for(
 def _run_summary(run, clip_count: int) -> dict[str, Any]:
     brief = run.brief or {}
     return {
-        "id": run.id, "project_id": run.project_id,
+        "id": run.id, "project_id": run.project_id, "source_asset_id": run.source_asset_id,
         "created_at": run.created_at.isoformat(), "status": str(run.status.value),
         "clip_count": clip_count,
         "brief": {
@@ -195,6 +195,7 @@ def _clip_row(
     score = scores.get("total", clip.get("score"))
     return {
         "project_id": run.project_id, "run_id": run.id,
+        "source_asset_id": run.source_asset_id,
         "run_created_at": run.created_at.isoformat(), "clip_key": key,
         "rank": clip.get("rank"), "score": score, "headline": clip.get("headline"),
         "headline_options": clip.get("headline_options") or [], "title": clip.get("title"),

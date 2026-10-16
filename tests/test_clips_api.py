@@ -113,6 +113,8 @@ def test_episode_clips_integrates_exports_publication_and_state(tmp_path: Path) 
     assert first["exports"][0]["media_url"] == f"{P}/projects/{project.id}/renders/{export.id}/media"
     assert first["exports"][0]["headline"] == "Manchete"
     assert first["publication"]["published"] is True
+    assert first["source_asset_id"] == run.source_asset_id
+    assert body["runs"][0]["source_asset_id"] == run.source_asset_id
     assert body["runs"][0]["clip_count"] == 3 and body["runs"][0]["brief"]["count"] == 3
     assert [e["render_artifact_id"] for e in body["other_exports"]] == [loose.id]
     assert draft.id not in json.dumps(body)

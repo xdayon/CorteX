@@ -248,3 +248,54 @@ def test_render_subtitles_are_served_only_from_project_render_directory(tmp_path
     with pytest.raises(HTTPException) as exc_info:
         _subtitles_endpoint(app)(project.id, artifact.id)
     assert exc_info.value.status_code == 410
+
+
+def _poster_endpoint(app: FastAPI) -> Any:
+    route = next(
+        route
+        for route in app.routes
+        if route.path == "/api/v1/projects/{project_id}/renders/{artifact_id}/poster"
+    )
+    return route.endpoint
+
+
+def test_render_poster_is_extracted_once_and_cached_next_to_the_video(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg indisponível")
+    config = _config(tmp_path)
+    app = create_app(config)
+    domain = app.state.domain
+    project = domain.create_project("Poster")
+    render_dir = config.paths.projects_dir / project.id / "renders"
+    render_dir.mkdir(parents=True)
+    media_path = render_dir / "result.mp4"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "testsrc=size=180x320:rate=30:duration=2", "-pix_fmt", "yuv420p",
+         str(media_path)],
+        check=True,
+    )
+    manifest_path = render_dir / "result.json"
+    manifest_path.write_text(_document(project.id, media_path).model_dump_json(), encoding="utf-8")
+    artifact = domain.create_stage_artifact(StageArtifact(
+        project_id=project.id, stage="render", path=str(manifest_path), input_hash="poster",
+    ))
+    endpoint = _poster_endpoint(app)
+
+    response = endpoint(project.id, artifact.id)
+    poster = Path(response.path)
+    assert response.media_type == "image/jpeg"
+    assert poster == render_dir / "result.poster.jpg"
+    assert poster.read_bytes()[:2] == b"\xff\xd8"
+    first_mtime = poster.stat().st_mtime_ns
+
+    endpoint(project.id, artifact.id)
+    assert poster.stat().st_mtime_ns == first_mtime
+    assert not list(render_dir.glob(".*.tmp.jpg"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        endpoint(domain.create_project("Other").id, artifact.id)
+    assert exc_info.value.status_code == 404

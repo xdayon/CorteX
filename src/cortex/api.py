@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -865,8 +866,7 @@ def create_app(config: CortexConfig | None = None):
             raise HTTPException(status_code=410, detail="Manifesto do render não está disponível")
         return {"artifact": artifact, "document": json.loads(path.read_text(encoding="utf-8"))}
 
-    @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/media")
-    def get_render_media(project_id: str, artifact_id: str):
+    def render_document(project_id: str, artifact_id: str):
         try:
             artifact = domain.get_stage_artifact(artifact_id)
         except StageArtifactNotFoundError as exc:
@@ -888,7 +888,10 @@ def create_app(config: CortexConfig | None = None):
             ) from exc
         if document.project_id != project_id:
             raise HTTPException(status_code=404, detail="Render não encontrado")
+        return artifact, document, render_root
 
+    def render_media_path(project_id: str, artifact_id: str):
+        artifact, document, render_root = render_document(project_id, artifact_id)
         media_path = Path(document.output_path).resolve()
         if (
             not media_path.is_relative_to(render_root)
@@ -896,10 +899,39 @@ def create_app(config: CortexConfig | None = None):
             or not media_path.is_file()
         ):
             raise HTTPException(status_code=410, detail="Arquivo do render não está disponível")
+        return artifact, media_path
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/media")
+    def get_render_media(project_id: str, artifact_id: str):
+        artifact, media_path = render_media_path(project_id, artifact_id)
         return FileResponse(
             media_path,
             media_type="video/mp4",
             filename=f"cortex-render-{artifact.id[:12]}.mp4",
+        )
+
+    @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/poster")
+    def get_render_poster(project_id: str, artifact_id: str):
+        """Small JPEG of the exported video at 1 s, cached next to it, for lists."""
+        _, media_path = render_media_path(project_id, artifact_id)
+        poster = media_path.with_suffix(".poster.jpg")
+        if not poster.is_file() or poster.stat().st_mtime < media_path.stat().st_mtime:
+            temporary = poster.with_name(f".{poster.name}.{uuid4().hex}.tmp.jpg")
+            try:
+                subprocess.run(
+                    [settings.render.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                     "-ss", "1", "-i", str(media_path), "-frames:v", "1",
+                     "-vf", "scale=360:-2", "-q:v", "4", str(temporary)],
+                    check=True, capture_output=True, timeout=20,
+                )
+                temporary.replace(poster)
+            except (OSError, subprocess.SubprocessError) as exc:
+                temporary.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=503, detail="Não foi possível gerar a capa do vídeo"
+                ) from exc
+        return FileResponse(
+            poster, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"},
         )
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/report")
@@ -932,27 +964,7 @@ def create_app(config: CortexConfig | None = None):
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/subtitles")
     def get_render_subtitles(project_id: str, artifact_id: str):
-        try:
-            artifact = domain.get_stage_artifact(artifact_id)
-        except StageArtifactNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Render não encontrado") from exc
-        if artifact.project_id != project_id or artifact.stage != "render":
-            raise HTTPException(status_code=404, detail="Render não encontrado")
-
-        render_root = renders_dir(settings, project_id).resolve()
-        manifest_path = Path(artifact.path).resolve()
-        if not manifest_path.is_relative_to(render_root) or not manifest_path.is_file():
-            raise HTTPException(status_code=410, detail="Manifesto do render não está disponível")
-        try:
-            document = RenderDocument.model_validate_json(
-                manifest_path.read_text(encoding="utf-8")
-            )
-        except (OSError, UnicodeDecodeError, ValidationError) as exc:
-            raise HTTPException(
-                status_code=410, detail="Manifesto do render não está disponível"
-            ) from exc
-        if document.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Render não encontrado")
+        artifact, document, render_root = render_document(project_id, artifact_id)
         if document.subtitles_path is None:
             raise HTTPException(status_code=404, detail="Render não possui sidecar SRT")
         subtitles_path = Path(document.subtitles_path).resolve()
