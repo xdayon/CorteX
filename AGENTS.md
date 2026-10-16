@@ -93,6 +93,9 @@
   and config changes need a restart. Restart only when no job is queued or
   running; `scripts/update_and_verify.sh` checks that and refuses otherwise.
 - Agents must not restart the service themselves; ask the user.
+- The service serves `apps/web/dist` live: agents never run `npm run build` into it
+  (an open Studio breaks on missing chunks). Verify builds with
+  `npx vite build --outDir <scratch> --emptyOutDir`; `update_and_verify.sh` rebuilds dist.
 
 ## Verification
 

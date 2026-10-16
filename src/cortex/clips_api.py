@@ -5,12 +5,16 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from cortex.clips import CLIP_STATUSES, clip_key, collect_clips, suggested_clips
 from cortex.domain.models import ClipDecision, ClipState
-from cortex.domain.store import DomainStore, WorkflowRunNotFoundError
+from cortex.config import CortexConfig
+from cortex.domain.store import DomainStore, SourceAssetNotFoundError, WorkflowRunNotFoundError
 from cortex.library import EpisodeLibrary
+from cortex.paths import cache_dir, source_dir
+from cortex.render.quick_preview import QuickPreviewError, build_quick_preview
 from cortex.schemas import utc_now
 
 
@@ -66,7 +70,10 @@ def _apply_patch(current: ClipState, patch: ClipStatePatch) -> ClipState:
     return current.model_copy(update=changes)
 
 
-def create_clips_router(prefix: str, domain: DomainStore, library: EpisodeLibrary) -> APIRouter:
+def create_clips_router(
+    prefix: str, domain: DomainStore, library: EpisodeLibrary,
+    config: CortexConfig | None = None,
+) -> APIRouter:
     router = APIRouter(prefix=prefix)
 
     def all_clips(include_archived: bool) -> list[dict[str, Any]]:
@@ -134,5 +141,45 @@ def create_clips_router(prefix: str, domain: DomainStore, library: EpisodeLibrar
         if run.project_id != patch.project_id:
             raise HTTPException(status_code=404, detail="Execução não encontrada")
         return {clip_key(clip) for clip in suggested_clips(domain, run, [])}
+
+    def _clip_pieces(clip: dict[str, Any]) -> list[tuple[float, float]]:
+        pieces = clip.get("pieces") or []
+        try:
+            if pieces:
+                return [(float(piece["start"]), float(piece["end"])) for piece in pieces]
+            return [(float(clip["start_second"]), float(clip["end_second"]))]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="Trechos do corte inválidos") from exc
+
+    @router.get("/projects/{project_id}/runs/{run_id}/quick-preview")
+    def quick_preview(project_id: str, run_id: str, clip_key_param: str = Query(alias="clip_key", min_length=1, max_length=200)):
+        if config is None:
+            raise HTTPException(status_code=503, detail="Prévia rápida indisponível")
+        try:
+            run = domain.get_workflow_run(run_id)
+        except WorkflowRunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Execução não encontrada") from exc
+        if run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Execução não encontrada")
+        clip = next((c for c in suggested_clips(domain, run, []) if clip_key(c) == clip_key_param), None)
+        if clip is None:
+            raise HTTPException(status_code=404, detail="Corte não existe nesta execução")
+        try:
+            asset = domain.get_source_asset(run.source_asset_id)
+        except SourceAssetNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Fonte não encontrada") from exc
+        root = source_dir(config, project_id).resolve()
+        source_path = (config.paths.data_dir / asset.stored_path).resolve()
+        if asset.project_id != project_id or not source_path.is_relative_to(root) \
+                or not source_path.is_file():
+            raise HTTPException(status_code=410, detail="Arquivo da fonte não está disponível")
+        try:
+            path = build_quick_preview(
+                config, source_path, asset.sha256, _clip_pieces(clip),
+                cache_dir(config, project_id) / "quick-previews",
+            )
+        except QuickPreviewError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return FileResponse(path, media_type="video/mp4")
 
     return router

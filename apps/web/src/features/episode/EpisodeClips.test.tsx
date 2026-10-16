@@ -38,6 +38,7 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/episodios/ep");
   vi.mocked(api.publications).mockResolvedValue([]);
   vi.mocked(api.patchClipStates).mockResolvedValue({ items: [] });
+  vi.mocked(api.warmQuickPreview).mockResolvedValue(undefined);
   Object.defineProperty(HTMLMediaElement.prototype, "play", { configurable: true, value: play });
   Object.defineProperty(HTMLMediaElement.prototype, "pause", { configurable: true, value: vi.fn() });
   play.mockClear();

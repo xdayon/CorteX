@@ -43,6 +43,7 @@ beforeEach(() => {
   vi.mocked(api.episodes).mockResolvedValue([entry([run()])]);
   vi.mocked(api.episodeClips).mockResolvedValue(episodeClips(rows));
   vi.mocked(api.publications).mockResolvedValue([]);
+  vi.mocked(api.warmQuickPreview).mockResolvedValue(undefined);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -116,10 +117,12 @@ test("a deep link opens that clip; an exported clip plays the export with a post
   expect(video.getAttribute("src")).toContain("/renders/r1/media");
   expect(screen.getByRole("link", { name: "Baixar MP4" })).toBeTruthy();
   fireEvent.click(screen.getByRole("radio", { name: "Original" }));
-  expect((screen.getByLabelText("Prévia do corte original") as HTMLVideoElement).getAttribute("src")).toBe("/api/v1/projects/project/sources/src/media");
+  await settle();
+  expect((screen.getByLabelText("Prévia rápida vertical") as HTMLVideoElement).getAttribute("src")).toBe(`/api/v1/projects/project/runs/run/quick-preview?clip_key=${encodeURIComponent(KEY(2).replace("run~", ""))}`);
   fireEvent.click(screen.getByRole("button", { name: /Manchete 1/ }));
   expect(screen.queryByRole("radiogroup", { name: "Versão do vídeo" })).toBeNull();
-  expect(screen.getByLabelText("Prévia do corte original")).toBeTruthy();
+  await settle();
+  expect(screen.getByLabelText("Prévia rápida vertical")).toBeTruthy();
 });
 
 test("generating a new selection prefills the options from the last run and reuses the stored source", async () => {

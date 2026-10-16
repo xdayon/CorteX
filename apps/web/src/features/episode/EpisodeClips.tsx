@@ -11,6 +11,7 @@ import { OldExports } from "./OldExports";
 import type { PlayerHandle } from "./SourcePiecesPlayer";
 import { useClipShortcuts } from "./useClipShortcuts";
 import { useEpisodeClips } from "./useEpisodeClips";
+import { useQuickPreviewWarmup } from "./useQuickPreviewWarmup";
 import { useSearchParams } from "../../router";
 
 type StatusFilter = "all" | ClipStatus;
@@ -61,6 +62,7 @@ export function EpisodeClips({ episodeId, refreshKey }: { episodeId: string; ref
   const topScore = useMemo(() => topScores(rows), [rows]);
   const activeId = visible.some(row => rowId(row) === clipParam) ? clipParam : visible[0] ? rowId(visible[0]) : "";
   const active = visible.find(row => rowId(row) === activeId);
+  useQuickPreviewWarmup(visible, activeId);
   const selectedRows = rows.filter(row => selected.includes(rowId(row)));
   useEffect(() => setSelected(current => current.filter(id => rows.some(row => rowId(row) === id))), [rows]);
 

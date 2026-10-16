@@ -377,6 +377,19 @@ export const api = {
   patchClipStates: (items: ClipStatePatch[]) => request<{items: ClipState[]}>("/api/v1/clip-states", {method: "PATCH", body: JSON.stringify({items})}),
   posterUrl: (projectId: string, artifactId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/renders/${encodeURIComponent(artifactId)}/poster`,
   sourceMediaUrl: (projectId: string, sourceAssetId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/media`,
+  quickPreviewUrl: (projectId: string, runId: string, clipKey: string) =>
+    `/api/v1/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}/quick-preview?clip_key=${encodeURIComponent(clipKey)}`,
+  /** Asks the server to render (or reuse) a quick preview without downloading it. */
+  warmQuickPreview: async (url: string, signal?: AbortSignal): Promise<void> => {
+    const response = await fetch(url, { headers: { Range: "bytes=0-0" }, signal });
+    if (response.ok) return;
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch { /* corpo não-JSON: mantém status */ }
+    throw new Error(detail);
+  },
   cancelJob: (jobId: string) => request<ApiJob>(`/api/v1/jobs/${jobId}/cancel`, {method:"POST"}),
   job: (jobId: string, signal?: AbortSignal) => request<ApiJob>(`/api/v1/jobs/${jobId}`, {signal}),
   createProject: (name: string) =>

@@ -1,5 +1,5 @@
 import { forwardRef, useState } from "react";
-import { api, type ClipRow, type DiscardReason } from "../../api";
+import { type ClipRow, type DiscardReason } from "../../api";
 import { formatClock } from "../../app/humanize";
 import { clipDuration } from "../../editor/clips";
 import { Button, buttonClass, Chip } from "../../ui";
@@ -7,7 +7,8 @@ import { DiscardMenu } from "../clips/DiscardMenu";
 import { SavedToggle } from "../clips/SavedToggle";
 import { headlineOf, newestExport, REASON_LABELS, shortDate, STATUS_LABELS, STATUS_TONES } from "../clips/clipModel";
 import { ExportPlayer } from "./ExportPlayer";
-import { SourcePiecesPlayer, type PlayerHandle } from "./SourcePiecesPlayer";
+import { QuickPreviewPlayer } from "./QuickPreviewPlayer";
+import type { PlayerHandle } from "./SourcePiecesPlayer";
 
 type Handlers = {
   onApprove: () => void; onDiscard: (reason: DiscardReason) => void; onEdit: () => void;
@@ -15,11 +16,6 @@ type Handlers = {
 };
 
 const jump = (seconds: number) => `junção · pula ${seconds.toFixed(1).replace(".", ",")} s`;
-
-export function piecesOf(row: ClipRow) {
-  const pieces = (row.clip.pieces ?? []).map(piece => ({ start: piece.start, end: piece.end }));
-  return pieces.length ? pieces : [{ start: row.start_second, end: row.end_second }];
-}
 
 export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; topScore: boolean; discardRef: React.Ref<{ open: () => void }> } & Handlers>(function ClipDetail({ row, topScore, discardRef, ...on }, player) {
   const latest = newestExport(row);
@@ -40,7 +36,7 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; topScore: boo
       </div>}
       {showExport
         ? <ExportPlayer ref={player} projectId={row.project_id} item={latest} />
-        : <SourcePiecesPlayer ref={player} src={api.sourceMediaUrl(row.project_id, row.source_asset_id)} pieces={piecesOf(row)} />}
+        : <QuickPreviewPlayer ref={player} row={row} />}
     </div>
     <div className="cd-side">
       <h2 className="cd-title">{headlineOf(row)}</h2>
