@@ -11,10 +11,17 @@ from urllib.request import urlopen
 
 def open_app_window(url: str) -> None:
     """Own app window in Google Chrome (decodes every source codec); else the default browser."""
+    # A dedicated profile is a separate Chrome process, so --app is always honored even
+    # when the user's normal Chrome is open (it would otherwise just get a blank tab).
+    app_args = [f"--app={url}", "--class=CorteX", "--no-first-run", "--no-default-browser-check"]
     candidates = []
     if subprocess.run(["flatpak", "info", "com.google.Chrome"], capture_output=True).returncode == 0:
-        candidates.append(["flatpak", "run", "com.google.Chrome", f"--app={url}"])
-    candidates += [[name, f"--app={url}"] for name in ("google-chrome", "google-chrome-stable")]
+        profile = Path.home() / ".var/app/com.google.Chrome/cortex-app"
+        candidates.append(["flatpak", "run", "com.google.Chrome",
+                           f"--user-data-dir={profile}", *app_args])
+    profile = Path.home() / ".config/cortex/chrome-app"
+    candidates += [[name, f"--user-data-dir={profile}", *app_args]
+                   for name in ("google-chrome", "google-chrome-stable")]
     for command in candidates:
         try:
             subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

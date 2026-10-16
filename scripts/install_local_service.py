@@ -89,7 +89,8 @@ Type=Application
 Name=CorteX
 Comment=Editor de cortes Dayon News
 Exec={desktop_quote(root / '.venv/bin/python')} {desktop_quote(root / 'scripts/open_studio.py')}
-Icon=cortex
+Icon={icon}
+StartupWMClass=CorteX
 Terminal=false
 Categories=AudioVideo;Video;
 """)
