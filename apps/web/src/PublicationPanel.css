@@ -1,0 +1,18 @@
+.pub-panel { margin-top: 10px; font-size: 13px; }
+.pub-panel summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; cursor: pointer; color: var(--tx2); }
+.pub-badges { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.pub-badge { padding: 2px 8px; border-radius: 999px; background: var(--s3); color: var(--tx2); font-size: 12px; font-weight: 500; }
+.pub-badge.on { background: var(--oks); color: var(--ok); }
+.pub-badge.rating-1 { color: var(--ok); }
+.pub-badge.rating-0 { color: var(--warn); }
+.pub-badge.rating--1 { color: var(--bad); }
+.pub-panel form { display: grid; gap: 12px; margin-top: 12px; }
+.pub-row { display: flex; flex-wrap: wrap; gap: 16px; }
+.pub-check { display: flex; align-items: center; gap: 8px; min-height: var(--h-sm); }
+.pub-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--tx2); font-size: 12px; font-weight: 500; }
+.pub-field input, .pub-field select, .pub-field textarea { width: 100%; height: var(--h-ctl); padding: 0 10px; border-radius: var(--r-ctl); border: 1px solid var(--line2); background: var(--s1); color: var(--tx); font-size: 13px; font-weight: 400; }
+.pub-field textarea { height: auto; padding: 9px 10px; resize: vertical; }
+.pub-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.pub-errors { margin: 0; padding-left: 18px; color: var(--bad); font-size: 12px; }
+.pub-status { margin: 0; color: var(--ok); font-size: 12px; }
+.pub-actions { display: flex; flex-wrap: wrap; gap: 10px; }

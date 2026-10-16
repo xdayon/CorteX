@@ -16,7 +16,7 @@ export function HeadlineTab({ clip, settings, update, headline, onHeadline, disa
     <h3>Manchete deste corte</h3>
     <Toggle checked={h.enabled} onChange={enabled => patch({ enabled })} label="Mostrar manchete"/>
     <div className="chip-row" role="group" aria-label="Sugestões da IA">
-      {options.map((option, index) => <button key={option} type="button" className={`chip ${current === option ? "selected" : ""}`}
+      {options.map((option, index) => <button key={option} type="button" className={`opt-chip ${current === option ? "selected" : ""}`}
         aria-pressed={current === option} onClick={() => onHeadline(option === aiHeadline ? null : option)}>
         {index === 0 && <small>Recomendada</small>}{option}</button>)}
     </div>

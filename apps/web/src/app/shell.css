@@ -1,0 +1,20 @@
+.shell { min-height: 100vh; display: flex; flex-direction: column; }
+.top { position: sticky; top: 0; z-index: 30; height: 52px; flex: none; display: flex; align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--s1); }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--tx); font-weight: 600; letter-spacing: -.01em; text-decoration: none; }
+.logo { width: 26px; height: 26px; border-radius: 7px; background: var(--ac); color: var(--ink); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.nav { display: flex; gap: 2px; }
+.nav a { display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 7px; color: var(--tx2); text-decoration: none; font-size: 13px; font-weight: 500; }
+.nav a:hover { color: var(--tx); background: var(--s2); }
+.nav a.on { color: var(--tx); background: var(--s3); }
+.activity { display: inline-flex; align-items: center; gap: 10px; height: 32px; padding: 0 12px 0 10px; border-radius: 999px; border: 1px solid var(--line2); background: var(--s2); color: var(--tx2); font-size: 12px; white-space: nowrap; cursor: pointer; }
+.activity:hover { background: var(--s3); color: var(--tx); }
+.ring { width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(var(--ac) 0 var(--p, 0%), var(--s4) var(--p, 0%) 100%); flex: none; }
+.activity-idle { color: var(--tx3); font-size: 12px; }
+.activity-item { display: flex; justify-content: space-between; gap: 16px; padding: 6px 10px; font-size: 13px; }
+.activity-item b { font-weight: 500; }
+.page { flex: 1; min-width: 0; }
+@media (max-width: 480px) {
+  .brand-name { display: none; }
+  .top { gap: 8px; padding: 0 12px; }
+}
+.stub { max-width: 720px; margin: 64px auto; padding: 0 16px; }

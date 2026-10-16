@@ -328,6 +328,7 @@ export const api = {
   archiveEpisode: (id: string, archived: boolean) => request<EpisodeEntry>(`/api/v1/episodes/${id}`, {method:'PATCH', body:JSON.stringify({archived})}),
   registerEpisode: (url: string, participant_count?: number) => request<EpisodeEntry>("/api/v1/episodes", {method:"POST", body:JSON.stringify({url, participant_count})}),
   downloadEpisode: (id: string) => request<{source: SourceAsset | null; job: ApiJob | null; cached: boolean}>(`/api/v1/episodes/${id}/download`, {method:"POST"}),
+  jobs: (limit = 20, signal?: AbortSignal) => request<ApiJob[]>(`/api/v1/jobs?limit=${limit}`, {signal}),
   cancelJob: (jobId: string) => request<ApiJob>(`/api/v1/jobs/${jobId}/cancel`, {method:"POST"}),
   job: (jobId: string, signal?: AbortSignal) => request<ApiJob>(`/api/v1/jobs/${jobId}`, {signal}),
   createProject: (name: string) =>

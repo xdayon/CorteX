@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, type EpisodeEntry } from "./api";
 
 type Turn = {start:number;end:number;speaker:string};
-export function VoiceSelector({entry, disabled}: {entry:EpisodeEntry;disabled:boolean}) {
+export function VoiceSelector({entry, disabled, autoOpen=false}: {entry:EpisodeEntry;disabled:boolean;autoOpen?:boolean}) {
   const [turns,setTurns] = useState<Turn[]>([]);
   const [error,setError] = useState("");
   const [selected,setSelected] = useState(entry.subject_reference?.speaker || "");
@@ -14,6 +14,7 @@ export function VoiceSelector({entry, disabled}: {entry:EpisodeEntry;disabled:bo
   const [createdArtifact,setCreatedArtifact] = useState<string|null>(null);
   const signal=useRef<AbortController|null>(null);
   useEffect(()=>()=>signal.current?.abort(),[]);
+  useEffect(()=>{if(autoOpen&&!entry.diarizations?.[0]&&!checked.current) void check();},[]);
   const artifact = createdArtifact ? {id:createdArtifact} : entry.diarizations?.[0];
   async function check() {
     checked.current=true;setChecking(true);setStatus(null);setError("");
@@ -43,7 +44,7 @@ export function VoiceSelector({entry, disabled}: {entry:EpisodeEntry;disabled:bo
     catch(reason) { setError(String(reason)); }
   }
   const samples = [...new Set(turns.map(t => t.speaker))].map(speaker => turns.filter(t => t.speaker===speaker && !turns.some(other => other.speaker!==speaker && Math.min(other.end,t.end)>Math.max(other.start,t.start))).sort((a,b)=>(b.end-b.start)-(a.end-a.start))[0]).filter((t):t is Turn=>!!t);
-  return <details onToggle={event=>{if(event.currentTarget.open&&!artifact&&!checked.current) void check();}}><summary>Identificar a voz do Dayon{selected ? " · confirmada" : ""}</summary>
+  return <details className="voice" open={autoOpen||undefined} onToggle={event=>{if(event.currentTarget.open&&!artifact&&!checked.current) void check();}}><summary>Identificar a voz do Dayon{selected ? " · confirmada" : ""}</summary>
     <p>Separe as vozes em CPU uma vez e ouça as amostras. A escolha vale para este episódio.</p>
     {!artifact ? <button className="btn secondary" disabled={disabled || working || checking || !status?.ready || !entry.source} onClick={() => void analyze()}>Separar vozes em CPU</button> : <button className="btn secondary" onClick={() => void load()}>Ouvir vozes detectadas</button>}
     {!artifact && <><p>{checking ? "Verificando disponibilidade…" : status?.ready ? "Ambiente CPU e credencial encontrados. O acesso aos pesos será verificado ao iniciar." : "A identificação de voz ainda precisa ser habilitada."}</p>

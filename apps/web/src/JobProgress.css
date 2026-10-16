@@ -1,0 +1,11 @@
+.job-details { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; line-height: 1.5; }
+.job-details dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+.job-details dt { color: var(--tx3); }
+.job-details dd { margin: 0; overflow-wrap: anywhere; }
+.job-events { margin: 0; padding-left: 18px; max-height: 160px; overflow: auto; }
+.job-details small { color: var(--tx3); font-size: 12px; }
+.job-progress { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: var(--r-card); border: 1px solid var(--line); background: var(--s1); }
+.job-head { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.job-head b { font-weight: 500; }
+.job-status { color: var(--tx2); font-size: 12px; }
+.job-progress summary { cursor: pointer; color: var(--tx2); font-size: 12px; }
