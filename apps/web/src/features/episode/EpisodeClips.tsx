@@ -3,7 +3,7 @@ import type { ClipRow, ClipStatus } from "../../api";
 import { EmptyState, Segmented, Select, Skeleton } from "../../ui";
 import { BulkBar } from "../clips/BulkBar";
 import { PublicationDialog } from "../clips/PublicationDialog";
-import { rowId, shortDate } from "../clips/clipModel";
+import { rowId, shortDate, topScores } from "../clips/clipModel";
 import { useClipCommands } from "../clips/useClipCommands";
 import { ClipDetail } from "./ClipDetail";
 import { ClipRowList } from "./ClipRowList";
@@ -58,6 +58,7 @@ export function EpisodeClips({ episodeId, refreshKey }: { episodeId: string; ref
     return sortRows(inRun.filter(row => (status === "all" || row.status === status) && (!search || textOf(row).includes(search))), sort);
   }, [inRun, status, query, sort]);
 
+  const topScore = useMemo(() => topScores(rows), [rows]);
   const activeId = visible.some(row => rowId(row) === clipParam) ? clipParam : visible[0] ? rowId(visible[0]) : "";
   const active = visible.find(row => rowId(row) === activeId);
   const selectedRows = rows.filter(row => selected.includes(rowId(row)));
@@ -100,12 +101,12 @@ export function EpisodeClips({ episodeId, refreshKey }: { episodeId: string; ref
             options={[{ value: "score", label: "Nota" }, { value: "order", label: "Ordem no episódio" }, { value: "recent", label: "Mais recentes" }]} />
         </div>
         {visible.length
-          ? <ClipRowList rows={visible} activeId={activeId} selected={selected} showRunDate={!run && runs.length > 1} dimDiscarded={status === "all"}
+          ? <ClipRowList rows={visible} topScore={topScore} activeId={activeId} selected={selected} showRunDate={!run && runs.length > 1} dimDiscarded={status === "all"}
               onActivate={id => setParams({ clip: id }, { replace: true })} onToggle={toggleSelect} />
           : <EmptyState title="Nenhum corte aqui">Mude o filtro ou a busca para ver outros cortes.</EmptyState>}
       </div>
       <div className="ep2-detail">
-        {active && <ClipDetail key={rowId(active)} ref={player} discardRef={discard} row={active}
+        {active && <ClipDetail key={rowId(active)} ref={player} topScore={topScore(active)} discardRef={discard} row={active}
           onApprove={() => void commands.approve([active])} onDiscard={reason => void commands.discard([active], reason)}
           onEdit={() => commands.edit([active])} onToggleSaved={() => void commands.toggleSaved([active])} onPublish={() => setPublishing(rowId(active))} />}
       </div>

@@ -109,7 +109,7 @@ test("keyboard shortcuts move, select, approve, discard, save and edit; typing i
   expect(screen.queryByRole("region", { name: "Cortes selecionados" })).toBeNull();
   key("e");
   expect(window.location.pathname).toBe("/episodios/ep/editor");
-  expect(new URLSearchParams(window.location.search).get("clips")).toBe("2:200:260:balanced");
+  expect(new URLSearchParams(window.location.search).get("clips")).toBe("run~2:200:260:balanced");
 });
 
 test("S does nothing for a clip that was never exported, and Space plays the source piece player", async () => {
@@ -121,7 +121,7 @@ test("S does nothing for a clip that was never exported, and Space plays the sou
   expect(play).toHaveBeenCalledTimes(1);
 });
 
-test("the bulk bar approves, saves only exported clips, counts downloads and sends one run to the editor", async () => {
+test("the bulk bar approves, saves only exported clips, counts downloads and sends them to the editor", async () => {
   await open([first, second]);
   fireEvent.click(screen.getByRole("checkbox", { name: "Selecionar Manchete 1" }));
   fireEvent.click(screen.getByRole("checkbox", { name: "Selecionar Manchete 2" }));
@@ -134,16 +134,47 @@ test("the bulk bar approves, saves only exported clips, counts downloads and sen
   fireEvent.click(within(bar).getByRole("button", { name: "Aprovar" }));
   expect(vi.mocked(api.patchClipStates).mock.lastCall![0]).toHaveLength(2);
   fireEvent.click(within(bar).getByRole("button", { name: "Editar e exportar →" }));
-  expect(new URLSearchParams(window.location.search).get("clips")).toBe(`${K1},2:200:260:balanced`);
+  expect(new URLSearchParams(window.location.search).get("clips")).toBe(`run~${K1},run~2:200:260:balanced`);
 });
 
-test("selecting clips from different runs warns instead of opening the editor", async () => {
+test("clips from different runs open the editor together, with run-qualified keys", async () => {
   await open([first, third]);
   fireEvent.click(screen.getByRole("checkbox", { name: "Selecionar Manchete 1" }));
   fireEvent.click(screen.getByRole("checkbox", { name: "Selecionar Manchete 3" }));
   fireEvent.click(screen.getByRole("button", { name: "Editar e exportar →" }));
-  expect(window.location.pathname).toBe("/episodios/ep");
-  expect(screen.getByRole("status", { name: "" }).textContent).toContain("mesma seleção");
+  expect(window.location.pathname).toBe("/episodios/ep/editor");
+  expect(new URLSearchParams(window.location.search).get("clips")).toBe(`run~${K1},run2~3:300:360:balanced`);
+});
+
+test("the score badge is accented against the run's own scale", async () => {
+  const big = [10, 20, 30, 40, 50].map(score => clipRow(score / 10, { score }));
+  await open(big);
+  const accented = document.querySelectorAll(".score.hi");
+  expect(accented).toHaveLength(1);
+  expect(accented[0].textContent).toBe("50");
+  cleanup();
+  await open([clipRow(1, { score: 8.5 }), clipRow(2, { score: 9 })]);
+  expect(document.querySelectorAll(".score.hi")).toHaveLength(1);
+});
+
+test("the exported video uses the custom transport instead of native controls", async () => {
+  await open([second]);
+  const video = screen.getByLabelText("Vídeo exportado") as HTMLVideoElement;
+  expect(video.hasAttribute("controls")).toBe(false);
+  expect(screen.getByRole("slider", { name: "Posição no corte" })).toBeTruthy();
+  expect(video.getAttribute("poster")).toContain("/renders/r1/poster");
+  fireEvent.click(screen.getAllByRole("button", { name: "Reproduzir" })[0]);
+  expect(play).toHaveBeenCalled();
+});
+
+test("saved reads Marcar salvo while off and Salvo with a check while on", async () => {
+  await open([second]);
+  const button = screen.getByRole("button", { name: "Marcar salvo" });
+  expect(button.getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(button);
+  const on = screen.getByRole("button", { name: "Salvo" });
+  expect(on.getAttribute("aria-pressed")).toBe("true");
+  expect(on.querySelector("svg")).toBeTruthy();
 });
 
 test("publication is registered from the detail pane and the row becomes posted", async () => {

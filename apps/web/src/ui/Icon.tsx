@@ -20,6 +20,17 @@ const paths = {
   alert: <path d="M12 4 2.5 20h19L12 4zM12 10v4m0 3h.01" />,
   film: <path d="M4 4h16v16H4zM8 4v16M16 4v16M4 9h4M4 15h4M16 9h4M16 15h4" />,
   clock: <path d="M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z" />,
+  captions: <path d="M4 5h16v14H4zM8 10h3M13 10h3M8 14h8" />,
+  crop: <path d="M6 2v14a2 2 0 0 0 2 2h14M2 6h14a2 2 0 0 1 2 2v14" />,
+  headline: <path d="M5 6V4h14v2M12 4v16M9 20h6" />,
+  pause: <path d="M9 6v12M15 6v12" />,
+  skipBack: <path d="M11 17 6 12l5-5M18 17l-5-5 5-5" />,
+  skipForward: <path d="m13 17 5-5-5-5M6 17l5-5-5-5" />,
+  volume: <path d="M11 5 6 9H3v6h3l5 4zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />,
+  volumeOff: <path d="M11 5 6 9H3v6h3l5 4zM22 9l-6 6M16 9l6 6" />,
+  safeZones: <path d="M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM3 16h18M16 7v9" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  info: <path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01" />,
   sliders: <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />,
 } satisfies Record<string, ReactNode>;
 

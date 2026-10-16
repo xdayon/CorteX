@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import type { ClipRow, DiscardReason, Publication } from "../../api";
 import { editorPath, navigate } from "../../router";
 import { useToast } from "../../ui";
-import { downloadAll, headlineOf, newestExport, withPublication } from "./clipModel";
+import { downloadAll, headlineOf, newestExport, rowId, withPublication } from "./clipModel";
 import { useClipMutations } from "./useClipMutations";
 
 type SetRows<R> = (update: (rows: R[]) => R[]) => void;
@@ -26,8 +26,8 @@ export function useClipCommands<R extends ClipRow>(setRows: SetRows<R>, episodeI
     },
     edit: (rows: R[]) => {
       if (!rows.length) return;
-      if (new Set(rows.map(row => row.run_id)).size > 1) { toast("Escolha cortes de uma mesma seleção por enquanto."); return; }
-      navigate(editorPath(episodeIdOf(rows[0]), rows[0].run_id, rows.map(row => row.clip_key)));
+      if (new Set(rows.map(episodeIdOf)).size > 1) { toast("Escolha cortes de um mesmo episódio para editar juntos."); return; }
+      navigate(editorPath(episodeIdOf(rows[0]), rows.map(rowId)));
     },
     published: (item: Publication) => {
       setRows(rows => rows.map(row => row.exports.some(entry => entry.render_artifact_id === item.render_artifact_id) ? withPublication(row, item) : row));

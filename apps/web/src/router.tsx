@@ -8,6 +8,8 @@ export type Route =
   | { name: "unknown" };
 
 const NAVIGATE_EVENT = "cortex:navigate";
+/** Clip identity across runs is `<runId>~<clipKey>`; the legacy `run` + `clips` URL form is qualified on parse. */
+export const KEY_SEPARATOR = "~";
 
 export function parseRoute(pathname: string, search = ""): Route {
   const parts = pathname.split("/").filter(Boolean).map(part => {
@@ -18,15 +20,17 @@ export function parseRoute(pathname: string, search = ""): Route {
   if (parts[0] === "episodios" && parts.length === 2) return { name: "episode", id: parts[1] };
   if (parts[0] === "episodios" && parts.length === 3 && parts[2] === "editor") {
     const query = new URLSearchParams(search);
-    return { name: "editor", id: parts[1], run: query.get("run") ?? "", clips: (query.get("clips") ?? "").split(",").filter(Boolean) };
+    const run = query.get("run") ?? "";
+    const clips = (query.get("clips") ?? "").split(",").filter(Boolean).map(key => key.includes(KEY_SEPARATOR) || !run ? key : `${run}${KEY_SEPARATOR}${key}`);
+    return { name: "editor", id: parts[1], run, clips };
   }
   return { name: "unknown" };
 }
 
 export const episodePath = (id: string) => `/episodios/${encodeURIComponent(id)}`;
 
-export function editorPath(id: string, run: string, clipKeys: string[]) {
-  const query = new URLSearchParams({ run, clips: clipKeys.join(",") });
+export function editorPath(id: string, qualifiedKeys: string[]) {
+  const query = new URLSearchParams({ clips: qualifiedKeys.join(",") });
   return `${episodePath(id)}/editor?${query}`;
 }
 

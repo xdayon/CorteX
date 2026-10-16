@@ -6,6 +6,7 @@ import { Link } from "../../router";
 import { Button, buttonClass, Chip, EmptyState, Icon, Segmented, Select, Skeleton } from "../../ui";
 import { BulkBar } from "../clips/BulkBar";
 import { PublicationDialog } from "../clips/PublicationDialog";
+import { SavedToggle } from "../clips/SavedToggle";
 import { headlineOf, newestExport, rowId, shortDate, STATUS_LABELS, STATUS_TONES } from "../clips/clipModel";
 import { useClipCommands } from "../clips/useClipCommands";
 import { useBoardClips } from "./useBoardClips";
@@ -84,7 +85,7 @@ export function BoardPage() {
           <Chip tone={STATUS_TONES[row.status]}>{STATUS_LABELS[row.status]}</Chip>
           <div className="brow-actions">
             {latest && <a className={buttonClass("secondary", "sm")} href={latest.media_url} download>Baixar</a>}
-            {latest && <Button size="sm" aria-pressed={!!row.state?.saved} onClick={() => void commands.toggleSaved([row])}>Salvo</Button>}
+            {latest && <SavedToggle saved={!!row.state?.saved} onClick={() => void commands.toggleSaved([row])} />}
             {latest && <Button size="sm" onClick={() => setPublishing(id)}>{row.publication ? "Editar publicação" : "Registrar publicação"}</Button>}
             <Link to={link} className={buttonClass("ghost", "sm")}>Abrir no episódio</Link>
           </div>

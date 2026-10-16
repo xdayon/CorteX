@@ -7,8 +7,8 @@ import { headlineOf, rowId, shortDate, STATUS_LABELS, STATUS_TONES } from "../cl
 
 const scoreLabel = (value: number | null) => value == null ? "–" : Number.isInteger(value) ? String(value) : value.toFixed(1);
 
-export function ClipRowList({ rows, activeId, selected, onActivate, onToggle, showRunDate, dimDiscarded }: {
-  rows: ClipRow[]; activeId: string; selected: string[]; onActivate: (id: string) => void; onToggle: (id: string) => void;
+export function ClipRowList({ rows, activeId, selected, onActivate, onToggle, showRunDate, dimDiscarded, topScore }: {
+  rows: ClipRow[]; topScore: (row: ClipRow) => boolean; activeId: string; selected: string[]; onActivate: (id: string) => void; onToggle: (id: string) => void;
   showRunDate: boolean; dimDiscarded: boolean;
 }) {
   const active = useRef<HTMLLIElement>(null);
@@ -25,7 +25,7 @@ export function ClipRowList({ rows, activeId, selected, onActivate, onToggle, sh
           <span className="ckb"><Icon name="check" small /></span>
         </button>
         <button type="button" className="rmain" onClick={() => onActivate(id)}>
-          <span className={`score mono${(row.score ?? 0) >= 9 ? " hi" : ""}`} title="Nota da IA">{scoreLabel(row.score)}</span>
+          <span className={`score mono${topScore(row) ? " hi" : ""}`} title="Nota da IA">{scoreLabel(row.score)}</span>
           <span className="rb"><span className="rt">{headline}</span><span className="rm">{meta.map((part, index) => <span key={index} className={index === 0 ? "mono" : undefined}>{index ? `· ${part}` : part}</span>)}</span></span>
           {row.status !== "new" && <Chip tone={STATUS_TONES[row.status]}>{STATUS_LABELS[row.status]}</Chip>}
         </button>

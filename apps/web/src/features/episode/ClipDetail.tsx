@@ -4,6 +4,7 @@ import { formatClock } from "../../app/humanize";
 import { clipDuration } from "../../editor/clips";
 import { Button, buttonClass, Chip } from "../../ui";
 import { DiscardMenu } from "../clips/DiscardMenu";
+import { SavedToggle } from "../clips/SavedToggle";
 import { headlineOf, newestExport, REASON_LABELS, shortDate, STATUS_LABELS, STATUS_TONES } from "../clips/clipModel";
 import { ExportPlayer } from "./ExportPlayer";
 import { SourcePiecesPlayer, type PlayerHandle } from "./SourcePiecesPlayer";
@@ -20,7 +21,7 @@ export function piecesOf(row: ClipRow) {
   return pieces.length ? pieces : [{ start: row.start_second, end: row.end_second }];
 }
 
-export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; discardRef: React.Ref<{ open: () => void }> } & Handlers>(function ClipDetail({ row, discardRef, ...on }, player) {
+export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; topScore: boolean; discardRef: React.Ref<{ open: () => void }> } & Handlers>(function ClipDetail({ row, topScore, discardRef, ...on }, player) {
   const latest = newestExport(row);
   const [view, setView] = useState<"export" | "source">(latest ? "export" : "source");
   const showExport = !!latest && view === "export";
@@ -46,7 +47,7 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; discardRef: R
       <div className="cd-chips">
         {row.status !== "new" && <Chip tone={STATUS_TONES[row.status]}>{STATUS_LABELS[row.status]}</Chip>}
         {row.status === "discarded" && row.state?.discard_reason && <Chip>{REASON_LABELS[row.state.discard_reason]}</Chip>}
-        {row.score != null && <Chip tone={row.score >= 9 ? "ac" : "neutral"}>Nota <span className="mono">{row.score}</span></Chip>}
+        {row.score != null && <Chip tone={topScore ? "ac" : "neutral"}>Nota <span className="mono">{row.score}</span></Chip>}
         <Chip><span className="mono">{clipDuration(row.duration)}</span></Chip>
         {row.piece_count > 1 && <Chip>{row.piece_count} trechos</Chip>}
         {clip.lead_trimmed && <Chip>começo limpo</Chip>}
@@ -60,7 +61,7 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; discardRef: R
       {latest && <div className="cd-actions">
         <a className={buttonClass("secondary", "sm")} href={latest.media_url} download>Baixar MP4</a>
         <a className={buttonClass("secondary", "sm")} href={latest.subtitles_url} download>Baixar SRT</a>
-        <Button size="sm" aria-pressed={saved} onClick={on.onToggleSaved}>Salvo</Button>
+        <SavedToggle saved={saved} onClick={on.onToggleSaved} />
         <Button size="sm" onClick={on.onPublish}>{publication ? "Editar publicação" : "Registrar publicação"}</Button>
       </div>}
     </div>

@@ -16,7 +16,7 @@ export default function App() {
   return <ToastProvider>
     <Shell route={route}>
       {route.name === "episode" && <EpisodePage key={route.id} id={route.id} />}
-      {route.name === "editor" && <EditorPage key={`${route.id}:${route.run}`} id={route.id} runId={route.run} clipKeys={route.clips} />}
+      {route.name === "editor" && <EditorPage key={`${route.id}:${route.run}:${route.clips.join(",")}`} id={route.id} run={route.run} clipKeys={route.clips} />}
       {route.name === "cuts" && <BoardPage />}
       {(route.name === "episodes" || route.name === "unknown") && <EpisodesPage />}
     </Shell>
