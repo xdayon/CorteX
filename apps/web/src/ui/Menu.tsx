@@ -5,8 +5,8 @@ const CloseContext = createContext<() => void>(() => undefined);
 
 type TriggerProps = { onClick: () => void; "aria-expanded": boolean; "aria-haspopup": "menu"; "aria-controls": string };
 
-export function Menu({ trigger, children, align = "right", label }: {
-  trigger: (props: TriggerProps) => ReactNode; children: ReactNode; align?: "left" | "right"; label: string;
+export function Menu({ trigger, children, align = "right", label, up = false }: {
+  trigger: (props: TriggerProps) => ReactNode; children: ReactNode; align?: "left" | "right"; label: string; up?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
@@ -40,7 +40,7 @@ export function Menu({ trigger, children, align = "right", label }: {
   return <div className="menu-wrap" ref={wrap}>
     {trigger({ onClick: () => setOpen(value => !value), "aria-expanded": open, "aria-haspopup": "menu", "aria-controls": id })}
     {open && <CloseContext.Provider value={close}>
-      <div className={`menu ${align}`} role="menu" id={id} aria-label={label}>{children}</div>
+      <div className={`menu ${align}${up ? " up" : ""}`} role="menu" id={id} aria-label={label}>{children}</div>
     </CloseContext.Provider>}
   </div>;
 }

@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import { useCallback, useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from "react";
 
 export type Route =
   | { name: "episodes" }
@@ -52,6 +52,21 @@ export function useRoute(): Route {
   const location = useLocation();
   const [pathname, search = ""] = location.split("?");
   return parseRoute(pathname, search ? `?${search}` : "");
+}
+
+/** Query string as state: `update` merges keys (null or empty removes one) and pushes or replaces the URL. */
+export function useSearchParams() {
+  const location = useLocation();
+  const search = location.split("?")[1] ?? "";
+  const update = useCallback((changes: Record<string, string | null>, options: { replace?: boolean } = {}) => {
+    const params = new URLSearchParams(window.location.search);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value) params.set(key, value); else params.delete(key);
+    }
+    const query = params.toString();
+    navigate(window.location.pathname + (query ? `?${query}` : ""), options);
+  }, []);
+  return [new URLSearchParams(search), update] as const;
 }
 
 export function Link({ to, replace, onClick, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string; replace?: boolean }) {

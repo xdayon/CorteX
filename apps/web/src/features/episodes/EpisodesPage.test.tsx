@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { api, REMOTE_UPLOAD_MESSAGE, type EpisodeEntry, type WorkflowRun } from "../../api";
+import { api, REMOTE_UPLOAD_MESSAGE, type ApiJob, type EpisodeEntry, type WorkflowRun } from "../../api";
+import { getTasks, resetTasks } from "../../app/tasks";
 import { ToastProvider } from "../../ui";
 import { EpisodesPage } from "./EpisodesPage";
 
@@ -35,6 +36,7 @@ const card = (title: string) => [...document.querySelectorAll(".ecard-title")].f
 
 beforeEach(() => {
   vi.resetAllMocks();
+  resetTasks();
   window.history.replaceState(null, "", "/");
   localStorage.clear();
   vi.mocked(api.episodes).mockResolvedValue([episode]);
@@ -183,4 +185,44 @@ test("an active run shows its stage and progress, and a failed run offers a retr
   await settle();
   expect(api.createWorkflowRun).toHaveBeenCalledWith("project-one", "src", expect.objectContaining({ count: 10 }));
   expect(window.location.pathname).toBe("/episodios/bad");
+});
+
+test("the episode page opens right after registering and the download continues as an app-level task", async () => {
+  let finish!: (job: ApiJob) => void;
+  let report!: (job: ApiJob) => void;
+  vi.mocked(api.registerEpisode).mockResolvedValue({ ...episode, id: "yt2", project_ids: ["p2"] });
+  vi.mocked(api.downloadEpisode).mockResolvedValue({ source: null, job: { id: "dl", status: "queued" } as ApiJob, cached: false });
+  vi.mocked(api.watchJob).mockImplementation((_id, onUpdate) => { report = onUpdate!; return new Promise<ApiJob>(resolve => { finish = resolve; }); });
+  vi.mocked(api.createWorkflowRun).mockResolvedValue(run({ project_id: "p2" }));
+  const view = page(); await settle();
+  fireEvent.change(screen.getByLabelText(/Link do YouTube/), { target: { value: "https://youtube.com/watch?v=zzz" } });
+  fireEvent.click(screen.getByRole("button", { name: "Processar episódio" }));
+  await settle();
+  expect(window.location.pathname).toBe("/episodios/yt2");
+  expect(api.createWorkflowRun).not.toHaveBeenCalled();
+  expect(getTasks()).toMatchObject([{ episodeId: "yt2", status: "running", message: "Baixando o vídeo…" }]);
+  view.unmount();
+  await act(async () => report({ id: "dl", status: "running", progress: 42.4 } as ApiJob));
+  expect(getTasks()[0]).toMatchObject({ message: "Baixando o vídeo 42%", progress: 42.4 });
+  await act(async () => finish({ id: "dl", status: "succeeded", result: { source_asset_id: "s2" } } as unknown as ApiJob));
+  expect(api.createWorkflowRun).toHaveBeenCalledWith("p2", "s2", expect.objectContaining({ count: 10 }));
+  expect(getTasks()[0].status).toBe("done");
+});
+
+test("a download that fails ends the task with the error instead of throwing in the composer", async () => {
+  vi.mocked(api.registerEpisode).mockResolvedValue({ ...episode, id: "yt3", project_ids: ["p3"] });
+  vi.mocked(api.downloadEpisode).mockRejectedValue(new Error("vídeo indisponível"));
+  page(); await settle();
+  fireEvent.change(screen.getByLabelText(/Link do YouTube/), { target: { value: "https://youtube.com/watch?v=yyy" } });
+  fireEvent.click(screen.getByRole("button", { name: "Processar episódio" }));
+  await settle();
+  expect(getTasks()[0]).toMatchObject({ status: "failed", error: "vídeo indisponível" });
+});
+
+test("card stats and the header total come from the clips summary", async () => {
+  vi.mocked(api.episodes).mockResolvedValue([withCuts]);
+  vi.mocked(api.clipsSummary).mockResolvedValue({ episodes: { cuts: { new: 20, approved: 3, exported: 6, saved: 0, posted: 2, discarded: 2, total: 33 } } });
+  page(); await settle();
+  expect(within(card("Episódio com cortes")).getByText("33 cortes · 8 exportados · 2 postados")).toBeTruthy();
+  expect(screen.getByText("1 episódio · 8 vídeos gerados")).toBeTruthy();
 });
