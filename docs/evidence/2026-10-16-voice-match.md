@@ -13,23 +13,33 @@ quais linhas da seleção são do Dayon. Código: `diarize/voice_match.py`,
 - Velocidade: 265 s o episódio inteiro (8 threads), contra 9547 s do pyannote.
 
 ## Validação real (implementação final, cópia do SQLite, dados reais só leitura)
-Perfil construído do episódio wk7PY31TQBc com a diarização confirmada: 40 turnos limpos
-positivos (222,7 s) e 40 negativos; limiar calibrado (balanced accuracy, positivos em
-leave-one-out) = 0,465; construção em 21,6 s.
+Perfil do episódio wk7PY31TQBc (diarização confirmada): voiceprint de 40 turnos limpos
+(222,7 s). Limiar calibrado nas unidades de seleção do próprio episódio (domínio onde é
+aplicado): <= 400 unidades por classe, espalhadas, com >= 80 % de cobertura de uma voz
+pyannote e fora dos recortes do voiceprint; plateau de melhor balanced accuracy (0,986),
+limiar 0,4395 (limites de sanidade [0,25; 0,60]). A calibração por turnos limpos dava 0,465.
+Construção do perfil: 94,7 s (síncrona em `POST /voice/profile`).
 
-(a) wk7PY31TQBc, 3817 unidades de seleção, 199,6 s de relógio (9906 s de áudio):
-- Contra os turnos pyannote (unidades com >= 80 % de cobertura de uma voz; 618 s ambíguos
-  fora): acurácia ponderada por duração 98,24 %, precisão 0,983, recall 0,958.
-- Dayon = 26,4 % da fala, 265 turnos. Observação: o perfil usa turnos desse mesmo episódio,
-  então este número não é retido; o retido está na pesquisa acima.
+(a) wk7PY31TQBc, 3817 unidades, 618 s ambíguos fora; match em 199-243 s (9906 s de áudio):
+- Limiar novo 0,4395: acurácia ponderada 98,22 %, precisão 0,979, recall 0,962
+  (antigo 0,465: 98,24 %, 0,983, 0,958; praticamente igual).
+- Retido: voiceprint + calibração só com a 1a metade, avaliado na 2a metade, limiar 0,4053:
+  acurácia 97,63 %, precisão 0,964, recall 0,956 (0,465: 97,75 %, 0,978, 0,945;
+  0,37: 97,46 %, 0,955, 0,959). Os limiares não mudam o resultado de forma material.
+- Dayon = 26,4 % da fala.
 
-(b) 7b1f64527d1f48acb36bb24f458f0f60 (sem verdade de referência), 137,3 s (6876 s de áudio):
-- Dayon = 68,9 % da fala, 321 turnos; 1868 unidades D e 754 O.
-- Amostra de 10 linhas por rótulo (aleatória): as D são coerentes com fala explicativa do
-  Dayon; entre as O há frases de apresentador ("Seus contatos pra quem quiser te
-  acompanhar?", "E vamos em frente para muito mais"), então este episódio precisa de
-  conferência humana antes de confiar no rótulo (pode haver outro apresentador ou
-  limiar alto demais para esta gravação).
+(b) 7b1f64527d1f48acb36bb24f458f0f60 (sem verdade de referência), 166 s (6876 s de áudio):
+- Dayon = 69,4 % da fala, 307 turnos; 1882 unidades D e 740 O.
+- D (5 amostras): "Então já começa por aí. Aí vem outro mistério também,"; "a gente é a
+  geração mais envenenada da história."; "ficavam com o nariz vermelho, tipo o Rupert,";
+  "é conhecimento codificado que ficou ali memorizado."; "que elas comiam o alimento de
+  Deus e Jesus falava,".
+- O (5 amostras): publicidade e fala do apresentador/outras vozes ("pela parceria. Uma
+  marca que eu adoro...", "acesse e entre em contato conosco pelo Instagram.", "Porra,
+  velho. Que sensação de aproveitar a câmera até mim.", "você entende que existiu
+  influência divina ou espiritual ou", "marca que sou fã, e me veste aqui no programa,").
+  O significa qualquer voz que não é a do protagonista; falas de apresentador em O estão
+  corretas. Não apareceu fala explicativa do protagonista em O nas amostras.
 
 ## Comportamento
 - Sem perfil ou com falha do runner: a seleção segue sem rótulos e o run registra

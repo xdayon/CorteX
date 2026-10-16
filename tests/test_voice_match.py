@@ -160,6 +160,7 @@ def test_profile_build_and_api(tmp_path: Path, short_mp4: Path, monkeypatch):
     # clean subject turn: 0-10 (cropped to 6 s); 20-24 overlaps SPEAKER_01 and is excluded
     assert body["seconds"] == 6.0
     assert 0.0 < body["threshold"] < 1.0
+    assert body["calibration"]["method"] == "turns" and body["calibration"]["n_neg"] == 1
     command, spans = calls[0]
     assert command == "embed" and spans == [(0.0, 6.0), (10.0, 16.0)]
     stored = VoiceProfile.model_validate_json((tmp_path / "voice" / "profile.json").read_text())
@@ -286,3 +287,15 @@ def test_worker_records_runner_failure_and_continues(tmp_path, short_mp4, monkey
     assert run.status == "ready_for_review"
     assert "confirmed_voice" not in run.brief
     assert run.brief["voice_match"] == {"status": "failed", "reason": "modelo ausente"}
+
+
+def test_calibration_units_use_unambiguous_units_away_from_voiceprint_crops():
+    turns = [VoiceTurn(start=0, end=100, speaker="A"), VoiceTurn(start=100, end=200, speaker="B"),
+             VoiceTurn(start=150, end=160, speaker="A")]
+    spans = [(float(i), float(i) + 2.0) for i in range(0, 200, 3)] + [(50.0, 50.5)]
+    subject, other = voice_match._calibration_units(spans, turns, "A", exclude=[(0.0, 10.0)])
+    assert all(a >= 10.0 and b - a >= 0.8 for a, b in subject + other)
+    assert all(b <= 100 for a, b in subject) and all(a >= 100 for a, b in other)
+    # units overlapping A inside B's turn are ambiguous (< 80% one voice)
+    assert not any(150 <= a < 160 for a, b in other + subject if b > 150 and a < 160 and a + 2 > 160)
+    assert len(subject) <= voice_match.CALIBRATION_MAX_UNITS_PER_CLASS

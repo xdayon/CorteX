@@ -340,7 +340,7 @@ def create_app(config: CortexConfig | None = None):
         return {
             "exists": True, "created_at": profile.created_at, "threshold": profile.threshold,
             "episode_id": profile.source.get("episode_id"), "speaker": profile.source.get("speaker"),
-            "seconds": profile.source.get("seconds"), "model_revision": profile.model_revision,
+            "seconds": profile.source.get("seconds"), "calibration": profile.calibration, "model_revision": profile.model_revision,
         }
 
     @app.get(f"{router_prefix}/voice/profile")

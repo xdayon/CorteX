@@ -39,6 +39,10 @@ MAX_PROFILE_TURNS = 40
 MIN_PROFILE_TURN_SECONDS = 3.0
 PROFILE_CROP_SECONDS = 6.0
 PROFILE_BUILD_TIMEOUT_SECONDS = 600
+CALIBRATION_MAX_UNITS_PER_CLASS = 400
+CALIBRATION_MIN_UNITS_PER_CLASS = 50
+CALIBRATION_COVERAGE = 0.8
+THRESHOLD_BOUNDS = (0.25, 0.60)
 
 
 class VoiceMatchCancelled(RuntimeError):
@@ -55,6 +59,7 @@ class VoiceProfile(BaseModel):
     model_repo: str
     model_revision: str
     source: dict[str, Any]
+    calibration: dict[str, Any] = Field(default_factory=dict)
 
     def content_hash(self) -> str:
         return hashlib.sha256(json.dumps(
@@ -188,6 +193,50 @@ def calibrate_threshold(
     return float(plateau[len(plateau) // 2])
 
 
+def balanced_accuracy(positive: list[float], negative: list[float], threshold: float) -> float:
+    recall = sum(s >= threshold for s in positive) / len(positive)
+    specificity = sum(s < threshold for s in negative) / len(negative)
+    return (recall + specificity) / 2
+
+
+def _unit_truth(
+    spans: list[tuple[float, float]], turns: list[VoiceTurn], speaker: str,
+) -> list[bool | None]:
+    """True/False when one diarized voice covers >= 80% of the unit; None when ambiguous."""
+    result: list[bool | None] = []
+    for start, end in spans:
+        coverage: dict[str, float] = {}
+        for turn in turns:
+            shared = min(end, turn.end) - max(start, turn.start)
+            if shared > 0:
+                coverage[turn.speaker] = coverage.get(turn.speaker, 0.0) + shared
+        best = max(coverage, key=lambda k: coverage[k]) if coverage else None
+        rest = max((v for k, v in coverage.items() if k != best), default=0.0)
+        if (best is None or coverage[best] / (end - start) < CALIBRATION_COVERAGE
+                or rest / (end - start) >= 1 - CALIBRATION_COVERAGE):
+            result.append(None)
+        else:
+            result.append(best == speaker)
+    return result
+
+
+def _calibration_units(
+    spans: list[tuple[float, float]], turns: list[VoiceTurn], speaker: str,
+    exclude: list[tuple[float, float]],
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Subsampled (subject, other) selection units, spread over the episode, away from the voiceprint crops."""
+    usable = [
+        (i, span) for i, span in enumerate(spans)
+        if span[1] - span[0] >= SHORT_UNIT_SECONDS
+        and not any(span[0] < b and span[1] > a for a, b in exclude)
+    ]
+    truth = _unit_truth([span for _, span in usable], turns, speaker)
+    subject = [span for (_, span), t in zip(usable, truth) if t is True]
+    other = [span for (_, span), t in zip(usable, truth) if t is False]
+    return (_spread(subject, CALIBRATION_MAX_UNITS_PER_CLASS),
+            _spread(other, CALIBRATION_MAX_UNITS_PER_CLASS))
+
+
 def _unit(vector: np.ndarray) -> np.ndarray:
     return vector / np.linalg.norm(vector)
 
@@ -210,6 +259,7 @@ def build_profile_from_episode(
     config: CortexConfig, domain, entry, *,
     progress_cb: Callable[[float, str], None] = lambda _p, _m: None,
     should_cancel: Callable[[], bool] = lambda: False,
+    before: float | None = None,
 ) -> VoiceProfile:
     reference = entry.subject_reference or {}
     artifact_id, speaker = reference.get("diarization_artifact_id"), reference.get("speaker")
@@ -219,19 +269,22 @@ def build_profile_from_episode(
     if artifact.stage != "diarization" or artifact.project_id not in entry.project_ids:
         raise ValueError("Vozes não pertencem ao episódio")
     document = DiarizationDocument.model_validate_json(Path(artifact.path).read_text())
-    positives = _spread(clean_turns(document.turns, speaker, subject=True), MAX_PROFILE_TURNS)
-    negatives = _spread(clean_turns(document.turns, speaker, subject=False), MAX_PROFILE_TURNS)
+    turns = [t for t in document.turns if before is None or t.end <= before]
+    positives = _spread(clean_turns(turns, speaker, subject=True), MAX_PROFILE_TURNS)
+    negatives = _spread(clean_turns(turns, speaker, subject=False), MAX_PROFILE_TURNS)
     if not positives:
         raise ValueError("Nenhum turno limpo (>= 3 s, sem sobreposição) da voz confirmada")
     source = domain.get_source_asset(artifact.metadata["source_asset_id"])
-    audio = extract_normalized_audio(
+    audio = Path(extract_normalized_audio(
         config.render.ffmpeg, config.render.ffprobe, config.paths.data_dir / source.stored_path,
         source_sha256=source.sha256, cache_dir=cache_dir(config, source.project_id),
-    )
+    ).path)
+    workdir = cache_dir(config, source.project_id) / "diarization"
     result = run_voice_runner(
-        config, "embed", audio=Path(audio.path), spans=[*positives, *negatives],
-        workdir=cache_dir(config, source.project_id) / "diarization", stem=f"profile-{artifact.id}",
-        timeout=PROFILE_BUILD_TIMEOUT_SECONDS, progress_cb=progress_cb, should_cancel=should_cancel,
+        config, "embed", audio=audio, spans=[*positives, *negatives],
+        workdir=workdir, stem=f"profile-{artifact.id}",
+        timeout=PROFILE_BUILD_TIMEOUT_SECONDS,
+        progress_cb=lambda p, m: progress_cb(p * 0.3, m), should_cancel=should_cancel,
     )
     embeddings = result["embeddings"]
     pos = np.array([e for e in embeddings[:len(positives)] if e is not None])
@@ -241,9 +294,23 @@ def build_profile_from_episode(
     voiceprint, threshold = profile_from_embeddings(
         pos, neg if len(neg) else np.empty((0, pos.shape[1])), config.voice.default_threshold,
     )
-    return VoiceProfile(
+    calibration: dict[str, Any] = {
+        "method": "turns" if len(neg) else "default", "n_pos": len(pos), "n_neg": len(neg),
+    }
+    if len(neg):
+        calibration["balanced_accuracy"] = round(balanced_accuracy(
+            [float(_unit(np.sum(pos, axis=0) - e) @ e) if len(pos) > 1 else float(voiceprint @ e) for e in pos],
+            [float(voiceprint @ e) for e in neg], threshold), 4)
+        unit_threshold = _calibrate_on_units(
+            config, domain, source, audio, workdir, voiceprint, turns, speaker, positives,
+            before, calibration, progress_cb, should_cancel, artifact_id=artifact.id,
+        )
+        if unit_threshold is not None:
+            threshold = unit_threshold
+    profile = VoiceProfile(
         embedding=[float(x) for x in voiceprint], threshold=threshold,
         model_repo=result["model_repo"], model_revision=result["model_revision"],
+        calibration=calibration,
         source={
             "episode_id": entry.id, "diarization_artifact_id": artifact.id, "speaker": speaker,
             "positive_ranges": [[a, b] for a, b in positives],
@@ -251,6 +318,49 @@ def build_profile_from_episode(
             "seconds": round(sum(b - a for a, b in positives), 2),
         },
     )
+    return profile
+
+
+def _calibrate_on_units(
+    config, domain, source, audio, workdir, voiceprint, turns, speaker, positives, before,
+    calibration, progress_cb, should_cancel, *, artifact_id,
+) -> float | None:
+    """Threshold from selection units of the enrollment episode (the domain where it is applied)."""
+    from cortex.suggest.service import selection_unit_spans
+
+    transcripts = domain.list_transcript_artifacts(source.id)
+    if not transcripts:
+        return None
+    transcript = json.loads(Path(transcripts[-1].path).read_text(encoding="utf-8"))
+    spans = [s for s in selection_unit_spans(transcript) if before is None or s[1] <= before]
+    subject_units, other_units = _calibration_units(spans, turns, speaker, positives)
+    if min(len(subject_units), len(other_units)) < CALIBRATION_MIN_UNITS_PER_CLASS:
+        return None
+    temp_profile = workdir / f"profile-{artifact_id}.voiceprint.json"
+    temp_profile.parent.mkdir(parents=True, exist_ok=True)
+    temp_profile.write_text(json.dumps({"embedding": [float(x) for x in voiceprint]}))
+    try:
+        scored = run_voice_runner(
+            config, "score", audio=audio, spans=[*subject_units, *other_units], workdir=workdir,
+            stem=f"profile-{artifact_id}-units", profile=temp_profile,
+            timeout=PROFILE_BUILD_TIMEOUT_SECONDS,
+            progress_cb=lambda p, m: progress_cb(30 + p * 0.7, m), should_cancel=should_cancel,
+        )
+    finally:
+        temp_profile.unlink(missing_ok=True)
+    scores = scored["scores"]
+    pos_scores = [x for x in scores[:len(subject_units)] if x is not None]
+    neg_scores = [x for x in scores[len(subject_units):] if x is not None]
+    if min(len(pos_scores), len(neg_scores)) < CALIBRATION_MIN_UNITS_PER_CLASS:
+        return None
+    raw = calibrate_threshold(pos_scores, neg_scores, config.voice.default_threshold)
+    threshold = min(max(raw, THRESHOLD_BOUNDS[0]), THRESHOLD_BOUNDS[1])
+    calibration.update({
+        "method": "selection_units", "n_pos": len(pos_scores), "n_neg": len(neg_scores),
+        "balanced_accuracy": round(balanced_accuracy(pos_scores, neg_scores, threshold), 4),
+        "unclamped_threshold": round(raw, 4),
+    })
+    return threshold
 
 
 # --- matching ------------------------------------------------------------------------------
