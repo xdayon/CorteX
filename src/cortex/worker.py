@@ -180,6 +180,7 @@ def run_youtube_ingest_job(
     try:
         download = download_youtube_source(
             url, dest_dir, youtube_format=config.ingest.youtube_format, progress_cb=progress_cb,
+            cookies_from_browser=config.ingest.youtube_cookies_from_browser,
         )
     except _YoutubeCancelled:
         return

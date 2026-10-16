@@ -25,6 +25,8 @@ ingest:
   max_upload_bytes: 10737418240
   allowed_extensions: [mp4, mov, mkv, webm, mp3, wav, m4a, aac, flac]
   youtube_format: "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
+  # Cookies do Chrome (Flatpak) logado no YouTube: evita o "Sign in to confirm you're not a bot".
+  youtube_cookies_from_browser: "chrome:~/.var/app/com.google.Chrome/config/google-chrome"
 
 render:
   ffmpeg: /usr/bin/ffmpeg

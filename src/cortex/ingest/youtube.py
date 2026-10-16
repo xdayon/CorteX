@@ -37,6 +37,7 @@ def build_ydl_options(
     dest_dir: Path,
     *,
     progress_hook: Callable[[dict[str, Any]], None] | None = None,
+    cookies_from_browser: str | None = None,
 ) -> dict[str, Any]:
     options: dict[str, Any] = {
         "format": youtube_format,
@@ -52,6 +53,11 @@ def build_ydl_options(
     }
     if progress_hook is not None:
         options["progress_hooks"] = [progress_hook]
+    if cookies_from_browser:
+        browser, _, profile = cookies_from_browser.partition(":")
+        options["cookiesfrombrowser"] = (
+            browser, str(Path(profile).expanduser()) if profile else None, None, None,
+        )
     return options
 
 
@@ -158,6 +164,7 @@ def download_youtube_source(
     downloader: YoutubeDownloader | None = None,
     progress_cb: Callable[[float, str | None], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
+    cookies_from_browser: str | None = None,
 ) -> YoutubeDownloadResult:
     """Resolve `url` to a video id, reuse a cached download if present for
     this project, otherwise download with yt-dlp using the venv install.
@@ -165,7 +172,9 @@ def download_youtube_source(
     downloader = downloader or YtDlpDownloader()
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    probe_options = build_ydl_options(youtube_format, dest_dir)
+    probe_options = build_ydl_options(
+        youtube_format, dest_dir, cookies_from_browser=cookies_from_browser,
+    )
     info = downloader.extract_info(url, download=False, options=probe_options)
     video_id = str(info.get("id") or "")
     if not video_id:
@@ -177,7 +186,9 @@ def download_youtube_source(
 
     _hook = DownloadProgressReporter(progress_cb, clock=clock) if progress_cb is not None else None
 
-    download_options = build_ydl_options(youtube_format, dest_dir, progress_hook=_hook)
+    download_options = build_ydl_options(
+        youtube_format, dest_dir, progress_hook=_hook, cookies_from_browser=cookies_from_browser,
+    )
     info = downloader.extract_info(url, download=True, options=download_options)
     downloaded = find_cached_download(dest_dir, video_id)
     if downloaded is None:

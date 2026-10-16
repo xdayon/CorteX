@@ -287,3 +287,14 @@ class YoutubeIngestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_cookies_from_browser_reach_yt_dlp_options(tmp_path):
+    from cortex.ingest.youtube import build_ydl_options
+
+    plain = build_ydl_options("best", tmp_path)
+    assert "cookiesfrombrowser" not in plain
+    options = build_ydl_options("best", tmp_path, cookies_from_browser="chrome:~/perfil")
+    browser, profile, keyring, container = options["cookiesfrombrowser"]
+    assert browser == "chrome" and profile.endswith("/perfil") and not profile.startswith("~")
+    assert build_ydl_options("best", tmp_path, cookies_from_browser="firefox")["cookiesfrombrowser"][:2] == ("firefox", None)

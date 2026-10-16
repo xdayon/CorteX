@@ -99,6 +99,9 @@ class IngestConfig(BaseModel):
         default_factory=lambda: ["mp4", "mov", "mkv", "webm", "mp3", "wav", "m4a", "aac", "flac"]
     )
     youtube_format: str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+    # yt-dlp `--cookies-from-browser` value ("browser" or "browser:profile_path", `~`
+    # expanded) for videos where YouTube asks to "confirm you're not a bot".
+    youtube_cookies_from_browser: str | None = None
 
 
 class ClipConfig(BaseModel):
