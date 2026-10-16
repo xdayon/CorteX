@@ -34,8 +34,8 @@ export function PublicationBadges({publication}: {publication?: Publication | nu
 const PLATFORMS: Array<[PublicationPlatform, string]> = [["instagram", "Instagram"], ["tiktok", "TikTok"]];
 const COUNTS = [["views", "Views"], ["likes", "Curtidas"], ["comments", "Comentários"], ["shares", "Compartilhamentos"], ["saves", "Salvamentos"]] as const;
 
-export function PublicationPanel({projectId, artifactId, publication, hookText, onSaved, onDeleted}: {
-  projectId: string; artifactId: string; publication?: Publication | null; hookText?: string;
+export function PublicationPanel({projectId, artifactId, publication, hookText, defaultOpen = false, onSaved, onDeleted}: {
+  projectId: string; artifactId: string; publication?: Publication | null; hookText?: string; defaultOpen?: boolean;
   onSaved: (item: Publication) => void; onDeleted: (artifactId: string) => void;
 }) {
   const [form, setForm] = useState<PublicationFormState>(() => formFromPublication(publication));
@@ -43,7 +43,7 @@ export function PublicationPanel({projectId, artifactId, publication, hookText, 
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   // The Library lists every saved video; mount the form only when opened.
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   useEffect(() => setForm(formFromPublication(publication)), [publication]);
   const set = <K extends keyof PublicationFormState>(key: K, value: PublicationFormState[K]) =>
     setForm(current => ({...current, [key]: value}));
@@ -67,7 +67,7 @@ export function PublicationPanel({projectId, artifactId, publication, hookText, 
     catch (reason) { setErrors([String(reason)]); }
     finally { setBusy(false); }
   }
-  return <details className="pub-panel" onToggle={event => setOpen(event.currentTarget.open)}>
+  return <details className="pub-panel" open={defaultOpen || undefined} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Publicação <PublicationBadges publication={publication}/></summary>
     {open && <form onSubmit={event => void submit(event)} noValidate>
       <label className="pub-check"><input type="checkbox" checked={form.published} onChange={event => set("published", event.target.checked)}/> Publicado</label>

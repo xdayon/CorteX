@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
-import { isRunReady } from "../../app/humanize";
+import { useEffect, useRef, useState } from "react";
+import { dismissTask, useEpisodeTask } from "../../app/tasks";
 import { usePageTitle } from "../../app/usePageTitle";
-import { clipKey } from "../../editor/clips";
-import { editorPath, Link, navigate } from "../../router";
+import { Link } from "../../router";
 import { Button, Chip, EmptyState, Icon, Skeleton, useToast } from "../../ui";
 import { EpisodeMenu } from "../episodes/EpisodeMenu";
 import { EpisodeThumb } from "../episodes/EpisodeThumb";
@@ -13,26 +12,27 @@ import { defaultRunOptions, optionsFromRun, type RunOptions } from "../episodes/
 import { useCreateEpisodeRun } from "../episodes/useCreateEpisodeRun";
 import { useEpisodeActions } from "../episodes/useEpisodeActions";
 import { useEpisodeCatalog } from "../episodes/useEpisodeCatalog";
-import { ClipList, type ClipSort } from "./ClipList";
+import { EpisodeClips } from "./EpisodeClips";
 import { ProcessingPanel } from "./ProcessingPanel";
-import { SelectionBar } from "./SelectionBar";
-import { useSuggestion } from "./useSuggestion";
 import "./episode.css";
 
 export function EpisodePage({ id }: { id: string }) {
   const toast = useToast();
   const catalog = useEpisodeCatalog(true, 3000);
   const actions = useEpisodeActions(catalog.refresh, catalog.invalidate);
-  const create = useCreateEpisodeRun(() => { void catalog.refresh(); });
+  const create = useCreateEpisodeRun();
+  const task = useEpisodeTask(id);
   const entry = catalog.entries.find(item => item.id === id);
   const run = entry?.runs[0];
-  const readyRun = entry?.runs.find(isRunReady);
-  const suggestion = useSuggestion(readyRun);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [sort, setSort] = useState<ClipSort>("score");
   const [dialog, setDialog] = useState<RunOptions | null>(null);
   usePageTitle(entry ? `${entry.title} · CorteX` : "Episódio · CorteX");
-  useEffect(() => setSelected([]), [readyRun?.id]);
+  const taskStatus = task?.status;
+  const refreshed = useRef(taskStatus);
+  useEffect(() => {
+    if (taskStatus === refreshed.current) return;
+    refreshed.current = taskStatus;
+    void catalog.refresh();
+  }, [taskStatus, catalog]);
 
   if (!entry) {
     if (catalog.loading) return <div className="ep-page"><Skeleton height={54} /></div>;
@@ -41,10 +41,9 @@ export function EpisodePage({ id }: { id: string }) {
   }
 
   const status = episodeStatus(entry);
-  const clips = suggestion.selection?.clips ?? [];
-  const chosen = clips.filter(clip => selected.includes(clipKey(clip)));
-  const totalSeconds = chosen.reduce((sum, clip) => sum + clip.estimated_duration, 0);
-  const processing = status.kind === "processing";
+  const taskRunning = task?.status === "running";
+  const processing = status.kind === "processing" || taskRunning;
+  const refreshKey = `${entry.runs.map(item => `${item.id}:${item.status}`).join(",")}|${taskStatus ?? ""}`;
 
   function openOptions() {
     setDialog({ ...defaultRunOptions(), ...optionsFromRun(run, entry!.primary_subject) });
@@ -54,7 +53,6 @@ export function EpisodePage({ id }: { id: string }) {
     const failure = await create.start({ kind: "episode", entry: entry! }, options);
     if (failure) toast(failure, "bad");
   }
-  const toggle = (key: string) => setSelected(current => current.includes(key) ? current.filter(item => item !== key) : [...current, key]);
 
   return <div className="ep-page">
     <Link to="/" className="back"><Icon name="arrowLeft" small />Episódios</Link>
@@ -78,21 +76,15 @@ export function EpisodePage({ id }: { id: string }) {
     {create.busy && <div className="notice" role="status"><p>{create.message}</p></div>}
     {catalog.error && <div className="notice bad" role="alert"><p>{catalog.error}</p></div>}
 
-    {run && processing && <ProcessingPanel run={run} onCancelled={() => void catalog.refresh()} />}
+    {processing && <ProcessingPanel run={run && status.kind === "processing" ? run : undefined} task={taskRunning ? task : undefined} onCancelled={() => void catalog.refresh()} />}
+    {task?.status === "failed" && <div className="notice bad" role="alert"><p>{task.error}</p><Button size="sm" variant="ghost" onClick={() => dismissTask(task.id)}>Dispensar</Button></div>}
     {!processing && run?.status === "failed" && <div className="notice bad" role="alert"><p>{status.error ?? "A última seleção não terminou."} Use “Gerar nova seleção” para tentar de novo.</p></div>}
     {!processing && run?.status === "cancelled" && <div className="notice" role="status"><p>A última seleção foi cancelada.</p></div>}
-    {!run && !create.busy && <EmptyState title="Nenhuma seleção ainda" action={<Button variant="primary" icon="spark" disabled={!!entry.archived} onClick={openOptions}>Gerar seleção de cortes</Button>}>
+    {!run && !create.busy && !processing && <EmptyState title="Nenhuma seleção ainda" action={<Button variant="primary" icon="spark" disabled={!!entry.archived} onClick={openOptions}>Gerar seleção de cortes</Button>}>
       A IA lê a conversa e sugere os melhores momentos para virar cortes.
     </EmptyState>}
 
-    {readyRun && <>
-      {suggestion.loading && <div className="clips-loading" role="status" aria-label="Carregando cortes">{[0, 1, 2, 3].map(index => <Skeleton key={index} height={52} />)}</div>}
-      {suggestion.error && <div className="notice bad" role="alert"><p>Não foi possível carregar os cortes: {suggestion.error}</p></div>}
-      {suggestion.selection && <ClipList clips={clips} notes={suggestion.selection.selection_notes} selected={selected} onToggle={toggle} sort={sort} onSort={setSort} />}
-    </>}
-
-    <SelectionBar count={chosen.length} totalSeconds={totalSeconds} onClear={() => setSelected([])}
-      onEdit={() => readyRun && navigate(editorPath(entry.id, readyRun.id, chosen.map(clipKey)))} />
+    <EpisodeClips episodeId={entry.id} refreshKey={refreshKey} />
     {dialog && <RunOptionsDialog title="Nova seleção de cortes" confirmLabel="Gerar seleção" options={dialog} onClose={() => setDialog(null)} onSave={next => void generate(next)} />}
     {actions.voiceFor && <VoiceDialog entry={actions.voiceFor} onClose={() => actions.setVoiceFor(null)} />}
   </div>;

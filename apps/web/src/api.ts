@@ -16,6 +16,36 @@ export type Publication = PublicationInput & {
   created_at: string; updated_at: string;
 };
 
+export type ClipStatus = "new" | "approved" | "exported" | "saved" | "posted" | "discarded";
+export type ClipDecision = "approved" | "discarded" | null;
+export type DiscardReason = "weak_hook" | "off_topic" | "repeated" | "bad_edit" | "technical" | "other";
+export type ClipState = {
+  decision: ClipDecision; discard_reason: DiscardReason | null; saved: boolean; saved_at: string | null;
+  notes: string; updated_at: string;
+};
+export type ClipExport = {
+  render_artifact_id: string; batch_id: string | null; exported_at: string; duration_seconds: number | null;
+  headline: string; media_url: string; subtitles_url: string;
+};
+export type ClipRow = {
+  project_id: string; run_id: string; source_asset_id: string; run_created_at: string; clip_key: string;
+  rank: number; score: number | null; headline: string; headline_options: string[]; title: string; duration: number;
+  start_second: number; end_second: number; piece_count: number; warnings: string[]; clip: SuggestedClip;
+  state: ClipState | null; exports: ClipExport[]; publication: Publication | null; status: ClipStatus;
+};
+export type BoardClip = ClipRow & { episode_id: string; episode_title: string };
+export type ClipRun = {
+  id: string; project_id: string; source_asset_id: string; created_at: string; status: string; clip_count: number;
+  brief: { count?: number; minimum_seconds?: number; maximum_seconds?: number; primary_subject?: string | null };
+};
+export type OtherExport = ClipExport & { project_id: string; title: string };
+export type ClipCounts = Record<ClipStatus | "total", number>;
+export type EpisodeClips = { runs: ClipRun[]; clips: ClipRow[]; other_exports: OtherExport[]; counts: ClipCounts; warnings: string[] };
+export type ClipStatePatch = {
+  project_id: string; run_id: string; clip_key: string; decision?: ClipDecision;
+  discard_reason?: DiscardReason | null; saved?: boolean; notes?: string;
+};
+
 export type ApiJob = {
   id: string;
   type?: string;
@@ -329,6 +359,13 @@ export const api = {
   registerEpisode: (url: string, participant_count?: number) => request<EpisodeEntry>("/api/v1/episodes", {method:"POST", body:JSON.stringify({url, participant_count})}),
   downloadEpisode: (id: string) => request<{source: SourceAsset | null; job: ApiJob | null; cached: boolean}>(`/api/v1/episodes/${id}/download`, {method:"POST"}),
   jobs: (limit = 20, signal?: AbortSignal) => request<ApiJob[]>(`/api/v1/jobs?limit=${limit}`, {signal}),
+  episodeClips: (id: string, signal?: AbortSignal) => request<EpisodeClips>(`/api/v1/episodes/${encodeURIComponent(id)}/clips`, {signal}),
+  clips: (status: ClipStatus[] = [], signal?: AbortSignal) =>
+    request<{clips: BoardClip[]; total: number}>(`/api/v1/clips?${status.length ? `status=${status.join(",")}&` : ""}limit=200`, {signal}),
+  clipsSummary: (signal?: AbortSignal) => request<{episodes: Record<string, ClipCounts>}>("/api/v1/clips/summary", {signal}),
+  patchClipStates: (items: ClipStatePatch[]) => request<{items: ClipState[]}>("/api/v1/clip-states", {method: "PATCH", body: JSON.stringify({items})}),
+  posterUrl: (projectId: string, artifactId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/renders/${encodeURIComponent(artifactId)}/poster`,
+  sourceMediaUrl: (projectId: string, sourceAssetId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/media`,
   cancelJob: (jobId: string) => request<ApiJob>(`/api/v1/jobs/${jobId}/cancel`, {method:"POST"}),
   job: (jobId: string, signal?: AbortSignal) => request<ApiJob>(`/api/v1/jobs/${jobId}`, {signal}),
   createProject: (name: string) =>

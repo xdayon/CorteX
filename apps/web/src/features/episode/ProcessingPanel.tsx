@@ -2,14 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { api, type ApiJob, type WorkflowRun } from "../../api";
 import { errorText, PROCESSING_STAGES, STAGE_MESSAGES, stageIndex } from "../../app/humanize";
 import { JobDetails, staleMessage, useJobStale, type JobActivity } from "../../JobProgress";
+import type { Task } from "../../app/tasks";
 import { Button, Icon, ProgressBar, useToast } from "../../ui";
 
-export function ProcessingPanel({ run, onCancelled }: { run: WorkflowRun; onCancelled: () => void }) {
+export function ProcessingPanel({ run, task, onCancelled }: { run?: WorkflowRun; task?: Task; onCancelled: () => void }) {
   const toast = useToast();
   const [job, setJob] = useState<ApiJob | null>(null);
   const [history, setHistory] = useState<JobActivity[]>([]);
   const [cancelling, setCancelling] = useState(false);
-  const jobId = run.active_job_id ?? null;
+  const jobId = run?.active_job_id ?? null;
   const last = useRef("");
 
   useEffect(() => {
@@ -35,8 +36,9 @@ export function ProcessingPanel({ run, onCancelled }: { run: WorkflowRun; onCanc
   }, [jobId]);
 
   const { age, stale } = useJobStale(job, history, true);
-  const current = stageIndex(run);
-  const percent = Math.round(run.progress);
+  const current = run ? stageIndex(run) : 0;
+  const progress = run ? run.progress : task?.progress ?? 0;
+  const percent = Math.round(progress);
 
   async function cancel() {
     if (!jobId) return;
@@ -54,15 +56,15 @@ export function ProcessingPanel({ run, onCancelled }: { run: WorkflowRun; onCanc
       </li>)}
     </ol>
     <div className="proc-line">
-      <b>{run.status === "queued" ? "Na fila para começar" : STAGE_MESSAGES[current]}</b>
+      <b>{run ? (run.status === "queued" ? "Na fila para começar" : STAGE_MESSAGES[current]) : task?.message}</b>
       <span className="mono">{percent}%</span>
     </div>
-    <ProgressBar value={run.progress} label="Andamento do processamento" />
+    <ProgressBar value={progress} label="Andamento do processamento" />
     <p className="proc-hint">O processamento continua mesmo se você fechar esta página.</p>
     {stale && <div className="notice" role="alert"><p>{staleMessage(age)}</p></div>}
     <div className="proc-actions">
       <details className="proc-details"><summary>Detalhes técnicos</summary>
-        {run.message && <p className="proc-msg">{run.message}</p>}
+        {run?.message && <p className="proc-msg">{run.message}</p>}
         <JobDetails job={job} history={history} age={age} stale={stale} />
       </details>
       <div className="grow" />

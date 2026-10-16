@@ -1,0 +1,22 @@
+.board { max-width: 1200px; margin: 0 auto; padding: 24px 24px 120px; display: flex; flex-direction: column; gap: 16px; }
+.board-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.board-head h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; }
+.board-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.board-tools .select { width: 240px; max-width: 100%; }
+.board-search { width: 260px; max-width: 100%; }
+.board-rows { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.brow { display: flex; align-items: center; gap: 12px; padding: 8px 12px 8px 6px; border-radius: 12px; border: 1px solid var(--line); background: var(--s1); }
+.brow.act { background: var(--s2); border-color: var(--line2); }
+.brow-poster { flex: none; width: 54px; height: 96px; object-fit: cover; border-radius: 6px; background: var(--s3); }
+.brow-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.brow-title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brow-ep { color: var(--tx2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brow-meta { color: var(--tx3); font-size: 12px; }
+.brow-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+@media (max-width: 760px) {
+  .board { padding: 16px 16px 140px; }
+  .brow { flex-wrap: wrap; }
+  .brow-main { flex-basis: calc(100% - 140px); }
+  .brow-actions { flex-basis: 100%; justify-content: flex-start; }
+  .board-tools .select, .board-search { width: 100%; }
+}

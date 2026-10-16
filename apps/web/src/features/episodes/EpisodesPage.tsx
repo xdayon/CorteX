@@ -1,11 +1,11 @@
-import { useState } from "react";
-import type { EpisodeEntry } from "../../api";
+import { useEffect, useState } from "react";
+import { api, type ClipCounts, type EpisodeEntry } from "../../api";
 import { plural } from "../../app/humanize";
 import { EmptyState, Icon, Segmented, Skeleton, useToast } from "../../ui";
 import { EpisodeCard } from "./EpisodeCard";
 import { NewEpisodeComposer } from "./NewEpisodeComposer";
 import { VoiceDialog } from "./VoiceDialog";
-import { episodeStatus } from "./episodeStatus";
+import { episodeStatus, exportedCount } from "./episodeStatus";
 import { defaultRunOptions } from "./runOptions";
 import { useCreateEpisodeRun } from "./useCreateEpisodeRun";
 import { useEpisodeActions } from "./useEpisodeActions";
@@ -23,6 +23,13 @@ export function EpisodesPage() {
   const catalog = useEpisodeCatalog(filter === "archived");
   const actions = useEpisodeActions(catalog.refresh, catalog.invalidate);
   const create = useCreateEpisodeRun();
+  const [summary, setSummary] = useState<Record<string, ClipCounts>>({});
+  const signature = catalog.entries.map(entry => `${entry.id}:${entry.runs.map(run => run.status).join("")}:${entry.renders.length}`).join("|");
+  useEffect(() => {
+    const controller = new AbortController();
+    Promise.resolve(api.clipsSummary(controller.signal)).then(result => { if (!controller.signal.aborted && result?.episodes) setSummary(result.episodes); }).catch(() => undefined);
+    return () => controller.abort();
+  }, [signature]);
 
   async function prepare(entry: EpisodeEntry) {
     const failure = await create.start({ kind: "episode", entry }, { ...defaultRunOptions(), primarySubject: entry.primary_subject || "Dayon" });
@@ -34,7 +41,7 @@ export function EpisodesPage() {
   const byFilter = scope.filter(entry => filter === "cuts" ? hasCuts(entry) : filter === "undownloaded" ? !entry.source : true);
   const search = query.trim().toLocaleLowerCase("pt-BR");
   const shown = byFilter.filter(entry => `${entry.title} ${entry.channel_name || ""} ${entry.primary_subject}`.toLocaleLowerCase("pt-BR").includes(search));
-  const videos = scope.reduce((sum, entry) => sum + entry.renders.length, 0);
+  const videos = scope.reduce((sum, entry) => sum + (summary[entry.id] ? exportedCount(summary[entry.id]) : entry.renders.length), 0);
   const counts = filter === "archived" ? {} : { all: live.length, cuts: live.filter(hasCuts).length, undownloaded: live.filter(entry => !entry.source).length };
 
   return <div className="wrap">
@@ -59,7 +66,7 @@ export function EpisodesPage() {
       </EmptyState>}
       {!catalog.loading && !!scope.length && !shown.length && <EmptyState title="Nenhum episódio encontrado">Ajuste a busca ou o filtro.</EmptyState>}
       <div className="grid">
-        {shown.map(entry => <EpisodeCard key={entry.id} entry={entry} pending={actions.pending[entry.id]} busy={create.busy}
+        {shown.map(entry => <EpisodeCard key={entry.id} entry={entry} counts={summary[entry.id]} pending={actions.pending[entry.id]} busy={create.busy}
           onAction={action => void actions.act(entry, action)} onVoice={() => actions.setVoiceFor(entry)} onPrepare={() => void prepare(entry)} />)}
       </div>
     </section>

@@ -1,4 +1,4 @@
-import type { EpisodeEntry } from "../../api";
+import type { ClipCounts, EpisodeEntry } from "../../api";
 import type { ChipTone } from "../../ui";
 import { activeJobOf, activeRunOf, isRunReady, jobLabel, plural, shortError, STAGE_MESSAGES, stageIndex } from "../../app/humanize";
 
@@ -35,8 +35,16 @@ export function episodeStatus(entry: EpisodeEntry): EpisodeStatus {
   return { kind: "idle", label: "Sem cortes", tone: "neutral", readyRuns };
 }
 
-export function episodeStats(entry: EpisodeEntry, readyRuns: number) {
+export const exportedCount = (counts: ClipCounts) => counts.exported + counts.saved + counts.posted;
+
+export function episodeStats(entry: EpisodeEntry, readyRuns: number, counts?: ClipCounts) {
   const parts: string[] = [];
+  if (counts && counts.total > 0) {
+    parts.push(plural(counts.total, "corte", "cortes"));
+    if (exportedCount(counts)) parts.push(plural(exportedCount(counts), "exportado", "exportados"));
+    if (counts.posted) parts.push(plural(counts.posted, "postado", "postados"));
+    return parts.join(" · ");
+  }
   if (entry.renders.length) parts.push(plural(entry.renders.length, "vídeo", "vídeos"));
   if (readyRuns) parts.push(plural(readyRuns, "seleção", "seleções"));
   if (parts.length) return parts.join(" · ");

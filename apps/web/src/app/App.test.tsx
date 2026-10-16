@@ -19,6 +19,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.mocked(api.episodes).mockResolvedValue([]);
   vi.mocked(api.jobs).mockResolvedValue([]);
+  vi.mocked(api.clips).mockResolvedValue({ clips: [], total: 0 });
   window.history.replaceState(null, "", "/");
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -68,7 +69,8 @@ test("navigation links switch pages without reloading and unknown paths return h
   render(<App />); await settle();
   fireEvent.click(screen.getByRole("link", { name: "Cortes" }));
   expect(window.location.pathname).toBe("/cortes");
-  expect(screen.getByText("Em breve")).toBeTruthy();
+  await settle();
+  expect(screen.getByRole("heading", { name: "Cortes" })).toBeTruthy();
   expect(document.title).toBe("Cortes · CorteX");
   act(() => { window.history.pushState(null, "", "/nada/aqui"); window.dispatchEvent(new PopStateEvent("popstate")); });
   await settle();

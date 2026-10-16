@@ -1,4 +1,4 @@
-import type { EpisodeEntry } from "../../api";
+import type { ClipCounts, EpisodeEntry } from "../../api";
 import { Link, episodePath } from "../../router";
 import { Button, Chip, ProgressBar } from "../../ui";
 import { EpisodeMenu } from "./EpisodeMenu";
@@ -6,8 +6,8 @@ import { EpisodeThumb } from "./EpisodeThumb";
 import { episodeStats, episodeStatus } from "./episodeStatus";
 import type { EpisodeAction } from "./useEpisodeActions";
 
-export function EpisodeCard({ entry, pending, busy, onAction, onVoice, onPrepare }: {
-  entry: EpisodeEntry; pending?: EpisodeAction; busy: boolean;
+export function EpisodeCard({ entry, counts, pending, busy, onAction, onVoice, onPrepare }: {
+  entry: EpisodeEntry; counts?: ClipCounts; pending?: EpisodeAction; busy: boolean;
   onAction: (action: EpisodeAction) => void; onVoice: () => void; onPrepare: () => void;
 }) {
   const status = episodeStatus(entry);
@@ -28,7 +28,7 @@ export function EpisodeCard({ entry, pending, busy, onAction, onVoice, onPrepare
       {status.kind === "attention" && <span className="ecard-error">{status.error}</span>}
       {entry.metadata_error && <span className="ecard-error">Dados do YouTube: {entry.metadata_error}</span>}
       <div className="ecard-foot">
-        <span className="ecard-stats">{episodeStats(entry, status.readyRuns)}</span>
+        <span className="ecard-stats">{episodeStats(entry, status.readyRuns, counts)}</span>
         <div className="grow" />
         {needsAction && <Button size="sm" disabled={busy || !!pending} onClick={onPrepare}>{status.kind === "attention" ? "Tentar de novo" : "Preparar cortes"}</Button>}
         <EpisodeMenu entry={entry} pending={!!pending} onAction={onAction} onVoice={onVoice} />
