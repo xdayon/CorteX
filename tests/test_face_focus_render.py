@@ -72,7 +72,9 @@ def test_filtergraph_single_span_uses_the_span_geometry():
         face_geometries=[geometry], face_punches=[None],
     )
     assert f"crop={geometry.w}:{geometry.h}:{geometry.x}:{geometry.y}" in graph
-    assert "facefocus" not in graph and "end_frame" not in graph
+    assert "facefocus" not in graph
+    # One span still gets the exact frame count of its place on the timeline.
+    assert "trim=end_frame=30,setpts=PTS-STARTPTS[v0]" in graph
 
 
 def test_filtergraph_split_segment_frame_counts_sum_and_punch_per_span():
@@ -94,7 +96,8 @@ def test_filtergraph_split_segment_frame_counts_sum_and_punch_per_span():
         face_geometries=[left, right], face_punches=punches,
     )
     assert "trim=end_frame=12" in graph and "trim=end_frame=18" in graph  # 12 + 18 == 30
-    assert "concat=n=2:v=1:a=0[v0]" in graph
+    assert "concat=n=2:v=1:a=0[vraw0]" in graph
+    assert "trim=end_frame=30,setpts=PTS-STARTPTS[v0]" in graph
     assert "trim=start=0.000000:end=0.400000" in graph and "trim=start=0.400000:end=1.000000" in graph
     for punch in punches:
         assert f"crop={punch.crop_width}:{punch.crop_height}:{punch.anchor_x}:{punch.anchor_y}" in graph

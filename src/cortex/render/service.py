@@ -87,6 +87,9 @@ _JL_AUDIO_MICROFADE_SECONDS = 0.02
 _HARD_CUT_DECLICK_SECONDS = 0.008
 _AAC_TRUE_PEAK_HEADROOM_DB = 0.5
 _INPUT_WINDOW_VERSION = 1
+# 2: every segment gets an exact frame count on the cumulative timeline (fixes the
+# picture drifting ~0.13 s ahead of the voice over many cuts); old renders re-render.
+_TIMELINE_VERSION = 2
 _DRAFT_SCALE_FLAGS = "fast_bilinear"
 LEGACY_FRAMING_MODES = frozenset({"face_static_crop", "speaker_auto", "speaker_face"})
 LEGACY_FRAMING_MODE_MESSAGE = (
@@ -752,6 +755,19 @@ def _filtergraph(
             )
         raise RenderPreconditionError(f"modo de enquadramento não suportado: {framing_mode}")
     audio_durations: list[float] = []
+    # Every segment gets an exact frame count on the cumulative timeline. Trimming
+    # each segment on its own drops a fraction of a frame per cut while its audio
+    # keeps sample precision, so across 10-16 cuts the picture ran ~0.13 s ahead
+    # of the voice by the end of the clip.
+    planned_elapsed = 0.0
+    frames_emitted = 0
+
+    def exact_frames(raw_label: str, frame_count: int, output_label: str) -> str:
+        return (
+            f"{raw_label}tpad=stop_mode=clone:stop_duration=1,"
+            f"trim=end_frame={frame_count},setpts=PTS-STARTPTS{output_label}"
+        )
+
     for index, segment in enumerate(plan.segments):
         video_duration = segment.video_end - segment.video_start
         audio_duration = segment.audio_end - segment.audio_start
@@ -759,6 +775,9 @@ def _filtergraph(
             raise RenderPreconditionError(f"segmento {index} possui duração inválida")
         durations.append(video_duration)
         audio_durations.append(audio_duration)
+        planned_elapsed += video_duration
+        segment_frames = max(1, round(planned_elapsed * fps) - frames_emitted)
+        frames_emitted += segment_frames
         # Teaser segments break chronological order: they come from a second
         # input with its own window, never from the shared decoder.
         input_index = 1 if segment.teaser else 0
@@ -774,8 +793,9 @@ def _filtergraph(
                 video_parts.append(compose_video(
                     f"[{input_index}:v]trim=start={segment.video_start - offset:.6f}:"
                     f"end={segment.video_end - offset:.6f},setpts=PTS-STARTPTS",
-                    f"[v{index}]", segment.timeline_order, face_index=indexed[0],
+                    f"[vraw{index}]", segment.timeline_order, face_index=indexed[0],
                 ))
+                video_parts.append(exact_frames(f"[vraw{index}]", segment_frames, f"[v{index}]"))
             else:
                 labels = []
                 elapsed = 0.0
@@ -800,14 +820,18 @@ def _filtergraph(
                         f"{raw_label}tpad=stop_mode=clone:stop_duration=1,"
                         f"trim=end_frame={frame_count},setpts=PTS-STARTPTS{label}"
                     )
-                video_parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[v{index}]")
+                video_parts.append(
+                    f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[vraw{index}]"
+                )
+                video_parts.append(exact_frames(f"[vraw{index}]", segment_frames, f"[v{index}]"))
         else:
             video_parts.append(compose_video(
                 f"[{input_index}:v]trim=start={segment.video_start - offset:.6f}:"
                 f"end={segment.video_end - offset:.6f},"
                 "setpts=PTS-STARTPTS",
-                f"[v{index}]", segment.timeline_order,
+                f"[vraw{index}]", segment.timeline_order,
             ))
+            video_parts.append(exact_frames(f"[vraw{index}]", segment_frames, f"[v{index}]"))
         # Audio always follows the segment's own audio clock: a jl_cut boundary
         # only ever shifts audio_start/audio_end.
         audio_parts.append(
@@ -1537,6 +1561,7 @@ class RenderService:
         input_payload = {
             "schema_version": RENDER_SCHEMA_VERSION,
             "input_window": {"version": _INPUT_WINDOW_VERSION, "start": input_start, "end": input_end},
+            "timeline_version": _TIMELINE_VERSION,
             "edit_plan_sha256": _sha256(plan_path),
             "source_sha256": source.sha256,
             "face_focus": {
