@@ -9,6 +9,22 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 
+def open_app_window(url: str) -> None:
+    """Own app window in Google Chrome (decodes every source codec); else the default browser."""
+    candidates = []
+    if subprocess.run(["flatpak", "info", "com.google.Chrome"], capture_output=True).returncode == 0:
+        candidates.append(["flatpak", "run", "com.google.Chrome", f"--app={url}"])
+    candidates += [[name, f"--app={url}"] for name in ("google-chrome", "google-chrome-stable")]
+    for command in candidates:
+        try:
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return
+        except OSError:
+            continue
+    subprocess.run(["xdg-open", url], check=True, timeout=15)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-browser", action="store_true", help="Check startup without opening a tab")
@@ -25,7 +41,7 @@ def main() -> None:
             with urlopen(f"{url}/api/v1/health", timeout=1) as response:
                 if response.status == 200:
                     if not args.no_browser:
-                        subprocess.run(["xdg-open", url], check=True, timeout=15)
+                        open_app_window(url)
                     print(url)
                     return
         except (OSError, ValueError, KeyError, URLError):

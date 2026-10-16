@@ -76,12 +76,20 @@ def main() -> None:
         for char in ('\\', '"', '`', '$'):
             value = value.replace(char, '\\' + char)
         return '"' + value + '"'
+    icon = data_home / "icons/hicolor/scalable/apps/cortex.svg"
+    icon.parent.mkdir(parents=True, exist_ok=True)
+    icon.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<rect x="2" y="2" width="60" height="60" rx="14" fill="#22d3e6"/>'
+        '<text x="32" y="42" font-family="Geist, Montserrat, Arial, sans-serif" font-size="26" '
+        'font-weight="700" text-anchor="middle" fill="#04191c">CX</text></svg>\n'
+    )
     launcher.write_text(f"""[Desktop Entry]
 Type=Application
 Name=CorteX
 Comment=Editor de cortes Dayon News
 Exec={desktop_quote(root / '.venv/bin/python')} {desktop_quote(root / 'scripts/open_studio.py')}
-Icon=video-x-generic
+Icon=cortex
 Terminal=false
 Categories=AudioVideo;Video;
 """)
