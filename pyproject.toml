@@ -32,7 +32,7 @@ analysis = [
   "onnxruntime>=1.24,<2",
 ]
 youtube = ["yt-dlp[default]>=2026.8.19", "secretstorage>=3.3,<4"]
-dev = ["httpx>=0.28,<1", "pytest>=8,<9", "ruff>=0.12,<1"]
+dev = ["httpx>=0.28,<1", "pytest>=8,<9", "ruff>=0.12,<0.13"]
 
 [project.scripts]
 cortex-api = "cortex.api:run"
