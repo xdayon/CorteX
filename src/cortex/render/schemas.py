@@ -623,3 +623,5 @@ class RenderDocument(BaseModel):
     overlays: RenderOverlayInfo | None = None
     quality: RenderQualityReport
     publication: RenderQualityPublicationReport | None = None
+    # Wall-clock seconds per render stage; absent in manifests from older versions.
+    timings: dict[str, float] = Field(default_factory=dict)

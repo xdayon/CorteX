@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import subprocess
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,6 +34,13 @@ _SPLIT_EPSILON = 1e-3
 _SAME_FACE_DISTANCE = 0.08
 _SCDET_WIDTH = 320
 _SCDET_TIMEOUT_SECONDS = 600
+# Long windows are scanned in parallel chunks. Each chunk starts a little early so
+# scdet sees the same preceding frames as a single pass; a cut belongs to the
+# chunk whose nominal range contains it, so the result equals the serial scan.
+_SCDET_CHUNK_SECONDS = 20.0
+_SCDET_OVERLAP_SECONDS = 0.5
+_SCDET_WORKERS = 4
+_FRAME_WORKERS = 4
 
 
 class FaceFocusError(RuntimeError):
@@ -98,25 +107,45 @@ def scene_cuts(
     cached = _read_json(cache_file)
     if isinstance(cached, list):
         return [float(item) for item in cached]
-    command = [
-        str(ffmpeg), "-hide_banner", "-nostats", "-v", "info",
-        "-ss", f"{window_start:.3f}", "-t", f"{duration:.3f}", "-i", str(source_path),
-        "-map", "0:v:0", "-vf", f"scale={_SCDET_WIDTH}:-2,{SCENE_DETECT_FILTER}=threshold={threshold}",
-        "-an", "-f", "null", "-",
+    window_end = window_start + duration
+    chunk_count = max(1, min(_SCDET_WORKERS, math.ceil(duration / _SCDET_CHUNK_SECONDS)))
+    edges = [window_start + duration * index / chunk_count for index in range(chunk_count + 1)]
+    ranges = [
+        (edges[index] if index else -math.inf, edges[index + 1] if index < chunk_count - 1 else math.inf)
+        for index in range(chunk_count)
     ]
-    try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, timeout=_SCDET_TIMEOUT_SECONDS, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise FaceFocusError(f"detecção de cenas via ffmpeg falhou: {exc}") from exc
-    if result.returncode != 0:
-        raise FaceFocusError(
-            f"detecção de cenas via ffmpeg falhou ({result.returncode}): {(result.stderr or '')[-1000:]}"
-        )
+
+    def scan(index: int) -> list[float]:
+        seek = window_start if index == 0 else round(edges[index] - _SCDET_OVERLAP_SECONDS, 3)
+        end = window_end if index == chunk_count - 1 else edges[index + 1]
+        command = [
+            str(ffmpeg), "-hide_banner", "-nostats", "-v", "info",
+            "-ss", f"{seek:.3f}", "-t", f"{end - seek:.3f}", "-i", str(source_path),
+            "-map", "0:v:0", "-vf",
+            f"scale={_SCDET_WIDTH}:-2,{SCENE_DETECT_FILTER}=threshold={threshold}",
+            "-an", "-f", "null", "-",
+        ]
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=_SCDET_TIMEOUT_SECONDS, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise FaceFocusError(f"detecção de cenas via ffmpeg falhou: {exc}") from exc
+        if result.returncode != 0:
+            raise FaceFocusError(
+                f"detecção de cenas via ffmpeg falhou ({result.returncode}): {(result.stderr or '')[-1000:]}"
+            )
+        low, high = ranges[index]
+        found = (round(seek + time, 3) for time, _score in parse_scene_cuts(result.stderr))
+        return [value for value in found if low <= value < high]
+
+    if chunk_count == 1:
+        found = scan(0)
+    else:
+        with ThreadPoolExecutor(max_workers=chunk_count) as pool:
+            found = [value for part in pool.map(scan, range(chunk_count)) for value in part]
     cuts = sorted({
-        round(window_start + time, 3) for time, _score in parse_scene_cuts(result.stderr)
-        if _SPLIT_EPSILON < time < duration - _SPLIT_EPSILON
+        value for value in found if _SPLIT_EPSILON < value - window_start < duration - _SPLIT_EPSILON
     })
     _write_json(cache_file, cuts)
     return cuts
@@ -230,20 +259,25 @@ def _model_sha256(path: str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _faces_cache_file(cache_dir: Path, source_sha256: str, timestamp: float) -> Path:
+    return _cache_path(cache_dir, "faces", {
+        "algorithm": FACE_FOCUS_ALGORITHM_VERSION, "source": source_sha256,
+        "timestamp": round(timestamp, 3), "width": FRAME_EXTRACTION_WIDTH,
+        "model": _model_sha256(str(MODEL_PATH)),
+    })
+
+
 def _detect_cached(
     session_factory: Callable[[], Any], ffmpeg: str | Path, source_path: Path,
     timestamp: float, cache_dir: Path, source_sha256: str,
+    extract: Callable[[float], Any] | None = None,
 ) -> list[dict]:
     timestamp = round(timestamp, 3)
-    cache_file = _cache_path(cache_dir, "faces", {
-        "algorithm": FACE_FOCUS_ALGORITHM_VERSION, "source": source_sha256,
-        "timestamp": timestamp, "width": FRAME_EXTRACTION_WIDTH,
-        "model": _model_sha256(str(MODEL_PATH)),
-    })
+    cache_file = _faces_cache_file(cache_dir, source_sha256, timestamp)
     cached = _read_json(cache_file)
     if isinstance(cached, list):
         return cached
-    frame = _extract_frame_rgb(ffmpeg, source_path, timestamp)
+    frame = extract(timestamp) if extract else _extract_frame_rgb(ffmpeg, source_path, timestamp)
     faces = [
         {key: float(face[key]) for key in ("x", "y", "width", "height", "score")}
         for face in detect_faces(session_factory(), frame)
@@ -286,27 +320,43 @@ def resolve_face_focus(
                 raise FaceFocusError(str(exc)) from exc
         return session_holder[0]
 
-    decisions: dict[int, tuple[float, str, int, list[float]]] = {}
-    for scene_index, scene_spans in sorted(by_scene.items()):
-        check()
-        times = sample_times(
+    scene_times: dict[int, list[float]] = {
+        scene_index: sample_times(
             scene_spans, boundaries[scene_index], boundaries[scene_index + 1],
             start_is_cut=scene_index > 0, end_is_cut=scene_index < len(boundaries) - 2,
         )
-        faces_per_sample = []
-        for timestamp in times:
-            check()
-            try:
-                faces_per_sample.append(_detect_cached(
-                    session, ffmpeg, source_path, timestamp, cache_dir, source_sha256,
-                ))
-            except FaceDetectionError as exc:
-                raise FaceFocusError(str(exc)) from exc
-        focus, reason = decide_focus(
-            faces_per_sample, crop_width_fraction=crop_width_fraction,
-            manual_focus_x=manual_focus_x, primary_side=primary_side,
-        )
-        decisions[scene_index] = (focus, reason, count_faces(faces_per_sample), times)
+        for scene_index, scene_spans in sorted(by_scene.items())
+    }
+    missing = sorted({
+        round(timestamp, 3) for times in scene_times.values() for timestamp in times
+        if _read_json(_faces_cache_file(cache_dir, source_sha256, timestamp)) is None
+    })
+    decisions: dict[int, tuple[float, str, int, list[float]]] = {}
+    with ThreadPoolExecutor(max_workers=_FRAME_WORKERS) as pool:
+        frames = {
+            timestamp: pool.submit(_extract_frame_rgb, ffmpeg, source_path, timestamp)
+            for timestamp in missing
+        }
+        try:
+            for scene_index, times in scene_times.items():
+                faces_per_sample = []
+                for timestamp in times:
+                    check()
+                    try:
+                        faces_per_sample.append(_detect_cached(
+                            session, ffmpeg, source_path, timestamp, cache_dir, source_sha256,
+                            extract=lambda stamp: frames[stamp].result(),
+                        ))
+                    except FaceDetectionError as exc:
+                        raise FaceFocusError(str(exc)) from exc
+                focus, reason = decide_focus(
+                    faces_per_sample, crop_width_fraction=crop_width_fraction,
+                    manual_focus_x=manual_focus_x, primary_side=primary_side,
+                )
+                decisions[scene_index] = (focus, reason, count_faces(faces_per_sample), times)
+        finally:
+            for future in frames.values():
+                future.cancel()
     return [
         FaceFocusSpan(
             segment_order=order, scene_index=scene_index, source_start=start, source_end=end,

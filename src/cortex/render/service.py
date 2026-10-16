@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -86,10 +87,13 @@ _JL_AUDIO_MICROFADE_SECONDS = 0.02
 _HARD_CUT_DECLICK_SECONDS = 0.008
 _AAC_TRUE_PEAK_HEADROOM_DB = 0.5
 _INPUT_WINDOW_VERSION = 1
+_DRAFT_SCALE_FLAGS = "fast_bilinear"
 LEGACY_FRAMING_MODES = frozenset({"face_static_crop", "speaker_auto", "speaker_face"})
 LEGACY_FRAMING_MODE_MESSAGE = (
     "modo de enquadramento descontinuado; use Quadro com fundo desfocado ou Tela cheia"
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RenderJobCancelled(RuntimeError):
@@ -639,6 +643,7 @@ def _filtergraph(
     face_spans: list[FaceFocusSpan] | None = None,
     face_geometries: list[_CropGeometry] | None = None,
     face_punches: list[_PunchInResolution | None] | None = None,
+    scale_flags: str | None = None,
 ) -> tuple[str, str, str]:
     video_parts: list[str] = []
     audio_parts: list[str] = []
@@ -651,6 +656,8 @@ def _filtergraph(
     # Lossy AAC can overshoot the decoded PCM target. Keep a conservative
     # encoding margin while the publication gate still enforces the configured limit.
     normalization_true_peak = true_peak_limit_dbfs - _AAC_TRUE_PEAK_HEADROOM_DB
+    # Draft previews pass a cheaper swscale algorithm; exports keep the default.
+    sf = f":flags={scale_flags}" if scale_flags else ""
 
     def compose_video(
         input_filter: str, output_label: str, segment_order: int,
@@ -678,17 +685,17 @@ def _filtergraph(
             )
             return (
                 f"{input_filter},fps={fps},crop={crop_box[0]}:{crop_box[1]}:"
-                f"{crop_box[2]}:{crop_box[3]},scale={width}:{height},"
+                f"{crop_box[2]}:{crop_box[3]},scale={width}:{height}{sf},"
                 f"setsar=1,format=yuv420p{output_label}"
             )
         if effective_mode == "vertical_crop":
             punch_chain = (
                 f",crop={punch.crop_width}:{punch.crop_height}:"
-                f"{punch.anchor_x}:{punch.anchor_y},scale={width}:{height}"
+                f"{punch.anchor_x}:{punch.anchor_y},scale={width}:{height}{sf}"
             ) if punch is not None else ""
             return (
                 f"{input_filter},fps={fps},scale={width}:{height}:"
-                f"force_original_aspect_ratio=increase,crop={width}:{height}"
+                f"force_original_aspect_ratio=increase{sf},crop={width}:{height}"
                 f"{punch_chain},"
                 f"setsar=1,format=yuv420p{output_label}"
             )
@@ -721,7 +728,7 @@ def _filtergraph(
                 # into the fixed display window.
                 foreground_chain = (
                     f"crop={source_crop[0]}:{source_crop[1]}:{source_crop[2]}:{source_crop[3]},"
-                    f"scale={geo.window_w}:{geo.window_h},setsar=1"
+                    f"scale={geo.window_w}:{geo.window_h}{sf},setsar=1"
                 )
             elif punch is not None:
                 # Crop the source inside the fitted video window. Zoom must not
@@ -729,17 +736,17 @@ def _filtergraph(
                 foreground_chain = (
                     f"crop=trunc(iw/{punch.effective_scale}/2)*2:"
                     f"trunc(ih/{punch.effective_scale}/2)*2,"
-                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,setsar=1"
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease{sf},setsar=1"
                 )
             else:
                 foreground_chain = (
-                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,setsar=1"
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease{sf},setsar=1"
                 )
             return (
                 f"{input_filter},fps={fps},split=2{background_raw}{foreground_raw};"
-                f"{background_raw}scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
+                f"{background_raw}scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase{sf},"
                 f"crop={blur_width}:{blur_height},gblur=sigma=12:steps=2,"
-                f"scale={width}:{height},setsar=1{background};"
+                f"scale={width}:{height}{sf},setsar=1{background};"
                 f"{foreground_raw}{foreground_chain}{foreground};{background}{foreground}"
                 f"overlay=x=(W-w)/2:y='{foreground_y}':format=yuv420,format=yuv420p{output_label}"
             )
@@ -1326,6 +1333,7 @@ class RenderService:
         ):
             raise RenderPreconditionError("transcript, fonte e plano não correspondem")
         transcript = TranscriptDocument.model_validate_json(transcript_path.read_text(encoding="utf-8"))
+        timings["plan_load"] = round(time.monotonic() - total_started, 4)
         caption_font = _resolve_font_family(requested_settings.captions.font_family)
         headline_font = _resolve_font_family(requested_settings.headline.font_family)
         headline_text = normalize_headline_text(requested_settings.headline.text)
@@ -1402,6 +1410,7 @@ class RenderService:
             if source_size is None or crop_geometry is None:
                 raise RenderPreconditionError("foco nos rostos exige as dimensões da fonte")
             face_crop_fraction = crop_geometry.w / source_size[0]
+            face_focus_started = time.monotonic()
             try:
                 face_spans = resolve_face_focus(
                     ffmpeg=self._config.render.ffmpeg, source_path=source_path,
@@ -1419,6 +1428,7 @@ class RenderService:
                 raise RenderPreconditionError(
                     f"não foi possível detectar rostos para o foco automático: {exc}"
                 ) from exc
+            timings["face_focus"] = round(time.monotonic() - face_focus_started, 4)
             face_geometries = [
                 _focused_geometry(
                     effective_settings.framing.mode, source_size,
@@ -1521,7 +1531,7 @@ class RenderService:
                 codec="ass", font_files=font_files or None,
                 generator_version=ass_result.generator_version,
             )
-            timings["overlay_seconds"] = round(time.monotonic() - overlay_started, 4)
+            timings["overlay"] = round(time.monotonic() - overlay_started, 4)
         input_start, input_end = _source_input_window(plan)
         teaser_window = _teaser_input_window(plan)
         input_payload = {
@@ -1637,6 +1647,7 @@ class RenderService:
             face_spans=face_spans,
             face_geometries=face_geometries,
             face_punches=face_punches,
+            scale_flags=_DRAFT_SCALE_FLAGS if draft else None,
         )
         command = [str(self._config.render.ffmpeg), "-y", "-v", "error"]
         command.extend([
@@ -1662,8 +1673,9 @@ class RenderService:
                 duration_seconds_value=plan.timeline_duration_seconds,
                 progress_cb=lambda percent, message: progress_cb(25.0 + percent * 0.59, message),
             )
-            timings["encode_seconds"] = round(time.monotonic() - encode_started, 4)
+            timings["ffmpeg_encode"] = round(time.monotonic() - encode_started, 4)
             quality_started = time.monotonic()
+            loudness_check_seconds = loudness_correction_seconds = 0.0
             progress_cb(85.0, "Validando streams, duração e loudness")
             rendered_probe = probe_media(self._config.render.ffprobe, temporary_path)
             actual_duration = duration_seconds(rendered_probe)
@@ -1675,14 +1687,18 @@ class RenderService:
             true_peak: float | None = None
             loudness_delta: float | None = None
             if "audio" in types:
+                loudness_started = time.monotonic()
                 integrated_loudness, true_peak = _measure_loudness(
                     self._config.render.ffmpeg, temporary_path
                 )
+                loudness_check_seconds = time.monotonic() - loudness_started
                 loudness_delta = abs(
                     integrated_loudness - self._config.render.loudness_target_lufs
                 )
-                if loudness_delta > self._config.render.loudness_tolerance_lu:
+                # Previews keep the in-graph loudnorm but skip the second encode.
+                if loudness_delta > self._config.render.loudness_tolerance_lu and not draft:
                     progress_cb(87.0, "Corrigindo loudness com medição em duas passadas")
+                    correction_started = time.monotonic()
                     _normalize_render_loudness(
                         self._config.render.ffmpeg,
                         temporary_path,
@@ -1703,6 +1719,7 @@ class RenderService:
                     loudness_delta = abs(
                         integrated_loudness - self._config.render.loudness_target_lufs
                     )
+                    loudness_correction_seconds = time.monotonic() - correction_started
             if "video" not in types:
                 issues.append("video_stream_missing")
             if "audio" not in types:
@@ -1730,7 +1747,7 @@ class RenderService:
                     loudness_delta is not None
                     and loudness_delta > self._config.render.loudness_tolerance_lu
                 ):
-                    issues.append("loudness_out_of_tolerance")
+                    (warnings if draft else issues).append("loudness_out_of_tolerance")
                 if true_peak is not None and true_peak > self._config.render.true_peak_limit_dbfs:
                     issues.append("true_peak_exceeded")
                 elif (
@@ -1980,6 +1997,13 @@ class RenderService:
                 },
                 technical=technical,
             )
+            timings["loudness_check"] = round(loudness_check_seconds, 4)
+            timings["loudness_correction"] = round(loudness_correction_seconds, 4)
+            timings["qa"] = round(max(0.0, (
+                time.monotonic() - quality_started
+                - loudness_check_seconds - loudness_correction_seconds
+            )), 4)
+            timings["total"] = round(time.monotonic() - total_started, 4)
             temporary_path.replace(output_path)
             if cues and effective_settings.subtitles.sidecar_srt:
                 temporary_subtitles_path.replace(subtitles_path)
@@ -2103,6 +2127,11 @@ class RenderService:
                 ),
                 quality=quality,
                 publication=publication,
+                timings=timings,
+            )
+            logger.info(
+                "render %s timings: %s", purpose,
+                ", ".join(f"{name}={value:.2f}s" for name, value in timings.items()),
             )
             manifest_path = output_dir / f"{stem}.json"
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_dir,
@@ -2123,11 +2152,7 @@ class RenderService:
                           "quality_warnings": publication.warnings,
                           "quality_check_count": len(publication.checks),
                           "output_path": str(output_path),
-                          "timings": {
-                              **timings,
-                              "quality_seconds": round(time.monotonic() - quality_started, 4),
-                              "total_seconds": round(time.monotonic() - total_started, 4),
-                          }},
+                          "timings": timings},
             ))
         finally:
             temporary_path.unlink(missing_ok=True)
