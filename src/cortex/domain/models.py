@@ -134,6 +134,9 @@ class ClipRevision(BaseModel):
     # Caption emphasis per clip key (transcript word indices); absent keys use
     # the AI suggestion stored in the clip.
     emphasis: dict[str, list[int]] = Field(default_factory=dict)
+    # Per-clip render overrides (partial RenderSettings) deep-merged over
+    # render_settings for that clip only; absent keys use the shared settings.
+    clip_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
     visual_artifacts: dict[str, str] = Field(default_factory=dict)
     interviewer_identity_id: str | None = None
     reuse_reactions: bool = False

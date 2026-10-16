@@ -26,7 +26,7 @@ from cortex.domain.store import (
 )
 from cortex.export_batches import advance_export_batch, export_plan_payload
 from cortex.jobs import InvalidJobTransitionError, JobNotFoundError, JobStore
-from cortex.render.schemas import RenderSettings
+from cortex.render.schemas import RenderSettings, RenderSettingsPatch
 from cortex.schemas import JobCreate, JobType
 
 
@@ -56,7 +56,25 @@ class ClipRevisionCreate(BaseModel):
     caption_edits: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     headlines: dict[str, str] = Field(default_factory=dict)
     emphasis: dict[str, list[Annotated[int, Field(ge=0)]]] = Field(default_factory=dict)
+    clip_settings: dict[str, RenderSettingsPatch] = Field(default_factory=dict)
     visual_artifacts: dict[str, str] = Field(default_factory=dict)
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursive dict merge: override wins, nested sections keep unspecified base keys."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def clip_render_settings(revision, key: str) -> dict[str, Any]:
+    """Shared settings plus the clip's own overrides (a fresh copy)."""
+    base = json.loads(json.dumps(revision.render_settings))
+    return deep_merge(base, revision.clip_settings.get(key) or {})
 
 
 class ExportBatchCreate(BaseModel):
@@ -98,13 +116,27 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
         keys = [clip.key for clip in request.selected_clips]
         if len(keys) != len(set(keys)):
             raise HTTPException(status_code=422, detail="Cortes selecionados possuem chaves duplicadas")
+        overrides = {
+            key: patch.model_dump(mode="json", exclude_unset=True)
+            for key, patch in request.clip_settings.items()
+        }
+        if set(overrides) - set(keys):
+            raise HTTPException(status_code=422, detail="Ajuste por corte para um corte não selecionado")
+        shared = request.render_settings.model_dump(mode="json")
+        for key, override in overrides.items():
+            try:
+                RenderSettings.model_validate(deep_merge(shared, override))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422, detail=f"Ajuste inválido para o corte {key}",
+                ) from exc
         return domain.create_clip_revision(ClipRevision(
             project_id=project_id, workflow_run_id=run_id,
             selection_artifact_id=selection.id,
             selected_clips=[clip.model_dump(mode="json") for clip in request.selected_clips],
-            render_settings=request.render_settings.model_dump(mode="json"),
+            render_settings=shared,
             caption_edits=request.caption_edits, headlines=request.headlines,
-            emphasis=request.emphasis,
+            emphasis=request.emphasis, clip_settings=overrides,
             visual_artifacts=request.visual_artifacts,
         ))
 
@@ -133,7 +165,7 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
         items = []
         for position, clip in enumerate(revision.selected_clips):
             key = str(clip["key"])
-            effective = json.loads(json.dumps(revision.render_settings))
+            effective = clip_render_settings(revision, key)
             effective.setdefault("captions", {})["corrections"] = revision.caption_edits.get(key, [])
             effective["captions"]["emphasis_word_indices"] = (
                 revision.emphasis[key] if key in revision.emphasis

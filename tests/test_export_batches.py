@@ -277,3 +277,38 @@ def test_export_plan_payload_carries_teaser_only_when_toggled(tmp_path: Path) ->
     assert "teaser" not in off.payload
     on = export(True, "teaser-on")[0]
     assert on.payload["teaser"] == {"start": 50.0, "end": 53.5}
+
+
+def test_clip_settings_override_only_their_clip(tmp_path: Path) -> None:
+    config, _domain, project, run = _workflow(tmp_path)
+    client = TestClient(create_app(config))
+    clips = [
+        {"key": "a", "rank": 1, "title": "A", "headline": "A", "start_second": 0,
+         "end_second": 60, "pacing": "dynamic",
+         "teaser": {"start": 50.0, "end": 53.5, "text": "frase"}},
+        {"key": "b", "rank": 2, "title": "B", "headline": "B", "start_second": 70,
+         "end_second": 130, "pacing": "dynamic",
+         "teaser": {"start": 100.0, "end": 102.0, "text": "outra"}},
+    ]
+    endpoint = f"/api/v1/projects/{project.id}/runs/{run.id}/revisions"
+    body = {"selection_artifact_id": run.artifacts["suggestion"], "selected_clips": clips,
+            "render_settings": _settings()}
+
+    for bad in ({"c": {"framing": {"zoom": 1.2}}}, {"a": {"framing": {"nope": 1}}}):
+        assert client.post(endpoint, json={**body, "clip_settings": bad}).status_code == 422
+
+    revision = client.post(endpoint, json={**body, "clip_settings": {
+        "a": {"framing": {"zoom": 1.25}, "transitions": {"teaser": True}},
+    }}).json()
+    assert revision["clip_settings"] == {"a": {"framing": {"zoom": 1.25}, "transitions": {"teaser": True}}}
+    batch = client.post(
+        f"/api/v1/projects/{project.id}/runs/{run.id}/export-batches",
+        json={"revision_id": revision["id"], "idempotency_key": "per-clip"},
+    ).json()
+    settings = {item["clip_key"]: item["render_settings"] for item in batch["items"]}
+    assert settings["a"]["framing"]["zoom"] == 1.25
+    assert settings["a"]["framing"]["mode"] == "blurred_background"
+    assert settings["b"]["framing"].get("zoom") != 1.25
+    assert settings["a"]["transitions"]["teaser"] is True
+    plan_job = next(job for job in JobStore(config.paths.database).list() if job.type == "edit_plan")
+    assert plan_job.payload["teaser"] == {"start": 50.0, "end": 53.5}
