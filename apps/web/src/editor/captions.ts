@@ -1,4 +1,4 @@
-import type { CaptionCorrection, SuggestedClip, TranscriptWord } from "../api";
+import type { CaptionCorrection, OverlayWord, SuggestedClip, TranscriptWord } from "../api";
 import { clipKey } from "./clips";
 
 export type IndexedWord = TranscriptWord & { index: number };
@@ -38,15 +38,14 @@ function core(word: string) {
 
 /** Whole-word, case-insensitive replacement on the transcript words inside each clip. */
 export function findReplace(
-  words: IndexedWord[], clips: SuggestedClip[], existing: Record<string, CaptionCorrection[]>,
+  words: IndexedWord[], targets: Array<{ key: string; clip: SuggestedClip }>, existing: Record<string, CaptionCorrection[]>,
   find: string, replacement: string,
 ): { edits: Record<string, CaptionCorrection[]>; count: number } {
   const needle = find.trim().toLowerCase();
   const edits: Record<string, CaptionCorrection[]> = { ...existing };
   let count = 0;
   if (!needle) return { edits, count };
-  for (const clip of clips) {
-    const key = clipKey(clip);
+  for (const { key, clip } of targets) {
     const ranges = clipRanges(clip);
     let list = edits[key] ?? [];
     let changed = false;
@@ -67,3 +66,9 @@ export function findReplace(
 export function flatWords(segments: Array<{ words: TranscriptWord[] }>): IndexedWord[] {
   return segments.flatMap(segment => segment.words).map((word, index) => ({ ...word, index }));
 }
+
+export const DOUBTFUL_BELOW = 0.6;
+
+/** A word the transcription was unsure about and nobody has corrected yet. */
+export const isDoubtful = (word: OverlayWord, corrections: CaptionCorrection[]) =>
+  word.probability !== null && word.probability < DOUBTFUL_BELOW && !corrections.some(item => item.word_index === word.index);

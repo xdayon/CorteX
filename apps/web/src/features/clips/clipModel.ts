@@ -60,3 +60,18 @@ export async function downloadAll(items: Array<{ title: string; url: string }>) 
 
 export const newestExport = (row: ClipRow) => row.exports[0] as ClipExport | undefined;
 export const headlineOf = (row: ClipRow) => row.headline || row.title;
+
+/**
+ * Which clips earn the accented score badge. Scores are relative to the run's own scale: on a scale that runs
+ * past 10 (v1 sums) the top 20% of the run are accented, otherwise a score of 9 or more.
+ */
+export function topScores(rows: ClipRow[]): (row: ClipRow) => boolean {
+  const byRun = new Map<string, number[]>();
+  for (const row of rows) if (row.score != null) byRun.set(row.run_id, [...(byRun.get(row.run_id) ?? []), row.score]);
+  const cutoff = new Map<string, number>();
+  for (const [run, scores] of byRun) {
+    const sorted = [...scores].sort((a, b) => b - a);
+    cutoff.set(run, sorted[0] > 10 ? sorted[Math.max(0, Math.ceil(sorted.length * 0.2) - 1)] : 9);
+  }
+  return row => row.score != null && row.score >= (cutoff.get(row.run_id) ?? 9);
+}

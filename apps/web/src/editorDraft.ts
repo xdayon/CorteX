@@ -1,4 +1,4 @@
-import type { CaptionCorrection, RenderSettings } from './api';
+import type { CaptionCorrection, RenderSettings, SettingsPatch } from './api';
 import { normalizeSettings } from './editor/settings';
 
 export type VisualArtifacts = { scene: string };
@@ -9,6 +9,7 @@ export type EditorDraft = {
   captionEdits: Record<string, CaptionCorrection[]>;
   headlines: Record<string, string>;
   emphasisEdits: Record<string, number[]>;
+  clipSettings: Record<string, SettingsPatch>;
   focusedKey: string;
   rendered: Array<{title: string; url: string; subtitles: string; artifactId?: string; projectId?: string; hookText?: string}>;
   visualArtifacts: VisualArtifacts | null;
@@ -36,7 +37,7 @@ export type RestoredDraft = EditorDraft & {legacyFraming: boolean};
 
 export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: string[], defaults: RenderSettings, encoder?: RenderSettings['encoder'] | null): RestoredDraft {
   const fallback = normalizeSettings(defaults, defaults, encoder).settings;
-  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, emphasisEdits: {}, focusedKey: '', rendered: [], visualArtifacts: null};
+  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, emphasisEdits: {}, clipSettings: {}, focusedKey: '', rendered: [], visualArtifacts: null};
   try {
     const saved: unknown = JSON.parse(storage.getItem(`cortex-draft:${runKey}`) || 'null');
     if (saved !== null && (!object(saved) || (saved.schema_version !== undefined && saved.schema_version !== 1))) return empty;
@@ -56,12 +57,18 @@ export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: s
       const list = draft.emphasisEdits[key];
       if (Array.isArray(list) && list.every(item => Number.isInteger(item) && item >= 0)) emphasisEdits[key] = list as number[];
     }
+    const clipSettings: Record<string, SettingsPatch> = {};
+    if (object(draft.clipSettings)) for (const key of clipKeys) {
+      const patch = draft.clipSettings[key];
+      if (object(patch) && Object.keys(patch).length) clipSettings[key] = patch as SettingsPatch;
+    }
     const visual = draft.visualArtifacts;
     const selected = draft.selectedKeys;
     return {...empty,
       settings: validDraft ? normalized.settings : fallback,
       legacyFraming: validDraft && normalized.legacyFraming,
       emphasisEdits,
+      clipSettings,
       selectedKeys: Array.isArray(selected) ? clipKeys.filter(key => selected.includes(key)) : clipKeys,
       captionEdits,
       headlines: object(draft.headlines) ? Object.fromEntries(Object.entries(draft.headlines).filter(([key, value]) => clipKeys.includes(key) && typeof value === 'string')) as Record<string, string> : {},

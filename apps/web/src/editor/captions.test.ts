@@ -9,6 +9,7 @@ const words: IndexedWord[] = [
   { index: 2, word: "cortecs", start: 2, end: 3 },
   { index: 3, word: "cortecs", start: 50, end: 51 },
 ];
+const target = (clip: SuggestedClip) => ({ key: clipKey(clip), clip });
 const clip = (rank: number, start: number, end: number, extra: Partial<SuggestedClip> = {}) =>
   ({ rank, title: `c${rank}`, start_second: start, end_second: end, pacing: "balanced", ...extra }) as SuggestedClip;
 
@@ -39,7 +40,7 @@ test("find and replace is whole-word, case-insensitive, scoped to each clip's pi
   const a = clip(1, 0, 5);
   const b = clip(2, 45, 60);
   const outside = clip(3, 70, 80);
-  const all = findReplace(words, [a, b, outside], {}, "CORTECS", "CorteX");
+  const all = findReplace(words, [a, b, outside].map(target), {}, "CORTECS", "CorteX");
   expect(all.count).toBe(3);
   expect(all.edits[clipKey(a)]).toEqual([
     { word_index: 1, original: "Cortecs,", text: "CorteX," },
@@ -47,8 +48,8 @@ test("find and replace is whole-word, case-insensitive, scoped to each clip's pi
   ]);
   expect(all.edits[clipKey(b)]).toEqual([{ word_index: 3, original: "cortecs", text: "CorteX" }]);
   expect(all.edits[clipKey(outside)]).toBeUndefined();
-  expect(findReplace(words, [a], {}, "cort", "x").count).toBe(0);
-  const onlyThis = findReplace(words, [a], {}, "cortecs", "CorteX");
+  expect(findReplace(words, [target(a)], {}, "cort", "x").count).toBe(0);
+  const onlyThis = findReplace(words, [target(a)], {}, "cortecs", "CorteX");
   expect(onlyThis.count).toBe(2);
   expect(onlyThis.edits[clipKey(b)]).toBeUndefined();
 });
@@ -56,7 +57,7 @@ test("find and replace is whole-word, case-insensitive, scoped to each clip's pi
 test("find and replace uses pieces, keeps earlier corrections and can revert to the original", () => {
   const pieces = clip(1, 0, 60, { pieces: [{ from_id: 0, to_id: 1, start: 49, end: 52, text: "" }] });
   const existing: Record<string, CaptionCorrection[]> = { [clipKey(pieces)]: [{ word_index: 0, original: "O", text: "Ó" }] };
-  const result = findReplace(words, [pieces], existing, "cortecs", "cortecs");
+  const result = findReplace(words, [target(pieces)], existing, "cortecs", "cortecs");
   expect(result.count).toBe(1);
   expect(result.edits[clipKey(pieces)]).toEqual([{ word_index: 0, original: "O", text: "Ó" }]);
 });

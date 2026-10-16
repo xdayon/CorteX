@@ -186,6 +186,7 @@ export type ClipRevision = {
   caption_edits: Record<string, CaptionCorrection[]>;
   headlines: Record<string, string>;
   emphasis?: Record<string, number[]>;
+  clip_settings?: Record<string, SettingsPatch>;
   visual_artifacts: Record<string, string>;
 };
 
@@ -292,6 +293,16 @@ export type RenderSettings = {
   };
 };
 
+export type DeepPartial<T> = { [K in keyof T]?: T[K] extends readonly unknown[] ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K] };
+/** Per-clip override: only the settings that differ from the shared ones. */
+export type SettingsPatch = DeepPartial<RenderSettings>;
+
+export type EditPlanSegment = {
+  start: number; end: number; video_start?: number; video_end?: number; timeline_order: number;
+  piece_index?: number | null; teaser?: boolean;
+};
+export type EditPlanDocument = { segments: EditPlanSegment[]; timeline_duration_seconds: number };
+
 export type CaptionStyle = "classic" | "word_reveal" | "pop" | "box";
 export type PieceJunction = "cut" | "flash" | "zoom";
 
@@ -386,6 +397,7 @@ export const api = {
     caption_edits: Record<string, CaptionCorrection[]>;
     headlines: Record<string,string>;
     emphasis?: Record<string, number[]>;
+    clip_settings?: Record<string, SettingsPatch>;
     visual_artifacts: Record<string,string>;
   }) => request<ClipRevision>(`/api/v1/projects/${projectId}/runs/${runId}/revisions`, {
     method:"POST", body:JSON.stringify(body),
@@ -433,6 +445,9 @@ export const api = {
         teaser_start: o.teaserStart, teaser_end: o.teaserEnd,
       }),
     }),
+
+  editPlan: (projectId: string, artifactId: string, signal?: AbortSignal) =>
+    request<{document: EditPlanDocument}>(`/api/v1/projects/${projectId}/edit-plans/${artifactId}`, {signal}),
 
   startSceneIndex: (projectId: string, sourceAssetId: string, sourceRanges?: Array<{start:number;end:number}>) =>
     request<ApiJob>(`/api/v1/projects/${projectId}/scenes`, {

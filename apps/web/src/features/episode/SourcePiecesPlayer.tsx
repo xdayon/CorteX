@@ -31,7 +31,7 @@ export function locate(pieces: Piece[], virtual: number) {
 }
 
 /** Plays a clip's pieces straight from the source video, jumping piece to piece without a render. */
-export const SourcePiecesPlayer = forwardRef<PlayerHandle, { src: string; pieces: Piece[]; label?: string }>(function SourcePiecesPlayer({ src, pieces, label = "Prévia do corte original" }, handle) {
+export const SourcePiecesPlayer = forwardRef<PlayerHandle, { src: string; pieces: Piece[]; label?: string; poster?: string; portrait?: boolean; onMetadata?: (duration: number) => void }>(function SourcePiecesPlayer({ src, pieces, label = "Prévia do corte original", poster, portrait, onMetadata }, handle) {
   const video = useRef<HTMLVideoElement>(null);
   const index = useRef(0);
   const frame = useRef(0);
@@ -98,11 +98,12 @@ export const SourcePiecesPlayer = forwardRef<PlayerHandle, { src: string; pieces
 
   function onLoaded() {
     if (video.current && pieces.length) video.current.currentTime = pieces[0].start;
+    if (video.current && Number.isFinite(video.current.duration)) onMetadata?.(video.current.duration);
   }
 
-  return <div className="spp">
+  return <div className={portrait ? "spp spp-portrait" : "spp"}>
     <div className="spp-stage" onClick={toggle}>
-      <video ref={video} src={src} preload="metadata" playsInline aria-label={label} onLoadedMetadata={onLoaded} onEnded={pause} />
+      <video ref={video} src={src} poster={poster} preload="metadata" playsInline aria-label={label} onLoadedMetadata={onLoaded} onEnded={pause} />
       {!playing && <button type="button" className="spp-play" aria-label="Reproduzir" onClick={event => { event.stopPropagation(); play(); }}><Icon name="play" /></button>}
     </div>
     <div className="spp-controls">

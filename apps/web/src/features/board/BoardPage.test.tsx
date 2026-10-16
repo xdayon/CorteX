@@ -63,7 +63,7 @@ test("rows link back to the episode, toggle saved optimistically and support bul
   const link = within(row).getByRole("link", { name: "Abrir no episódio" });
   expect(new URL(link.getAttribute("href")!, "http://x").pathname).toBe("/episodios/ep");
   expect(decodeURIComponent(link.getAttribute("href")!)).toContain("clip=run~2:200:260:balanced");
-  fireEvent.click(within(row).getByRole("button", { name: "Salvo" }));
+  fireEvent.click(within(row).getByRole("button", { name: "Marcar salvo" }));
   expect(api.patchClipStates).toHaveBeenLastCalledWith([expect.objectContaining({ clip_key: "2:200:260:balanced", saved: true })]);
   expect(screen.getByText("2 prontos para postar · 2 salvos · 1 postados")).toBeTruthy();
   fireEvent.click(screen.getByRole("checkbox", { name: "Selecionar Manchete 2" }));
