@@ -228,6 +228,88 @@ def run_youtube_ingest_job(
     )
 
 
+def _record_voice_match(domain: DomainStore, run_id: str, brief: dict, **changes: Any) -> dict:
+    updated = {**brief, **changes}
+    run = domain.get_workflow_run(run_id)
+    domain.update_workflow_run(run_id, brief={**run.brief, **changes})
+    return updated
+
+
+def _ensure_voice_labels(
+    job: Job, config: CortexConfig, jobs: JobStore, domain: DomainStore,
+    transcript_artifact, brief: dict,
+) -> dict:
+    """Label who speaks with the stored voiceprint before selection (new episodes have no diarization).
+
+    A confirmed voice already in the brief always wins. Without a profile, or when the
+    runner fails, selection continues unlabeled and the reason is stored in the run brief.
+    """
+    run_id = job.payload.get("workflow_run_id")
+    if not run_id or "confirmed_voice" in brief or not config.voice.match_enabled:
+        return brief
+    from cortex.diarize.voice_match import VoiceMatchCancelled, load_profile, match_transcript
+
+    def progress_cb(progress_percent: float, message: str) -> None:
+        _safe_progress(jobs, job.id, progress_percent, message, PipelineStage.SUGGEST)
+
+    def should_cancel() -> bool:
+        return _job_is_cancelled(jobs, job.id)
+
+    try:
+        profile = load_profile(config)
+    except (OSError, ValueError) as exc:
+        return _record_voice_match(domain, run_id, brief, voice_match={
+            "status": "failed", "reason": f"Perfil de voz ilegível: {exc}"})
+    if profile is None:
+        return _record_voice_match(domain, run_id, brief, voice_match={
+            "status": "skipped", "reason": "Sem perfil de voz; cadastre a voz do Dayon a partir de um episódio confirmado"})
+    source = domain.get_source_asset(transcript_artifact.source_asset_id)
+    domain.update_workflow_run(run_id, message="Reconhecendo a voz do Dayon")
+    started = time.monotonic()
+    try:
+        progress_cb(2, "Reconhecendo a voz do Dayon")
+        result = match_transcript(
+            config, domain, source=source, transcript_artifact=transcript_artifact,
+            profile=profile, progress_cb=progress_cb, should_cancel=should_cancel,
+        )
+        document = json.loads(Path(domain.get_stage_artifact(result["diarization_artifact_id"]).path).read_text())
+    except VoiceMatchCancelled:
+        raise SuggestionJobCancelled() from None
+    except Exception as exc:  # noqa: BLE001 - recorded in the run; selection continues unlabeled
+        return _record_voice_match(domain, run_id, brief, voice_match={
+            "status": "failed", "reason": _truncate(str(exc))})
+    finally:
+        domain.update_workflow_run(run_id, message="Claude selecionando os melhores cortes")
+    confirmed = {
+        "diarization_artifact_id": result["diarization_artifact_id"], "speaker": result["speaker"],
+        "source": "voice_match", "threshold": result["threshold"], "turns": document["turns"],
+    }
+    _set_episode_voice_reference(config, domain, source, confirmed)
+    return _record_voice_match(
+        domain, run_id, brief, confirmed_voice=confirmed,
+        voice_match={"status": "ok", "cached": result["cached"],
+                     "elapsed_seconds": round(time.monotonic() - started, 1)},
+    )
+
+
+def _set_episode_voice_reference(config: CortexConfig, domain: DomainStore, source, confirmed: dict) -> None:
+    """Point the library episode at the match unless a person already confirmed a voice."""
+    if not source.source_url:
+        return
+    from cortex.library import EpisodeLibrary, youtube_id
+    try:
+        library = EpisodeLibrary(config, domain)
+        entry = library.get(youtube_id(source.source_url))
+        if not entry.subject_reference:
+            entry.subject_reference = {
+                "diarization_artifact_id": confirmed["diarization_artifact_id"],
+                "speaker": confirmed["speaker"],
+            }
+            library.save(entry)
+    except ValueError:
+        pass
+
+
 def run_suggestion_job(
     job: Job,
     config: CortexConfig,
@@ -256,10 +338,13 @@ def run_suggestion_job(
         return _job_is_cancelled(jobs, job.id)
 
     try:
+        brief = _ensure_voice_labels(
+            job, config, jobs, domain, transcript_artifact, job.payload.get("brief") or {},
+        )
         result = service.run(
             transcript_artifact=transcript_artifact,
             analysis_artifact=analysis_artifact,
-            brief=job.payload.get("brief") or {},
+            brief=brief,
             progress_cb=progress_cb,
             should_cancel=should_cancel,
         )
