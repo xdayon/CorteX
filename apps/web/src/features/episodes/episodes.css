@@ -1,0 +1,58 @@
+.wrap { max-width: 1360px; margin: 0 auto; padding: 28px 24px 48px; display: flex; flex-direction: column; gap: 28px; }
+.composer { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; }
+.composer.dragging { border-color: var(--ac); background: var(--acs); }
+.cmp-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.cmp-in { flex: 1 1 420px; min-width: 0; display: flex; align-items: center; gap: 10px; height: var(--h-lg); padding: 0 6px 0 14px; border-radius: 10px; border: 1px dashed var(--line2); background: var(--bg); color: var(--tx3); }
+.cmp-in input[type="text"] { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--tx); font-size: 14px; }
+.cmp-in:focus-within { border-color: var(--ac); }
+.cmp-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--tx); font-size: 14px; }
+.cmp-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ochip { display: inline-flex; align-items: center; gap: 6px; height: var(--h-sm); padding: 0 10px; border-radius: var(--r-ctl); border: 1px solid var(--line); background: var(--s2); color: var(--tx); font-size: 12px; font-weight: 500; cursor: pointer; }
+.ochip:hover:not(:disabled) { border-color: var(--line2); background: var(--s3); }
+.ochip:disabled { opacity: .45; cursor: not-allowed; }
+.ochip .k { color: var(--tx3); font-weight: 400; }
+.cmp-note { margin-left: 4px; color: var(--tx3); font-size: 12px; }
+.cmp-progress { display: flex; flex-direction: column; gap: 8px; color: var(--tx2); font-size: 13px; }
+
+.library { display: flex; flex-direction: column; gap: 16px; }
+.lib-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.lib-head h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; }
+.lib-sub { color: var(--tx3); font-size: 13px; }
+.search { display: flex; align-items: center; gap: 8px; width: 260px; max-width: 100%; height: 34px; padding: 0 10px; border-radius: var(--r-ctl); border: 1px solid var(--line2); background: var(--s1); color: var(--tx3); }
+.search:focus-within { border-color: var(--ac); }
+.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--tx); font-size: 13px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 18px; }
+.grid:empty { display: none; }
+
+.thumb { display: grid; place-items: center; width: 100%; height: 100%; background: var(--s2); color: var(--tx3); overflow: hidden; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ecard { display: flex; flex-direction: column; border-radius: var(--r-card); border: 1px solid var(--line); background: var(--s1); min-width: 0; }
+.ecard:hover { border-color: var(--line2); }
+.ecard-thumb .thumb { position: absolute; inset: 0; width: auto; height: auto; }
+.ecard-thumb { flex: none; position: relative; overflow: hidden; border-radius: var(--r-card) var(--r-card) 0 0; display: block; aspect-ratio: 16 / 9; }
+.ecard-chip { position: absolute; left: 10px; top: 10px; background: rgba(8, 9, 11, .78); }
+.ecard-chip.ok { color: var(--ok); }
+.ecard-chip.ac { color: var(--ac); }
+.ecard-chip.bad { color: var(--bad); }
+.ecard-body { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; min-width: 0; }
+.ecard-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; color: var(--tx); text-decoration: none; font-size: 14px; font-weight: 500; line-height: 1.35; }
+.ecard-title:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ecard-channel { color: var(--tx3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ecard-prog { display: flex; flex-direction: column; gap: 7px; }
+.ecard-stage { color: var(--ac); font-size: 12px; font-weight: 500; }
+.ecard-error { color: var(--bad); font-size: 12px; line-height: 1.45; }
+.ecard-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 8px; }
+.ecard-stats { color: var(--tx2); font-size: 12px; }
+
+@media (max-width: 640px) {
+  .wrap { padding: 16px 16px 40px; gap: 20px; }
+  .search { width: 100%; }
+  .cmp-row > .btn { flex: 1 1 100%; }
+}
+
+.voice { font-size: 13px; }
+.voice summary { cursor: pointer; font-weight: 500; }
+.voice p { margin: 8px 0; color: var(--tx2); line-height: 1.5; }
+.voice audio { width: 100%; margin: 6px 0; }
+.voice > div { padding: 10px 0; border-top: 1px solid var(--line); }
+.voice .btn { margin: 4px 8px 4px 0; }

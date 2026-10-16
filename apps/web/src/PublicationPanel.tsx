@@ -1,3 +1,4 @@
+import "./PublicationPanel.css";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Publication, type PublicationPlatform } from "./api";
 import {
