@@ -138,6 +138,35 @@ test("the bulk bar approves, saves only exported clips, counts downloads and sen
   expect(new URLSearchParams(window.location.search).get("clips")).toBe(`run~${K1},run~2:200:260:balanced`);
 });
 
+test("select all toggles every visible clip, shows a mixed state and answers Ctrl+A outside text fields", async () => {
+  await open([first, second, third]);
+  const all = () => screen.getByRole("checkbox", { name: /os 3 cortes visíveis$/ });
+  const bar = () => screen.queryByRole("region", { name: "Cortes selecionados" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "Selecionar Manchete 1" }));
+  expect(all().getAttribute("aria-checked")).toBe("mixed");
+  fireEvent.click(all());
+  expect(all().getAttribute("aria-checked")).toBe("true");
+  expect(bar()!.textContent).toContain("3 selecionados");
+  fireEvent.click(all());
+  expect(bar()).toBeNull();
+  key("a", { ctrlKey: true });
+  expect(bar()!.textContent).toContain("3 selecionados");
+  fireEvent.keyDown(screen.getByLabelText("Buscar corte"), { key: "a", ctrlKey: true });
+  expect(bar()!.textContent).toContain("3 selecionados");
+  expect(api.patchClipStates).not.toHaveBeenCalled();
+});
+
+test("select all only reaches the clips the filter shows, then all of them once the filter clears", async () => {
+  window.history.replaceState(null, "", "/episodios/ep?q=manchete%203");
+  await open([first, second, third]);
+  fireEvent.click(screen.getByRole("checkbox", { name: /os 1 cortes visíveis$/ }));
+  expect(screen.getByRole("region", { name: "Cortes selecionados" }).textContent).toContain("1 selecionado");
+  fireEvent.change(screen.getByLabelText("Buscar corte"), { target: { value: "" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: /os 3 cortes visíveis$/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /os 3 cortes visíveis$/ }));
+  expect(screen.queryByRole("region", { name: "Cortes selecionados" })).toBeNull();
+});
+
 test("clips from different runs open the editor together, with run-qualified keys", async () => {
   await open([first, third]);
   fireEvent.click(screen.getByRole("checkbox", { name: "Selecionar Manchete 1" }));

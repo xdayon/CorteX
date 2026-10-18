@@ -92,3 +92,4 @@
 .qp-state { position: relative; width: min(100%, 320px); aspect-ratio: 9 / 16; max-height: min(560px, 62vh); border-radius: 12px; overflow: hidden; display: grid; place-items: center; text-align: center; padding: 16px; }
 .qp-msg { position: relative; color: var(--tx2); font-size: 13px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
 .qp-label { margin: 0; color: var(--tx2); font-size: 12px; }
+.ep2-tools .selall { margin: 0 0 -8px 2px; }

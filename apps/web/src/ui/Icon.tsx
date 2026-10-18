@@ -30,6 +30,7 @@ const paths = {
   volumeOff: <path d="M11 5 6 9H3v6h3l5 4zM22 9l-6 6M16 9l6 6" />,
   safeZones: <path d="M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM3 16h18M16 7v9" />,
   plus: <path d="M12 5v14M5 12h14" />,
+  minus: <path d="M6 12h12" />,
   info: <path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01" />,
   sliders: <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />,
 } satisfies Record<string, ReactNode>;

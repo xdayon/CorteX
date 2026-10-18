@@ -3,6 +3,7 @@ import type { ClipRow, ClipStatus } from "../../api";
 import { EmptyState, Segmented, Select, Skeleton } from "../../ui";
 import { BulkBar } from "../clips/BulkBar";
 import { PublicationDialog } from "../clips/PublicationDialog";
+import { SelectAll } from "../clips/SelectAll";
 import { rowId, shortDate, topScores } from "../clips/clipModel";
 import { useClipCommands } from "../clips/useClipCommands";
 import { ClipDetail } from "./ClipDetail";
@@ -63,6 +64,7 @@ export function EpisodeClips({ episodeId, refreshKey }: { episodeId: string; ref
   const activeId = visible.some(row => rowId(row) === clipParam) ? clipParam : visible[0] ? rowId(visible[0]) : "";
   const active = visible.find(row => rowId(row) === activeId);
   useQuickPreviewWarmup(visible, activeId);
+  const visibleIds = useMemo(() => visible.map(rowId), [visible]);
   const selectedRows = rows.filter(row => selected.includes(rowId(row)));
   useEffect(() => setSelected(current => current.filter(id => rows.some(row => rowId(row) === id))), [rows]);
 
@@ -101,6 +103,7 @@ export function EpisodeClips({ episodeId, refreshKey }: { episodeId: string; ref
           </div>
           <Segmented label="Ordenar cortes" value={sort} onChange={value => setParams({ sort: value === "score" ? null : value })}
             options={[{ value: "score", label: "Nota" }, { value: "order", label: "Ordem no episódio" }, { value: "recent", label: "Mais recentes" }]} />
+          <SelectAll ids={visibleIds} selected={selected} onChange={setSelected} />
         </div>
         {visible.length
           ? <ClipRowList rows={visible} topScore={topScore} activeId={activeId} selected={selected} showRunDate={!run && runs.length > 1} dimDiscarded={status === "all"}

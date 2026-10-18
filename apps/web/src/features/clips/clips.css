@@ -26,3 +26,7 @@
   .selbar { left: 12px; right: 12px; transform: none; flex-wrap: wrap; white-space: normal; gap: 8px; padding: 10px; }
   .selbar .btn.primary { flex: 1 1 100%; }
 }
+.selall { display: flex; align-items: center; gap: 2px; }
+.selall-label { padding: 6px 4px; border: 0; background: transparent; color: var(--tx2); font: inherit; font-size: 12px; cursor: pointer; }
+.selall-label .mono { color: var(--tx3); }
+.selall-label:hover { color: var(--tx); }

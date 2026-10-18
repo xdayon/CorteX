@@ -7,6 +7,7 @@ import { Button, buttonClass, Chip, EmptyState, Icon, Segmented, Select, Skeleto
 import { BulkBar } from "../clips/BulkBar";
 import { PublicationDialog } from "../clips/PublicationDialog";
 import { SavedToggle } from "../clips/SavedToggle";
+import { SelectAll } from "../clips/SelectAll";
 import { headlineOf, newestExport, rowId, shortDate, STATUS_LABELS, STATUS_TONES } from "../clips/clipModel";
 import { useClipCommands } from "../clips/useClipCommands";
 import { useBoardClips } from "./useBoardClips";
@@ -66,6 +67,7 @@ export function BoardPage() {
     {error && <div className="notice bad" role="alert"><p>Não foi possível carregar os cortes: {error}</p></div>}
     {loading && <div className="clips-loading" role="status" aria-label="Carregando cortes">{[0, 1, 2].map(index => <Skeleton key={index} height={96} />)}</div>}
     {!loading && !error && !visible.length && <EmptyState title="Nenhum corte aqui">{tab === "post" ? "Cortes exportados aparecem aqui até serem postados." : "Mude a aba ou o filtro para ver outros cortes."}</EmptyState>}
+    {!loading && <SelectAll ids={visible.map(rowId)} selected={selected} onChange={setSelected} />}
     <ul className="board-rows">
       {visible.map(row => {
         const id = rowId(row);

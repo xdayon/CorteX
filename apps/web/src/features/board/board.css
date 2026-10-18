@@ -20,3 +20,4 @@
   .brow-actions { flex-basis: 100%; justify-content: flex-start; }
   .board-tools .select, .board-search { width: 100%; }
 }
+.board > .selall { margin: -6px 0 -10px 7px; }
