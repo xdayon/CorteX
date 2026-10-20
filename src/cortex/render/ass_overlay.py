@@ -8,7 +8,10 @@ captionLayout.ts e HeadlineLayer.tsx para que trocar o renderer não mude o layo
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 import struct
@@ -20,7 +23,7 @@ from cortex.render.captions import CaptionCue, TimelineWord
 from cortex.render.safe_zones import CAPTION_ACTION_MARGIN_PX, canvas_key, right_actions_limit
 from cortex.render.schemas import RenderCaptionSettings, RenderHeadlineSettings, RenderSettings
 
-ASS_GENERATOR_VERSION = 5
+ASS_GENERATOR_VERSION = 6
 
 # B2: mapeamento explícito família+peso -> arquivo de fonte. Nunca substituímos
 # silenciosamente uma família desconhecida por outra.
@@ -211,11 +214,116 @@ class CaptionPage:
 
 _EMPHASIS_SCALE = 1.12
 
+# Artigo, preposição, conjunção ou pronome átono no fim de uma linha deixa a frase
+# pendurada ("TEM MUITA COISA QUE / TÁ"); a quebra prefere outro ponto.
+_WEAK_LINE_END = frozenset({
+    "a", "o", "as", "os", "um", "uma", "uns", "umas",
+    "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "num", "numa",
+    "ao", "aos", "à", "às", "por", "pelo", "pela", "pelos", "pelas",
+    "para", "pra", "pro", "pras", "pros", "com", "sem", "até", "entre",
+    "e", "ou", "mas", "nem", "que", "se", "porque", "quando", "como",
+    "me", "te", "lhe", "lhes",
+})
+_WEAK_END_PENALTY = 0.25
+_PUNCTUATION_END_BONUS = 0.15
+_SENTENCE_PUNCTUATION = ",.;:!?…"
+# Acima disso (só com fonte enorme) a busca exaustiva deixa de valer a pena.
+_MAX_BALANCED_WORDS = 12
+
+
+def _line_width(widths: list[float], gap: float) -> float:
+    return sum(widths) + gap * (len(widths) - 1)
+
+
+def _break_cost(word: TimelineWord) -> float:
+    text = word.text.strip()
+    if text.endswith(tuple(_SENTENCE_PUNCTUATION)):
+        return -_PUNCTUATION_END_BONUS
+    core = text.strip(_SENTENCE_PUNCTUATION + "\"'()[]-—").casefold()
+    return _WEAK_END_PENALTY if core in _WEAK_LINE_END else 0.0
+
+
+def _greedy_breaks(widths: list[float], max_width: float, gap: float) -> list[int]:
+    """Onde o preenchimento linha a linha quebra: dá o menor número de linhas."""
+    breaks: list[int] = []
+    used: float | None = None
+    for position, width in enumerate(widths):
+        if used is not None and used + gap + width > max_width:
+            breaks.append(position)
+            used = width
+        else:
+            used = width if used is None else used + gap + width
+    return breaks
+
+
+Words = tuple[TimelineWord, ...]
+
+
+def _split(words: Words, cuts: Sequence[int]) -> list[Words]:
+    bounds = (0, *cuts, len(words))
+    return [words[a:b] for a, b in zip(bounds, bounds[1:])]
+
+
+def _best_cuts(
+    words: Words, count: int, fallback: Sequence[int], spread: Callable[[int, int], float | None],
+) -> Sequence[int]:
+    """Os `count` pontos de corte de menor custo: o maior `spread` de um pedaço
+    (None quando o pedaço não cabe) mais o custo de cada quebra. Em empate vence
+    o corte mais cedo."""
+    if len(words) > _MAX_BALANCED_WORDS:
+        return fallback
+    best, best_cost = fallback, math.inf
+    for cuts in itertools.combinations(range(1, len(words)), count):
+        bounds = (0, *cuts, len(words))
+        spreads = [spread(a, b) for a, b in zip(bounds, bounds[1:])]
+        if None in spreads:
+            continue
+        cost = max(spreads) + sum(_break_cost(words[cut - 1]) for cut in cuts)
+        if cost < best_cost - 1e-9:
+            best, best_cost = cuts, cost
+    return best
+
+
+def _balanced_lines(words: Words, widths: list[float], max_width: float, gap: float) -> list[Words]:
+    """Menor número de linhas que cabe; entre as quebras possíveis, a que deixa a
+    linha mais longa mais curta, evitando terminar linha em palavra fraca. Em
+    empate, a linha de cima fica mais curta."""
+    breaks = _greedy_breaks(widths, max_width, gap)
+
+    def spread(a: int, b: int) -> float | None:
+        length = _line_width(widths[a:b], gap)
+        return None if length > max_width + 1e-6 and b - a > 1 else length / max_width
+
+    return _split(words, _best_cuts(words, len(breaks), breaks, spread) if breaks else ())
+
+
+def _balanced_pages(words: Words, widths: list[float], max_width: float, gap: float) -> list[list[Words]]:
+    """Páginas de até duas linhas. Quando o trecho não cabe numa página, divide as
+    palavras entre as páginas pelo volume de texto, para a última não ficar com
+    uma palavra solta, e equilibra as linhas de cada página."""
+    breaks = _greedy_breaks(widths, max_width, gap)
+    pairs = breaks[1::2]
+    if not pairs:
+        return [_balanced_lines(words, widths, max_width, gap)]
+
+    def spread(a: int, b: int) -> float | None:
+        if len(_greedy_breaks(widths[a:b], max_width, gap)) > 1:
+            return None
+        return _line_width(widths[a:b], gap) / (2 * max_width)
+
+    cuts = _best_cuts(words, len(pairs), pairs, spread)
+    bounds = (0, *cuts, len(words))
+    return [_balanced_lines(words[a:b], widths[a:b], max_width, gap) for a, b in zip(bounds, bounds[1:])]
+
 
 def paginate_cue(
     cue: CaptionCue, *, max_width: float, font_size: float, gap: float,
     font_path: Path, uppercase: bool, emphasis: frozenset[int] = frozenset(),
+    line_breaks: frozenset[int] = frozenset(),
 ) -> list[CaptionPage]:
+    """Até duas linhas por página. `line_breaks` são índices de palavra que a
+    pessoa mandou começar numa linha nova; cada trecho entre quebras é
+    equilibrado sozinho, e dois trechos de uma linha dividem a mesma página."""
     words = cue.words
     if not words:
         return []
@@ -226,24 +334,16 @@ def paginate_cue(
 
     longest = max(word_width(word, font_size) for word in words)
     effective = min(font_size, font_size * max_width / max(1.0, longest))
-    groups: list[list[list[TimelineWord]]] = []
-    lines: list[list[TimelineWord]] = [[]]
-    line_width = 0.0
-    for word in words:
-        width = word_width(word, effective)
-        line = lines[-1]
-        if line and line_width + gap + width > max_width:
-            if len(lines) == 2:
-                groups.append(lines)
-                lines = [[]]
+    widths = [word_width(word, effective) for word in words]
+    forced = [position for position, word in enumerate(words) if position and word.index in line_breaks]
+    bounds = (0, *forced, len(words))
+    groups: list[list[Words]] = []
+    for a, b in zip(bounds, bounds[1:]):
+        for position, page in enumerate(_balanced_pages(words[a:b], widths[a:b], max_width, gap)):
+            if position == 0 and groups and len(groups[-1]) == 1 and len(page) == 1:
+                groups[-1] = [*groups[-1], *page]
             else:
-                lines.append([])
-            line = lines[-1]
-            line_width = 0.0
-        line_width += (gap if line else 0.0) + width
-        line.append(word)
-    if lines[0]:
-        groups.append(lines)
+                groups.append(page)
     pages: list[CaptionPage] = []
     for index, group in enumerate(groups):
         start = cue.start if index == 0 else group[0][0].start
@@ -404,11 +504,13 @@ def caption_pages(
         width=width, height=height, font_size=caption.font_size, position_y=caption.position_y,
     )
     emphasis = frozenset(caption.emphasis_word_indices)
+    line_breaks = frozenset(caption.line_break_word_indices)
     pages: list[CaptionPage] = []
     for cue in cues:
         pages.extend(paginate_cue(
             cue, max_width=max_width, font_size=caption.font_size * scale, gap=14 * scale,
             font_path=font.path, uppercase=caption.uppercase, emphasis=emphasis,
+            line_breaks=line_breaks,
         ))
     return pages
 

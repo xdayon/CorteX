@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -221,6 +222,16 @@ class SuggestionRequest(BaseModel):
         if self.minimum_seconds > self.maximum_seconds:
             raise ValueError("minimum_seconds cannot exceed maximum_seconds")
         return self
+
+
+def render_download_name(document: RenderDocument, artifact_id: str, suffix: str) -> str:
+    """Nome do arquivo baixado: a manchete do corte, sem os caracteres que
+    sistemas de arquivo recusam; sem manchete, o id do render."""
+    texts = [settings.headline.text for settings in (document.requested_settings, document.effective_settings)
+             if settings is not None]
+    name = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', " ", next((text for text in texts if text.strip()), ""))
+    name = re.sub(r"\s+", " ", name).strip(" .")[:80].rstrip(" .")
+    return f"{name or f'cortex-render-{artifact_id[:12]}'}{suffix}"
 
 
 def create_app(config: CortexConfig | None = None):
@@ -939,21 +950,21 @@ def create_app(config: CortexConfig | None = None):
             or not media_path.is_file()
         ):
             raise HTTPException(status_code=410, detail="Arquivo do render não está disponível")
-        return artifact, media_path
+        return artifact, document, media_path
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/media")
     def get_render_media(project_id: str, artifact_id: str):
-        artifact, media_path = render_media_path(project_id, artifact_id)
+        artifact, document, media_path = render_media_path(project_id, artifact_id)
         return FileResponse(
             media_path,
             media_type="video/mp4",
-            filename=f"cortex-render-{artifact.id[:12]}.mp4",
+            filename=render_download_name(document, artifact.id, ".mp4"),
         )
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/poster")
     def get_render_poster(project_id: str, artifact_id: str):
         """Small JPEG of the exported video at 1 s, cached next to it, for lists."""
-        _, media_path = render_media_path(project_id, artifact_id)
+        _, _, media_path = render_media_path(project_id, artifact_id)
         poster = media_path.with_suffix(".poster.jpg")
         if not poster.is_file() or poster.stat().st_mtime < media_path.stat().st_mtime:
             temporary = poster.with_name(f".{poster.name}.{uuid4().hex}.tmp.jpg")
@@ -1017,7 +1028,7 @@ def create_app(config: CortexConfig | None = None):
         return FileResponse(
             subtitles_path,
             media_type="application/x-subrip",
-            filename=f"cortex-render-{artifact.id[:12]}.srt",
+            filename=render_download_name(document, artifact.id, ".srt"),
         )
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/artifacts")

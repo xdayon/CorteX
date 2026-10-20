@@ -7,9 +7,10 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from cortex.api import create_app
+from cortex.api import create_app, render_download_name
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import StageArtifact
+from cortex.render.service import default_render_settings
 from cortex.render.schemas import (
     RenderDocument,
     RenderEngineInfo,
@@ -102,6 +103,44 @@ def _publication() -> RenderQualityPublicationReport:
         dimensions={"width": 1080, "height": 1920},
         hashes={"input_hash": "a" * 64},
         provenance={"ffmpeg": "ffmpeg"},
+    )
+
+
+def test_download_name_is_the_clip_headline_without_unsafe_characters(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    settings = default_render_settings(config)
+    headline = settings.headline.model_copy(update={"text": 'Estamos no meio: "várias" revoluções/IA?.'})
+    document = _document("project", tmp_path / "result.mp4").model_copy(update={
+        "requested_settings": settings.model_copy(update={"headline": headline}),
+    })
+    assert render_download_name(document, "a" * 32, ".mp4") == "Estamos no meio várias revoluções IA.mp4"
+    assert render_download_name(_document("project", tmp_path / "x.mp4"), "b" * 32, ".srt") == (
+        f"cortex-render-{'b' * 12}.srt"
+    )
+
+
+def test_render_media_downloads_under_the_clip_headline(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    app = create_app(config)
+    project = app.state.domain.create_project("Media")
+    render_dir = config.paths.projects_dir / project.id / "renders"
+    render_dir.mkdir(parents=True)
+    media_path = render_dir / "result.mp4"
+    media_path.write_bytes(b"fake-mp4")
+    settings = default_render_settings(config)
+    document = _document(project.id, media_path).model_copy(update={"requested_settings": settings.model_copy(
+        update={"headline": settings.headline.model_copy(update={"text": "Várias revoluções"})},
+    )})
+    manifest_path = render_dir / "result.json"
+    manifest_path.write_text(document.model_dump_json(), encoding="utf-8")
+    artifact = app.state.domain.create_stage_artifact(StageArtifact(
+        project_id=project.id, stage="render", path=str(manifest_path), input_hash="render-name",
+    ))
+
+    response = _media_endpoint(app)(project.id, artifact.id)
+
+    assert response.headers["content-disposition"].endswith(
+        "filename*=utf-8''V%C3%A1rias%20revolu%C3%A7%C3%B5es.mp4"
     )
 
 

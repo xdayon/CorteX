@@ -28,6 +28,9 @@ export function toggleEmphasis(current: number[], index: number): number[] {
   return current.includes(index) ? current.filter(item => item !== index) : [...current, index].sort((a, b) => a - b);
 }
 
+/** Makes the word start a new caption line, or undoes it. */
+export const toggleLineBreak = toggleEmphasis;
+
 export function clipRanges(clip: SuggestedClip): Array<[number, number]> {
   return clip.pieces?.length ? clip.pieces.map(p => [p.start, p.end]) : [[clip.start_second, clip.end_second]];
 }

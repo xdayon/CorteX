@@ -53,8 +53,9 @@ function Studio({ id, session }: { id: string; session: ReturnType<typeof useEdi
   const preview = previews[key];
   const corrections = session.captionEdits[key] ?? [];
   const emphasis = session.emphasisEdits[key] ?? row.clip.emphasis_word_indices ?? EMPTY_NUMBERS;
+  const lineBreaks = session.lineBreakEdits[key] ?? EMPTY_NUMBERS;
   const overlay = useOverlayPreview({
-    projectId: row.project_id, editPlanArtifactId: preview?.planId ?? null, settings, corrections, emphasis,
+    projectId: row.project_id, editPlanArtifactId: preview?.planId ?? null, settings, corrections, emphasis, lineBreaks,
     headlineText: effectiveHeadline(row.clip, session.headlines[key]),
   });
 
@@ -103,7 +104,8 @@ function Studio({ id, session }: { id: string; session: ReturnType<typeof useEdi
         scope={session.scope} onScope={session.setScope} customized={isCustomized(session.overrides, key)} onReset={() => session.resetOverride(key)}
         overlay={overlay.overlay} overlayLoading={overlay.loading} overlayError={overlay.error} time={time} onSeek={seconds => player.current?.seek(seconds)}
         captionEdits={session.captionEdits} onCaptionEdits={session.setCaptionFor} onAllCaptionEdits={session.setCaptionEdits}
-        headlines={session.headlines} onHeadline={session.setHeadlineFor} emphasis={emphasis} onEmphasis={session.setEmphasisFor} disabled={busy} />
+        headlines={session.headlines} onHeadline={session.setHeadlineFor} emphasis={emphasis} onEmphasis={session.setEmphasisFor}
+        lineBreaks={lineBreaks} onLineBreaks={session.setLineBreaksFor} disabled={busy} />
     </div>
     {showBatch && batchList.length > 0 && <Dialog title="Exportação" wide onClose={() => setShowBatch(false)}>
       <ExportBatchPanel batches={batchList} rows={rows} busy={busy} progress={session.exportProgress} onCancel={session.cancelBatches} onRetry={session.retryBatches} />

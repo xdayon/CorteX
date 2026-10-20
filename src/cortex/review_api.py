@@ -56,6 +56,7 @@ class ClipRevisionCreate(BaseModel):
     caption_edits: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     headlines: dict[str, str] = Field(default_factory=dict)
     emphasis: dict[str, list[Annotated[int, Field(ge=0)]]] = Field(default_factory=dict)
+    line_breaks: dict[str, list[Annotated[int, Field(ge=0)]]] = Field(default_factory=dict)
     clip_settings: dict[str, RenderSettingsPatch] = Field(default_factory=dict)
     visual_artifacts: dict[str, str] = Field(default_factory=dict)
 
@@ -136,7 +137,7 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
             selected_clips=[clip.model_dump(mode="json") for clip in request.selected_clips],
             render_settings=shared,
             caption_edits=request.caption_edits, headlines=request.headlines,
-            emphasis=request.emphasis, clip_settings=overrides,
+            emphasis=request.emphasis, line_breaks=request.line_breaks, clip_settings=overrides,
             visual_artifacts=request.visual_artifacts,
         ))
 
@@ -171,6 +172,7 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
                 revision.emphasis[key] if key in revision.emphasis
                 else list(clip.get("emphasis_word_indices") or [])
             )
+            effective["captions"]["line_break_word_indices"] = revision.line_breaks.get(key, [])
             effective.setdefault("headline", {})["text"] = (
                 revision.headlines.get(key, "").strip() or clip.get("headline") or clip["title"]
             )

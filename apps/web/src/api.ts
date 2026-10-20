@@ -186,6 +186,7 @@ export type ClipRevision = {
   caption_edits: Record<string, CaptionCorrection[]>;
   headlines: Record<string, string>;
   emphasis?: Record<string, number[]>;
+  line_breaks?: Record<string, number[]>;
   clip_settings?: Record<string, SettingsPatch>;
   visual_artifacts: Record<string, string>;
 };
@@ -262,6 +263,8 @@ export type RenderSettings = {
     animation: { style: "none" | "fade" | "pop"; duration_seconds: number };
     style: CaptionStyle;
     emphasis_word_indices: number[];
+    /** Words (transcript indices) that start a new caption line. */
+    line_break_word_indices?: number[];
     emphasis_color: string;
     box_text_color: string;
   };
@@ -410,6 +413,7 @@ export const api = {
     caption_edits: Record<string, CaptionCorrection[]>;
     headlines: Record<string,string>;
     emphasis?: Record<string, number[]>;
+    line_breaks?: Record<string, number[]>;
     clip_settings?: Record<string, SettingsPatch>;
     visual_artifacts: Record<string,string>;
   }) => request<ClipRevision>(`/api/v1/projects/${projectId}/runs/${runId}/revisions`, {

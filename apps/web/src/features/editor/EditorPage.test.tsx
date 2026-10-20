@@ -249,7 +249,7 @@ test.each(['{invalid', JSON.stringify({ schema_version: 1, settings: { captions:
   expect((screen.getByRole("textbox", { name: /Texto da manchete/ }) as HTMLInputElement).value).toBe("Headline real");
 });
 
-test("caption corrections and emphasis edited in the Legenda tab reach the saved revision and draft", async () => {
+test("caption corrections, emphasis and line breaks edited in the Legenda tab reach the saved revision and draft", async () => {
   vi.mocked(api.overlayPreview).mockResolvedValue({
     ass_text: "x", generator_version: "1", content_hash: "h", timeline_duration_seconds: 38, canvas: { width: 1080, height: 1920 },
     pages: [{ start: 0, end: 1, lines: [[{ index: 4, text: "CORTECS", start: 0, end: 1, emphasis: false, original: "Cortecs", probability: 0.9 }]] }],
@@ -259,6 +259,7 @@ test("caption corrections and emphasis edited in the Legenda tab reach the saved
   await act(async () => { await vi.advanceTimersByTimeAsync(300); });
   fireEvent.click(screen.getByRole("button", { name: "Cortecs" }));
   fireEvent.click(screen.getByRole("button", { name: "★ Destacar" }));
+  fireEvent.click(screen.getByRole("button", { name: "↵ Quebrar linha aqui" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Texto da palavra" }), { target: { value: "CorteX" } });
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Texto da palavra" }), { key: "Enter" });
   fireEvent.click(exportButton("Exportar 1 corte"));
@@ -266,7 +267,12 @@ test("caption corrections and emphasis edited in the Legenda tab reach the saved
   const body = savedBody();
   expect(body.caption_edits).toEqual({ [K1]: [{ word_index: 4, original: "Cortecs", text: "CorteX" }] });
   expect(body.emphasis).toEqual({ [K1]: [3, 4] });
-  expect(JSON.parse(localStorage.getItem("cortex-draft:project:run")!).emphasisEdits).toEqual({ [K1]: [3, 4] });
+  expect(body.line_breaks).toEqual({ [K1]: [4] });
+  const draft = JSON.parse(localStorage.getItem("cortex-draft:project:run")!);
+  expect(draft.emphasisEdits).toEqual({ [K1]: [3, 4] });
+  expect(draft.lineBreakEdits).toEqual({ [K1]: [4] });
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+  expect(vi.mocked(api.overlayPreview).mock.calls.at(-1)![2].captions.line_break_word_indices).toEqual([4]);
   expect(document.querySelectorAll('[data-testid="caption-block"]')).toHaveLength(1);
 });
 

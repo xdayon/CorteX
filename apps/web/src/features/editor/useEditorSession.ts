@@ -21,6 +21,7 @@ export function useEditorSession(episodeId: string, urlKeys: string[], legacyRun
   const [captionEdits, setCaptionEdits] = useState<Record<string, CaptionCorrection[]>>({});
   const [headlines, setHeadlines] = useState<Record<string, string>>(NO_HEADLINES);
   const [emphasisEdits, setEmphasisEdits] = useState<Record<string, number[]>>({});
+  const [lineBreakEdits, setLineBreakEdits] = useState<Record<string, number[]>>({});
   const [visual, setVisual] = useState<Record<string, VisualArtifacts | null>>({});
   const [focusedKey, setFocusedKey] = useState("");
   const [scope, setScope] = useState<Scope>("all");
@@ -39,7 +40,7 @@ export function useEditorSession(episodeId: string, urlKeys: string[], legacyRun
     loadEditor(episodeId, urlKeys, legacyRun, controller.signal).then(loaded => {
       if (controller.signal.aborted) return;
       setRows(loaded.rows); setRuns(loaded.runs); setConfig({ settings: loaded.settings, overrides: loaded.overrides });
-      setCaptionEdits(loaded.captionEdits); setHeadlines(loaded.headlines); setEmphasisEdits(loaded.emphasisEdits);
+      setCaptionEdits(loaded.captionEdits); setHeadlines(loaded.headlines); setEmphasisEdits(loaded.emphasisEdits); setLineBreakEdits(loaded.lineBreakEdits);
       setVisual(loaded.visual); setFocusedKey(loaded.focusedKey); setNotice(loaded.notice); setEncoderError(loaded.encoderError);
       setInitialBatches(loaded.batches);
       setPhase({ name: "ready" });
@@ -79,9 +80,9 @@ export function useEditorSession(episodeId: string, urlKeys: string[], legacyRun
       selection_artifact_id: runs[runId].artifacts.suggestion, selected_clips: mine.map(row => ({ ...row.clip, key: row.clip_key })),
       render_settings: settings, caption_edits: pick(captionEdits),
       headlines: Object.fromEntries(Object.entries(pick(headlines)).filter(([, text]) => text.trim())),
-      emphasis: pick(emphasisEdits), clip_settings: clipSettings, visual_artifacts: visual[runId] || {},
+      emphasis: pick(emphasisEdits), line_breaks: pick(lineBreakEdits), clip_settings: clipSettings, visual_artifacts: visual[runId] || {},
     };
-  }, [rows, runs, settings, overrides, captionEdits, headlines, emphasisEdits, visual]);
+  }, [rows, runs, settings, overrides, captionEdits, headlines, emphasisEdits, lineBreakEdits, visual]);
 
   const exporter = useExportBatches({ runs, runIds, ready, initial: initialBatches, revisionBody, signal: () => lifetime.current?.signal });
 
@@ -99,7 +100,7 @@ export function useEditorSession(episodeId: string, urlKeys: string[], legacyRun
         const own = revisionBody(runId);
         const draft: EditorDraft = {
           schema_version: 1, settings, selectedKeys: keys, captionEdits: own.caption_edits, headlines: scoped(headlines, runId),
-          emphasisEdits: own.emphasis, clipSettings: own.clip_settings, focusedKey: focusedKey.startsWith(`${runId}~`) ? focusedKey.slice(runId.length + 1) : "",
+          emphasisEdits: own.emphasis, lineBreakEdits: own.line_breaks, clipSettings: own.clip_settings, focusedKey: focusedKey.startsWith(`${runId}~`) ? focusedKey.slice(runId.length + 1) : "",
           rendered, visualArtifacts: visual[runId] ?? null,
         };
         localStorage.setItem(draftKey(run), JSON.stringify(draft));
@@ -127,10 +128,11 @@ export function useEditorSession(episodeId: string, urlKeys: string[], legacyRun
     return next;
   }), []);
   const setEmphasisFor = useCallback((key: string, indices: number[]) => setEmphasisEdits(current => ({ ...current, [key]: indices })), []);
+  const setLineBreaksFor = useCallback((key: string, indices: number[]) => setLineBreakEdits(current => ({ ...current, [key]: indices })), []);
 
   return {
     phase, rows, runs, settings, overrides, settingsFor, sceneFor, edit, resetOverride, scope, setScope,
-    captionEdits, setCaptionEdits, setCaptionFor, headlines, setHeadlineFor, emphasisEdits, setEmphasisFor,
+    captionEdits, setCaptionEdits, setCaptionFor, headlines, setHeadlineFor, emphasisEdits, setEmphasisFor, lineBreakEdits, setLineBreaksFor,
     focusedKey, setFocusedKey, notice, encoderError, draftError, saveState, ready, ...exporter,
   };
 }

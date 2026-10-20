@@ -9,6 +9,7 @@ export type EditorDraft = {
   captionEdits: Record<string, CaptionCorrection[]>;
   headlines: Record<string, string>;
   emphasisEdits: Record<string, number[]>;
+  lineBreakEdits: Record<string, number[]>;
   clipSettings: Record<string, SettingsPatch>;
   focusedKey: string;
   rendered: Array<{title: string; url: string; subtitles: string; artifactId?: string; projectId?: string; hookText?: string}>;
@@ -37,7 +38,7 @@ export type RestoredDraft = EditorDraft & {legacyFraming: boolean};
 
 export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: string[], defaults: RenderSettings, encoder?: RenderSettings['encoder'] | null): RestoredDraft {
   const fallback = normalizeSettings(defaults, defaults, encoder).settings;
-  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, emphasisEdits: {}, clipSettings: {}, focusedKey: '', rendered: [], visualArtifacts: null};
+  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, emphasisEdits: {}, lineBreakEdits: {}, clipSettings: {}, focusedKey: '', rendered: [], visualArtifacts: null};
   try {
     const saved: unknown = JSON.parse(storage.getItem(`cortex-draft:${runKey}`) || 'null');
     if (saved !== null && (!object(saved) || (saved.schema_version !== undefined && saved.schema_version !== 1))) return empty;
@@ -52,11 +53,16 @@ export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: s
     }
     const normalized = normalizeSettings(draft.settings, defaults, encoder);
     const validDraft = object(draft.settings) && validSettings(normalized.settings);
-    const emphasisEdits: Record<string, number[]> = {};
-    if (object(draft.emphasisEdits)) for (const key of clipKeys) {
-      const list = draft.emphasisEdits[key];
-      if (Array.isArray(list) && list.every(item => Number.isInteger(item) && item >= 0)) emphasisEdits[key] = list as number[];
-    }
+    const indexLists = (value: unknown) => {
+      const lists: Record<string, number[]> = {};
+      if (object(value)) for (const key of clipKeys) {
+        const list = value[key];
+        if (Array.isArray(list) && list.every(item => Number.isInteger(item) && item >= 0)) lists[key] = list as number[];
+      }
+      return lists;
+    };
+    const emphasisEdits = indexLists(draft.emphasisEdits);
+    const lineBreakEdits = indexLists(draft.lineBreakEdits);
     const clipSettings: Record<string, SettingsPatch> = {};
     if (object(draft.clipSettings)) for (const key of clipKeys) {
       const patch = draft.clipSettings[key];
@@ -68,6 +74,7 @@ export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: s
       settings: validDraft ? normalized.settings : fallback,
       legacyFraming: validDraft && normalized.legacyFraming,
       emphasisEdits,
+      lineBreakEdits,
       clipSettings,
       selectedKeys: Array.isArray(selected) ? clipKeys.filter(key => selected.includes(key)) : clipKeys,
       captionEdits,

@@ -10,6 +10,7 @@ from cortex.render.ass_overlay import (
     AssOverlayError,
     build_ass_overlay,
     caption_bbox,
+    caption_max_width,
     escape_ass_text,
     headline_bbox,
     hex_to_ass,
@@ -112,6 +113,53 @@ def test_paginate_cue_shrinks_font_for_a_very_long_word():
     assert len(pages) == 1
     assert pages[0].font_size < 48
     assert pages[0].lines == ((words[0],),)
+
+
+def _sentence_pages(text: str, font_size: int, line_breaks: frozenset[int] = frozenset()) -> list[list[str]]:
+    words = [TimelineWord(i * 0.3, i * 0.3 + 0.25, token, 0, i) for i, token in enumerate(text.split())]
+    cue = CaptionCue(start=0.0, end=words[-1].end, text=text, words=tuple(words))
+    font = resolve_caption_font(FONTS_DIR, "Montserrat", 900)
+    max_width, _ = caption_max_width(width=1080, height=1920, font_size=font_size, position_y=0.64)
+    pages = paginate_cue(cue, max_width=max_width, font_size=font_size, gap=14, font_path=font.path,
+                         uppercase=True, line_breaks=line_breaks)
+    return [[" ".join(word.text for word in line) for line in page.lines] for page in pages]
+
+
+def test_paginate_cue_balances_the_two_lines_instead_of_leaving_one_word_alone():
+    # Preenchendo a primeira linha até o limite, "TÁ" ficava sozinho na segunda.
+    assert _sentence_pages("tem muita coisa que tá", 56) == [["tem muita", "coisa que tá"]]
+
+
+def test_paginate_cue_keeps_a_short_cue_on_one_line():
+    assert _sentence_pages("eu acho", 56) == [["eu acho"]]
+
+
+def test_paginate_cue_prefers_breaking_after_punctuation():
+    assert _sentence_pages("a gente não sabe, mas isso vai mudar tudo", 56) == [
+        ["a gente não sabe,"], ["mas isso vai", "mudar tudo"],
+    ]
+
+
+def test_paginate_cue_spreads_words_across_pages_without_an_orphan_page():
+    pages = _sentence_pages("estamos no meio de várias revoluções", 64)
+    assert pages == [["estamos no meio"], ["de várias", "revoluções"]]
+
+
+def test_paginate_cue_starts_a_line_at_a_manual_break():
+    assert _sentence_pages("tem muita coisa que tá", 56, frozenset({3})) == [["tem muita coisa", "que tá"]]
+    # A quebra na primeira palavra da legenda não muda nada.
+    assert _sentence_pages("tem muita coisa que tá", 56, frozenset({0})) == [["tem muita", "coisa que tá"]]
+
+
+def test_manual_line_break_reaches_the_ass_document():
+    words = [TimelineWord(i * 0.3, i * 0.3 + 0.25, token, 0, i)
+             for i, token in enumerate("tem muita coisa que tá".split())]
+    cue = CaptionCue(start=0.0, end=1.5, text="tem muita coisa que tá", words=tuple(words))
+    base = _settings()
+    captions = base.captions.model_copy(update={"karaoke": False, "line_break_word_indices": [3]})
+    result = build_ass_overlay(base.model_copy(update={"captions": captions}), [cue],
+                               fonts_dir=FONTS_DIR, headline_text=None)
+    assert "TEM MUITA COISA\\NQUE TÁ" in result.ass_text
 
 
 # ---------------------------------------------------------------------------

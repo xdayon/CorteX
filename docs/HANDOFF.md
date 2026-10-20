@@ -24,6 +24,14 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 → render libass com quadros exatos por segmento → QA técnico → MP4/SRT/manifest
 ```
 
+## Entregue em 19/out (pede restart + rebuild)
+
+- Legenda: linhas equilibradas por página (sem palavra solta na 2ª linha, evita fechar
+  linha em artigo/preposição, prefere quebrar após pontuação) e quebra manual por palavra
+  (`captions.line_break_word_indices`, revisão `line_breaks`, botão no editor da palavra);
+  `ASS_GENERATOR_VERSION` 6 refaz overlays e exports.
+- Downloads de MP4/SRT com o nome da manchete do corte (`render_download_name`).
+
 ## Entregue em 16/out
 
 - Cortes integrados: `GET /episodes/{id}/clips`, `GET /clips`, `/clips/summary`,
@@ -42,9 +50,11 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 
 ## Próximo gate
 
-1. Usuário: `./scripts/update_and_verify.sh` (instala as fontes novas do Studio, testa,
-   compila e reinicia com segurança) e cadastro único do perfil de voz a partir do
-   episódio confirmado `wk7PY31TQBc` (`POST /api/v1/voice/profile`, ~95 s).
+1. Usuário: `./scripts/update_and_verify.sh` (com uv instala no `.venv` sem pip, testa,
+   compila e reinicia com segurança). Perfil de voz cadastrado em 20/out a partir de
+   `wk7PY31TQBc` (balanced accuracy 0,986, limiar 0,4395); o menu "Identificar voz do
+   protagonista" ainda dispara a diarização pyannote completa (~1× a duração) e não é
+   o cadastro.
 2. Botão no Studio para cadastrar/refazer o perfil de voz; Drive automático (rclone)
    se o usuário pedir; QA mais barato e prévia progressiva nos drafts.
 3. Acesso remoto (`cortex.synapses.academy`): faltam os passos do usuário no painel e

@@ -9,7 +9,7 @@ import type { Overrides } from "./overrides";
 export type Loaded = {
   rows: ClipRow[]; runs: Record<string, WorkflowRun>; settings: RenderSettings; overrides: Overrides;
   captionEdits: Record<string, CaptionCorrection[]>; headlines: Record<string, string>; emphasisEdits: Record<string, number[]>;
-  visual: Record<string, VisualArtifacts | null>; batches: Record<string, ExportBatch>; focusedKey: string;
+  lineBreakEdits: Record<string, number[]>; visual: Record<string, VisualArtifacts | null>; batches: Record<string, ExportBatch>; focusedKey: string;
   notice: string; encoderError: string;
 };
 
@@ -59,7 +59,7 @@ export async function loadEditor(episodeId: string, urlKeys: string[], legacyRun
   }
 
   const out: Loaded = {
-    rows, runs, settings: defaultRenderSettings, overrides: {}, captionEdits: {}, headlines: {}, emphasisEdits: {},
+    rows, runs, settings: defaultRenderSettings, overrides: {}, captionEdits: {}, headlines: {}, emphasisEdits: {}, lineBreakEdits: {},
     visual: {}, batches: {}, focusedKey: "", notice: "", encoderError,
   };
   let legacyFraming = false;
@@ -68,7 +68,7 @@ export async function loadEditor(episodeId: string, urlKeys: string[], legacyRun
     const allKeys = (clips?.clips ?? []).filter(row => row.run_id === runId).map(row => row.clip_key);
     const draft = restoreEditorDraft(localStorage, `${run.project_id}:${run.id}`, allKeys, defaultRenderSettings, encoder);
     let { settings } = draft;
-    let { captionEdits, headlines, emphasisEdits, clipSettings } = draft;
+    let { captionEdits, headlines, emphasisEdits, lineBreakEdits, clipSettings } = draft;
     let { legacyFraming: legacy } = draft;
     let serverVisual = draft.visualArtifacts;
     try {
@@ -80,6 +80,7 @@ export async function loadEditor(episodeId: string, urlKeys: string[], legacyRun
       captionEdits = saved.caption_edits;
       headlines = saved.headlines;
       emphasisEdits = Object.fromEntries(Object.entries(saved.emphasis ?? {}).filter(([key]) => allKeys.includes(key)));
+      lineBreakEdits = Object.fromEntries(Object.entries(saved.line_breaks ?? {}).filter(([key]) => allKeys.includes(key)));
       clipSettings = Object.fromEntries(Object.entries(saved.clip_settings ?? {}).filter(([key]) => allKeys.includes(key))) as Record<string, SettingsPatch>;
       serverVisual = saved.visual_artifacts.scene ? { scene: saved.visual_artifacts.scene } : serverVisual;
     } catch { if (signal.aborted) throw signal.reason; /* primeira revisão: mantém o rascunho local compatível */ }
@@ -92,6 +93,7 @@ export async function loadEditor(episodeId: string, urlKeys: string[], legacyRun
     Object.assign(out.captionEdits, Object.fromEntries(qualifiedEntries(runId, captionEdits)));
     Object.assign(out.headlines, Object.fromEntries(qualifiedEntries(runId, headlines)));
     Object.assign(out.emphasisEdits, Object.fromEntries(qualifiedEntries(runId, emphasisEdits)));
+    Object.assign(out.lineBreakEdits, Object.fromEntries(qualifiedEntries(runId, lineBreakEdits)));
     Object.assign(out.overrides, Object.fromEntries(qualifiedEntries(runId, clipSettings)));
     out.visual[runId] = run.artifacts.scene_index ? { scene: run.artifacts.scene_index } : serverVisual;
   }

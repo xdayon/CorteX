@@ -130,6 +130,8 @@
 .w.doubt { text-decoration: underline dotted var(--warn); text-decoration-thickness: 2px; text-underline-offset: 4px; }
 .w.gone { color: var(--tx3); text-decoration: line-through; }
 .w.edited::after { content: " ✎"; color: var(--ac); font-size: 12px; }
+.w.br::before { content: "↵ "; color: var(--ac); font-size: 12px; }
+.words .line-end { flex-basis: 100%; height: 0; }
 .hidden-list { flex-wrap: wrap; }
 .word-popover { margin-top: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; border-radius: 10px; border: 1px solid var(--ac); background: var(--s2); }
 .word-popover .actions { display: flex; flex-wrap: wrap; gap: 6px; }

@@ -488,7 +488,7 @@ def test_overlay_preview_returns_pages_with_global_indices_and_whitelisted_fonts
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["generator_version"] == 5
+    assert body["generator_version"] == 6
     assert body["canvas"] == {"width": 1080, "height": 1920}
     assert body["timeline_duration_seconds"] == pytest.approx(4.8)
     assert body["junctions"] == [2.4]

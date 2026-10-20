@@ -4,6 +4,7 @@ from pathlib import Path
 
 from asgi_client import ASGITestClient as TestClient
 
+from cortex.render.schemas import RenderSettings
 from cortex.api import create_app
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind, StageArtifact, WorkflowRun
@@ -235,7 +236,7 @@ def test_export_items_carry_emphasis_headline_and_minimum(tmp_path: Path) -> Non
         json={
             "selection_artifact_id": run.artifacts["suggestion"], "selected_clips": clips,
             "render_settings": _settings(), "headlines": {"a": "Minha manchete"},
-            "emphasis": {"b": []},
+            "emphasis": {"b": []}, "line_breaks": {"a": [7, 5, 7]},
         },
     ).json()
     batch = client.post(
@@ -245,6 +246,9 @@ def test_export_items_carry_emphasis_headline_and_minimum(tmp_path: Path) -> Non
     settings = {item["clip_key"]: item["render_settings"] for item in batch["items"]}
     assert settings["a"]["captions"]["emphasis_word_indices"] == [3, 4]
     assert settings["b"]["captions"]["emphasis_word_indices"] == []
+    assert settings["a"]["captions"]["line_break_word_indices"] == [7, 5, 7]
+    assert settings["b"]["captions"]["line_break_word_indices"] == []
+    assert RenderSettings.model_validate(settings["a"]).captions.line_break_word_indices == [5, 7]
     assert settings["a"]["headline"]["text"] == "Minha manchete"
     plan_job = next(job for job in JobStore(config.paths.database).list() if job.type == "edit_plan")
     assert plan_job.payload["tighten"] is True

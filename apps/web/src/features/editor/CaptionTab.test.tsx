@@ -26,12 +26,14 @@ const transcript: IndexedWord[] = [
 function Harness({ time = 0, onSeek = vi.fn() }: { time?: number; onSeek?: (seconds: number) => void }) {
   const [corrections, setCorrections] = useState<CaptionCorrection[]>([]);
   const [emphasis, setEmphasis] = useState<number[]>([]);
+  const [lineBreaks, setLineBreaks] = useState<number[]>([]);
   return <>
     <CaptionTab current={target} targets={[target]} overlay={overlay} loading={false} error="" time={time} onSeek={onSeek}
       corrections={corrections} onCorrections={setCorrections} emphasis={emphasis} onEmphasis={setEmphasis}
+      lineBreaks={lineBreaks} onLineBreaks={setLineBreaks}
       captionEdits={{ [target.key]: corrections }} onAllCaptionEdits={all => setCorrections(all[target.key] ?? [])}
       words={transcript} wordsError="" disabled={false}/>
-    <output data-testid="state">{JSON.stringify({ corrections, emphasis })}</output>
+    <output data-testid="state">{JSON.stringify({ corrections, emphasis, lineBreaks })}</output>
   </>;
 }
 const state = () => JSON.parse(screen.getByTestId("state").textContent!);
@@ -69,6 +71,25 @@ test("clicking a word edits it: Enter saves, Escape cancels, equal text removes 
   fireEvent.change(screen.getByRole("textbox", { name: "Texto da palavra" }), { target: { value: "bom" } });
   fireEvent.keyDown(screen.getByRole("textbox", { name: "Texto da palavra" }), { key: "Enter" });
   expect(state().corrections).toEqual([]);
+});
+
+test("the popover starts a caption line at a word and takes it back", () => {
+  render(<Harness/>);
+  fireEvent.click(screen.getByRole("button", { name: "bom" }));
+  fireEvent.click(screen.getByRole("button", { name: "↵ Quebrar linha aqui" }));
+  expect(state().lineBreaks).toEqual([3]);
+  expect(screen.getByRole("button", { name: "bom" }).classList.contains("br")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Tirar quebra de linha" }));
+  expect(state().lineBreaks).toEqual([]);
+});
+
+test("a block shows the caption lines the export will burn", () => {
+  const twoLines = { ...overlay, pages: [{ start: 0, end: 2.4, lines: [[word(0, "o", 0), word(1, "cortecs", 0.4)], [word(2, "é", 1.2)]] }] } as unknown as OverlayPreview;
+  render(<CaptionTab current={target} targets={[target]} overlay={twoLines} loading={false} error="" time={0} onSeek={vi.fn()}
+    corrections={[]} onCorrections={vi.fn()} emphasis={[]} onEmphasis={vi.fn()} lineBreaks={[]} onLineBreaks={vi.fn()}
+    captionEdits={{}} onAllCaptionEdits={vi.fn()} words={transcript} wordsError="" disabled={false}/>);
+  const words = document.querySelector(".words")!;
+  expect([...words.children].map(child => child.classList.contains("line-end") ? "|" : child.textContent)).toEqual(["o", "cortecs", "|", "é"]);
 });
 
 test("the popover highlights, hides and restores words", () => {

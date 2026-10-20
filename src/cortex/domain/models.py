@@ -134,6 +134,8 @@ class ClipRevision(BaseModel):
     # Caption emphasis per clip key (transcript word indices); absent keys use
     # the AI suggestion stored in the clip.
     emphasis: dict[str, list[int]] = Field(default_factory=dict)
+    # Manual caption line breaks per clip key (word indices that start a line).
+    line_breaks: dict[str, list[int]] = Field(default_factory=dict)
     # Per-clip render overrides (partial RenderSettings) deep-merged over
     # render_settings for that clip only; absent keys use the shared settings.
     clip_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)

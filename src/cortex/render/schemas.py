@@ -190,6 +190,10 @@ class RenderCaptionSettings(BaseModel):
     emphasis_word_indices: list[Annotated[int, Field(ge=0)]] = Field(
         default_factory=list, max_length=2000
     )
+    # Palavras (índice na transcrição) que começam uma linha nova da legenda.
+    line_break_word_indices: list[Annotated[int, Field(ge=0)]] = Field(
+        default_factory=list, max_length=2000
+    )
     emphasis_color: str = Field(default="#FFD400")
     box_text_color: str = Field(default="#071012")
 
@@ -198,7 +202,7 @@ class RenderCaptionSettings(BaseModel):
     def normalize_hex(cls, value: str) -> str:
         return _hex_color(value)
 
-    @field_validator("emphasis_word_indices")
+    @field_validator("emphasis_word_indices", "line_break_word_indices")
     @classmethod
     def normalize_emphasis(cls, values: list[int]) -> list[int]:
         return sorted(set(values))
@@ -298,6 +302,7 @@ class RenderCaptionSettingsPatch(BaseModel):
     animation: RenderAnimationSettings | None = None
     style: Literal["classic", "word_reveal", "pop", "box"] | None = None
     emphasis_word_indices: list[Annotated[int, Field(ge=0)]] | None = Field(default=None, max_length=2000)
+    line_break_word_indices: list[Annotated[int, Field(ge=0)]] | None = Field(default=None, max_length=2000)
     emphasis_color: str | None = None
     box_text_color: str | None = None
 
@@ -306,7 +311,7 @@ class RenderCaptionSettingsPatch(BaseModel):
     def normalize_hex(cls, value: str | None) -> str | None:
         return _hex_color(value) if value is not None else None
 
-    @field_validator("emphasis_word_indices")
+    @field_validator("emphasis_word_indices", "line_break_word_indices")
     @classmethod
     def normalize_emphasis(cls, values: list[int] | None) -> list[int] | None:
         return sorted(set(values)) if values is not None else None

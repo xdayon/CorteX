@@ -38,7 +38,8 @@ export type InspectorProps = {
   captionEdits: Record<string, CaptionCorrection[]>; onCaptionEdits: (key: string, edits: CaptionCorrection[]) => void;
   onAllCaptionEdits: (all: Record<string, CaptionCorrection[]>) => void;
   headlines: Record<string, string>; onHeadline: (key: string, text: string | null) => void;
-  emphasis: number[]; onEmphasis: (key: string, indices: number[]) => void; disabled: boolean;
+  emphasis: number[]; onEmphasis: (key: string, indices: number[]) => void;
+  lineBreaks: number[]; onLineBreaks: (key: string, indices: number[]) => void; disabled: boolean;
 };
 
 export function Inspector(props: InspectorProps) {
@@ -59,6 +60,7 @@ export function Inspector(props: InspectorProps) {
         time={props.time} onSeek={props.onSeek} disabled={props.disabled}
         corrections={props.captionEdits[key] ?? []} onCorrections={edits => props.onCaptionEdits(key, edits)}
         emphasis={props.emphasis} onEmphasis={indices => props.onEmphasis(key, indices)}
+        lineBreaks={props.lineBreaks} onLineBreaks={indices => props.onLineBreaks(key, indices)}
         captionEdits={props.captionEdits} onAllCaptionEdits={props.onAllCaptionEdits} words={words} wordsError={wordsError} />}
       {tab === "style" && <StyleTab settings={settings} update={props.update} disabled={props.disabled} />}
       {tab === "framing" && <FramingTab settings={settings} update={props.update} disabled={props.disabled} />}
