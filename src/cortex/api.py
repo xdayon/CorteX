@@ -90,6 +90,12 @@ class EpisodeVoiceSelection(BaseModel):
     speaker: str
 
 
+class CameraRolesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_id: str
+    roles: dict[str, Literal["subject", "interviewers", "wide", "ignore"]]
+
+
 class VoiceProfileCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     episode_id: str
@@ -333,6 +339,85 @@ def create_app(config: CortexConfig | None = None):
             return episode_diarization(episode_id, artifact_id)[2]
         except (ValueError, LookupError, OSError) as exc:
             raise HTTPException(status_code=404, detail="Diarização indisponível") from exc
+
+    @app.post(f"{router_prefix}/episodes/{{episode_id}}/cameras")
+    def start_episode_cameras(episode_id: str):
+        try:
+            detail = library.detail(library.get(episode_id))
+            source = detail["source"]
+            if not source:
+                raise ValueError("Baixe o episódio primeiro")
+            active = next((j for j in detail["jobs"] if j["type"] == "camera_map" and j["status"] in {"running", "queued"}), None)
+            if active:
+                return jobs.get(active["id"])
+            return jobs.create(JobCreate(type=JobType.CAMERA_MAP, project_id=source["project_id"], payload={"source_asset_id": source["id"]}))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def episode_camera_map(episode_id, artifact_id):
+        from cortex.analyze.camera_map import read_document
+        entry = library.get(episode_id)
+        artifact = domain.get_stage_artifact(artifact_id)
+        if artifact.stage != "camera_map" or artifact.project_id not in entry.project_ids:
+            raise ValueError("Mapa de câmeras não pertence ao episódio")
+        return entry, artifact, read_document(artifact)
+
+    @app.get(f"{router_prefix}/episodes/{{episode_id}}/cameras")
+    def get_episode_cameras(episode_id: str):
+        try:
+            entry = library.get(episode_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        detail = library.detail(entry)
+        active = next((j for j in detail["jobs"] if j["type"] == "camera_map" and j["status"] in {"running", "queued"}), None)
+        found = sorted(
+            (a for p in entry.project_ids for a in domain.list_stage_artifacts(p, stage="camera_map") if Path(a.path).is_file()),
+            key=lambda a: a.created_at, reverse=True)
+        summary = None
+        for artifact in found:
+            try:
+                _, _, document = episode_camera_map(episode_id, artifact.id)
+            except (ValueError, LookupError, OSError):
+                continue
+            base = f"{router_prefix}/episodes/{episode_id}/cameras/{artifact.id}/groups"
+            summary = {
+                "artifact_id": artifact.id, "duration_seconds": document.duration_seconds,
+                "keyframe_count": document.keyframe_count, "shots": len(document.shots),
+                "voice": (document.engine.get("voice") or {}),
+                "groups": [{**{k: v for k, v in g.model_dump().items() if k != "thumbnail_path"},
+                            "thumbnail_url": f"{base}/{g.id}/thumbnail"} for g in document.groups],
+            }
+            break
+        if summary is None and active is None:
+            raise HTTPException(status_code=404, detail="Mapa de câmeras indisponível")
+        roles = entry.camera_roles.get("roles") if summary and entry.camera_roles.get("artifact_id") == summary["artifact_id"] else None
+        return {"artifact_id": summary and summary["artifact_id"], "document": summary, "roles": roles, "job": active}
+
+    @app.put(f"{router_prefix}/episodes/{{episode_id}}/cameras/roles")
+    def put_episode_camera_roles(episode_id: str, request: CameraRolesRequest):
+        try:
+            entry, artifact, document = episode_camera_map(episode_id, request.artifact_id)
+            ids = {str(g.id) for g in document.groups}
+            if not set(request.roles) <= ids:
+                raise ValueError("Grupo de câmera não existe neste mapa")
+            entry.camera_roles = {"artifact_id": artifact.id, "roles": dict(request.roles)}
+            library.save(entry)
+            return library.detail(entry)
+        except (ValueError, LookupError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{router_prefix}/episodes/{{episode_id}}/cameras/{{artifact_id}}/groups/{{group_id}}/thumbnail")
+    def get_camera_thumbnail(episode_id: str, artifact_id: str, group_id: int):
+        from cortex.analyze.camera_map import thumbnail_file
+        try:
+            _, artifact, document = episode_camera_map(episode_id, artifact_id)
+        except (ValueError, LookupError, OSError) as exc:
+            raise HTTPException(status_code=404, detail="Miniatura indisponível") from exc
+        group = next((g for g in document.groups if g.id == group_id), None)
+        path = group and thumbnail_file(settings, artifact.project_id, group)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Miniatura indisponível")
+        return FileResponse(path, media_type="image/jpeg")
 
     @app.put(f"{router_prefix}/episodes/{{episode_id}}/voice")
     def select_episode_voice(episode_id: str, request: EpisodeVoiceSelection):

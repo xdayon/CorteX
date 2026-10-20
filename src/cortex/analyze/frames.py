@@ -42,11 +42,13 @@ def _parse_ppm(data: bytes) -> np.ndarray:
     return np.frombuffer(pixel_bytes, dtype=np.uint8).reshape(height, width, 3)
 
 
-def _extract_frame_rgb(ffmpeg: str | Path, source_path: Path, timestamp: float) -> np.ndarray:
+def _extract_frame_rgb(
+    ffmpeg: str | Path, source_path: Path, timestamp: float, width: int = FRAME_EXTRACTION_WIDTH,
+) -> np.ndarray:
     command = [
         str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error",
         "-ss", f"{max(0.0, timestamp):.3f}", "-i", str(source_path),
-        "-frames:v", "1", "-vf", f"scale={FRAME_EXTRACTION_WIDTH}:-2",
+        "-frames:v", "1", "-vf", f"scale={width}:-2",
         "-pix_fmt", "rgb24", "-f", "image2pipe", "-vcodec", "ppm", "-",
     ]
     try:

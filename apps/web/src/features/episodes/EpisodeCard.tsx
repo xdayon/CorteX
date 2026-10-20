@@ -6,9 +6,9 @@ import { EpisodeThumb } from "./EpisodeThumb";
 import { episodeStats, episodeStatus } from "./episodeStatus";
 import type { EpisodeAction } from "./useEpisodeActions";
 
-export function EpisodeCard({ entry, counts, pending, busy, onAction, onVoice, onPrepare }: {
+export function EpisodeCard({ entry, counts, pending, busy, onAction, onVoice, onCameras, onPrepare }: {
   entry: EpisodeEntry; counts?: ClipCounts; pending?: EpisodeAction; busy: boolean;
-  onAction: (action: EpisodeAction) => void; onVoice: () => void; onPrepare: () => void;
+  onAction: (action: EpisodeAction) => void; onVoice: () => void; onCameras: () => void; onPrepare: () => void;
 }) {
   const status = episodeStatus(entry);
   const href = episodePath(entry.id);
@@ -31,7 +31,7 @@ export function EpisodeCard({ entry, counts, pending, busy, onAction, onVoice, o
         <span className="ecard-stats">{episodeStats(entry, status.readyRuns, counts)}</span>
         <div className="grow" />
         {needsAction && <Button size="sm" disabled={busy || !!pending} onClick={onPrepare}>{status.kind === "attention" ? "Tentar de novo" : "Preparar cortes"}</Button>}
-        <EpisodeMenu entry={entry} pending={!!pending} onAction={onAction} onVoice={onVoice} />
+        <EpisodeMenu entry={entry} pending={!!pending} onAction={onAction} onVoice={onVoice} onCameras={onCameras} />
       </div>
     </div>
   </article>;

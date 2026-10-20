@@ -4,6 +4,7 @@ import { plural } from "../../app/humanize";
 import { EmptyState, Icon, Segmented, Skeleton, useToast } from "../../ui";
 import { EpisodeCard } from "./EpisodeCard";
 import { NewEpisodeComposer } from "./NewEpisodeComposer";
+import { CamerasDialog } from "./CamerasDialog";
 import { VoiceDialog } from "./VoiceDialog";
 import { episodeStatus, exportedCount } from "./episodeStatus";
 import { defaultRunOptions } from "./runOptions";
@@ -67,9 +68,10 @@ export function EpisodesPage() {
       {!catalog.loading && !!scope.length && !shown.length && <EmptyState title="Nenhum episódio encontrado">Ajuste a busca ou o filtro.</EmptyState>}
       <div className="grid">
         {shown.map(entry => <EpisodeCard key={entry.id} entry={entry} counts={summary[entry.id]} pending={actions.pending[entry.id]} busy={create.busy}
-          onAction={action => void actions.act(entry, action)} onVoice={() => actions.setVoiceFor(entry)} onPrepare={() => void prepare(entry)} />)}
+          onAction={action => void actions.act(entry, action)} onVoice={() => actions.setVoiceFor(entry)} onCameras={() => actions.setCamerasFor(entry)} onPrepare={() => void prepare(entry)} />)}
       </div>
     </section>
     {actions.voiceFor && <VoiceDialog entry={actions.voiceFor} onClose={() => actions.setVoiceFor(null)} />}
+    {actions.camerasFor && <CamerasDialog entry={actions.camerasFor} onClose={() => actions.setCamerasFor(null)} />}
   </div>;
 }
