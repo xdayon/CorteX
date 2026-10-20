@@ -12,8 +12,13 @@ step "FFmpeg (precisa do filtro 'subtitles')"
 echo FFMPEG_OK
 
 step "Dependências Python"
-.venv/bin/python -m pip install -q -e '.[dev,transcription,analysis,youtube]'
-if command -v uv >/dev/null; then uv lock --check; fi
+# O .venv criado pelo uv não traz pip; com uv disponível, ele instala no mesmo .venv.
+if command -v uv >/dev/null; then
+  uv pip install -q --python .venv/bin/python -e '.[dev,transcription,analysis,youtube]'
+  uv lock --check
+else
+  .venv/bin/python -m pip install -q -e '.[dev,transcription,analysis,youtube]'
+fi
 echo DEPS_OK
 
 step "Claude Code CLI (provider editorial)"
