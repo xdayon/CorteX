@@ -63,6 +63,21 @@ export type ApiJob = {
   elapsed_seconds?: number | null;
 };
 
+export type CameraRole = "subject" | "interviewers" | "wide" | "ignore";
+export type CameraGroup = {
+  id: number; sample_time: number; airtime_seconds: number; airtime_share: number; shot_count: number;
+  median_shot_seconds: number; faces: number; subject_voice_share: number | null; suggested_role: CameraRole | null; thumbnail_url: string;
+};
+export type EpisodeCameras = {
+  artifact_id: string | null;
+  document: null | {
+    artifact_id: string; duration_seconds: number; keyframe_count: number; shots: number;
+    voice: { status: "ok" | "failed" | "unavailable"; reason?: string; cached?: boolean }; groups: CameraGroup[];
+  };
+  roles: Record<string, CameraRole> | null;
+  job: ApiJob | null;
+};
+
 export type Project = {
   id: string;
   name: string;
@@ -346,23 +361,35 @@ export function isRemoteOrigin(hostname: string): boolean {
   return !["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname);
 }
 
+async function failure(response: Response): Promise<Error> {
+  let detail = `${response.status} ${response.statusText}`;
+  try {
+    const body = await response.json();
+    if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+  } catch { /* corpo não-JSON: mantém status */ }
+  return new Error(detail);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`;
-    try {
-      const body = await response.json();
-      if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-    } catch { /* corpo não-JSON: mantém status */ }
-    throw new Error(detail);
-  }
+  if (!response.ok) throw await failure(response);
   return response.json() as Promise<T>;
 }
 
 export const api = {
+  episodeCameras: async (id: string, signal?: AbortSignal): Promise<EpisodeCameras | null> => {
+    // 404 means "never mapped": the dialog offers to map instead of showing an error.
+    const response = await fetch(`/api/v1/episodes/${encodeURIComponent(id)}/cameras`, { signal });
+    if (response.status === 404) return null;
+    if (!response.ok) throw await failure(response);
+    return response.json() as Promise<EpisodeCameras>;
+  },
+  mapEpisodeCameras: (id: string) => request<ApiJob>(`/api/v1/episodes/${id}/cameras`, {method:"POST"}),
+  saveCameraRoles: (id: string, artifact_id: string, roles: Record<string, CameraRole>) =>
+    request<EpisodeEntry>(`/api/v1/episodes/${id}/cameras/roles`, {method:"PUT", body: JSON.stringify({artifact_id, roles})}),
   diarizationStatus: () => request<{ready:boolean;runtime_installed:boolean;token_configured:boolean;device:string;missing:string[];model_url:string}>("/api/v1/diarization-status"),
   diarizeEpisode: (id:string) => request<ApiJob>(`/api/v1/episodes/${id}/diarization`, {method:"POST"}),
   episodeVoices: (id:string, artifact:string) => request<{turns:Array<{start:number;end:number;speaker:string}>}>(`/api/v1/episodes/${id}/diarization/${artifact}`),

@@ -6,6 +6,7 @@ import { Button, Chip, EmptyState, Icon, Skeleton, useToast } from "../../ui";
 import { EpisodeMenu } from "../episodes/EpisodeMenu";
 import { EpisodeThumb } from "../episodes/EpisodeThumb";
 import { RunOptionsDialog } from "../episodes/RunOptionsDialog";
+import { CamerasDialog } from "../episodes/CamerasDialog";
 import { VoiceDialog } from "../episodes/VoiceDialog";
 import { episodeStatus } from "../episodes/episodeStatus";
 import { defaultRunOptions, optionsFromRun, type RunOptions } from "../episodes/runOptions";
@@ -69,7 +70,7 @@ export function EpisodePage({ id }: { id: string }) {
       </div>
       <div className="ep-actions">
         <Button icon="spark" disabled={create.busy || processing || !!entry.archived} onClick={openOptions}>Gerar nova seleção</Button>
-        <EpisodeMenu entry={entry} pending={!!actions.pending[entry.id]} onAction={action => void actions.act(entry, action)} onVoice={() => actions.setVoiceFor(entry)} />
+        <EpisodeMenu entry={entry} pending={!!actions.pending[entry.id]} onAction={action => void actions.act(entry, action)} onVoice={() => actions.setVoiceFor(entry)} onCameras={() => actions.setCamerasFor(entry)} />
       </div>
     </header>
 
@@ -87,5 +88,6 @@ export function EpisodePage({ id }: { id: string }) {
     <EpisodeClips episodeId={entry.id} refreshKey={refreshKey} />
     {dialog && <RunOptionsDialog title="Nova seleção de cortes" confirmLabel="Gerar seleção" options={dialog} onClose={() => setDialog(null)} onSave={next => void generate(next)} />}
     {actions.voiceFor && <VoiceDialog entry={actions.voiceFor} onClose={() => actions.setVoiceFor(null)} />}
+    {actions.camerasFor && <CamerasDialog entry={actions.camerasFor} onClose={() => actions.setCamerasFor(null)} />}
   </div>;
 }

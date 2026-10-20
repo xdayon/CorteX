@@ -9,6 +9,7 @@ export function useEpisodeActions(refresh: () => Promise<void>, invalidate: () =
   const toast = useToast();
   const [pending, setPending] = useState<Record<string, EpisodeAction>>({});
   const [voiceFor, setVoiceFor] = useState<EpisodeEntry | null>(null);
+  const [camerasFor, setCamerasFor] = useState<EpisodeEntry | null>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
@@ -36,5 +37,5 @@ export function useEpisodeActions(refresh: () => Promise<void>, invalidate: () =
     }
   }, [invalidate, refresh, toast]);
 
-  return { pending, act, voiceFor, setVoiceFor };
+  return { pending, act, voiceFor, setVoiceFor, camerasFor, setCamerasFor };
 }

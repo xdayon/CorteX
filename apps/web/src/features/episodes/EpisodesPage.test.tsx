@@ -160,7 +160,7 @@ test("the menu closes on Escape and opens the voice dialog for a downloaded epis
   expect(screen.queryByRole("menu")).toBeNull();
   fireEvent.click(trigger);
   expect(screen.queryByRole("menuitem", { name: "Baixar e guardar vídeo" })).toBeNull();
-  fireEvent.click(screen.getByRole("menuitem", { name: "Identificar voz do protagonista" })); await settle();
+  fireEvent.click(screen.getByRole("menuitem", { name: "Separar vozes (lento, ~1× a duração)" })); await settle();
   expect(within(screen.getByRole("dialog")).getByText(/Separe as vozes em CPU/)).toBeTruthy();
   expect(api.diarizationStatus).toHaveBeenCalled();
   fireEvent.keyDown(document, { key: "Escape" });

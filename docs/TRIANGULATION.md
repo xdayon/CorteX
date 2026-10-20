@@ -42,6 +42,14 @@ Regras das sugestões (determinísticas):
 - dura 1,2–2,5 s, começa logo após o fim de uma frase, com espaçamento ≥ 8 s;
 - os candidatos são ordenados por proximidade no tempo do episódio, estabilidade do plano e rosto visível.
 
+## Estado (2026-10-20)
+
+- Gate A pronto no branch `feat/triangulation`. Backend `analyze/camera_map.py`, job
+  `camera_map`, endpoints `/episodes/{id}/cameras*`, tela "Câmeras do episódio" no menu
+  do episódio. Validado num episódio real (evidência acima) e no Studio em 390 px e
+  1440 px. Falta o Dayon confirmar 2–3 episódios.
+- Próximo: Gate B (candidatos de reação e plano aberto por corte).
+
 ## Gates
 
 - **A — Mapa de câmeras.** Artifact `camera_map` (grupos, planos, rostos, participação

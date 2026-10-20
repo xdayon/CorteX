@@ -56,3 +56,15 @@
 .voice audio { width: 100%; margin: 6px 0; }
 .voice > div { padding: 10px 0; border-top: 1px solid var(--line); }
 .voice .btn { margin: 4px 8px 4px 0; }
+
+.cam { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.cam p { margin: 0; color: var(--tx2); font: 400 13px/1.5 var(--font, system-ui, sans-serif); }
+.cam-note { color: var(--tx3); }
+.cam-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.cam-card { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--s1); }
+.cam-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--s2); display: block; }
+.cam-info { display: flex; flex-direction: column; gap: 2px; color: var(--tx); font: 500 13px/1.4 var(--font, system-ui, sans-serif); }
+.cam-voice { color: var(--tx3); font-weight: 400; }
+.cam-card .seg { display: flex; flex-wrap: wrap; width: 100%; overflow: visible; }
+.cam-rare summary { cursor: pointer; margin-bottom: 10px; color: var(--tx2); font: 500 13px/1.4 var(--font, system-ui, sans-serif); }
+@media (max-width: 480px) { .cam-grid { grid-template-columns: 1fr; } }
