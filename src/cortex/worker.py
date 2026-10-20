@@ -640,7 +640,27 @@ def run_diarization_job(job, config, jobs, domain):
         jobs.update(job.id, JobUpdate(status=JobStatus.SUCCEEDED, progress=100, stage=PipelineStage.COMPLETE, message="Vozes salvas; confirme a voz do Dayon", result=result))
 
 
+def run_camera_map_job(job, config, jobs, domain):
+    from cortex.analyze.camera_map import CameraMapCancelled, build_camera_map, read_document
+    source = domain.get_source_asset(job.payload["source_asset_id"])
+    if source.project_id != job.project_id:
+        raise ValueError("Fonte de outro projeto")
+    try:
+        artifact = build_camera_map(
+            config, domain, source,
+            progress_cb=lambda percent, message: _safe_progress(jobs, job.id, percent, message, PipelineStage.ANALYZE),
+            should_cancel=lambda: _job_is_cancelled(jobs, job.id))
+    except CameraMapCancelled:
+        return
+    document = read_document(artifact)
+    jobs.update(job.id, JobUpdate(
+        status=JobStatus.SUCCEEDED, progress=100, stage=PipelineStage.COMPLETE, message="Mapa de câmeras pronto",
+        result={"camera_map_artifact_id": artifact.id, "groups": len(document.groups),
+                "voice": (document.engine.get("voice") or {}).get("status", "unavailable")}))
+
+
 _HANDLERS: dict[JobType, Any] = {
+    JobType.CAMERA_MAP: run_camera_map_job,
     JobType.DIARIZATION: run_diarization_job,
     JobType.TRANSCRIPTION: run_transcription_job,
     JobType.ANALYSIS: run_analysis_job,

@@ -28,6 +28,7 @@ class Episode(BaseModel):
     participant_count: int | None = None
     primary_subject: str = "Dayon"
     subject_reference: dict = Field(default_factory=dict)
+    camera_roles: dict = Field(default_factory=dict)
     channel_name: str | None = None
     channel_url: str | None = None
     thumbnail_url: str | None = None

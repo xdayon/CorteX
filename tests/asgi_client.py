@@ -8,7 +8,7 @@ import fastapi.dependencies.utils
 import fastapi.routing
 
 
-async def _run_direct(function: Any, *args: Any, **kwargs: Any) -> Any:
+async def _run_direct(function: Any, /, *args: Any, **kwargs: Any) -> Any:
     return function(*args, **kwargs)
 
 
