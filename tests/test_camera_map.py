@@ -50,7 +50,9 @@ def never() -> bool:
 
 def test_extract_keyframes_and_grouping(video):
     times, features = extract_keyframes(FFMPEG, video, should_cancel=never)
-    assert len(times) == 8 and np.allclose(times, np.arange(8), atol=0.05)
+    # Discarding non-key packets in the demuxer shifts H.264 keyframe times by up to a
+    # few frames (B-frame reorder); AV1/VP9 masters keep exact times.
+    assert len(times) == 8 and np.allclose(times, np.arange(8), atol=0.15)
     airtime = np.diff(np.append(times, 8.0))
     labels, centers = camera_map.group_keyframes(features, airtime)
     assert len(centers) == 3
@@ -88,6 +90,18 @@ def test_face_count_does_not_double_people_who_move_between_samples():
     assert face_count([]) == 0
     # Wide shots: small faces still count; weak or tiny detections do not.
     assert face_count([[face(0.1, 0.05), face(0.5, 0.06), face(0.8, 0.04), face(0.9, 0.02), face(0.3, 0.1, 0.4)]]) == 3
+
+
+def test_nearest_matches_the_naive_distance():
+    rng = np.random.default_rng(3)
+    features, centers = rng.normal(size=(50, 16)), rng.normal(size=(6, 16))
+    naive = np.argmin(((features[:, None, :] - centers[None]) ** 2).sum(axis=2), axis=1)
+    assert (camera_map.nearest(features, centers) == naive).all()
+
+
+def test_extract_keyframes_refuses_a_master_with_a_keyframe_on_every_frame(video):
+    with pytest.raises(camera_map.CameraMapError, match="keyframes demais"):
+        extract_keyframes(FFMPEG, video, should_cancel=never, max_frames=2)
 
 
 def test_cluster_is_deterministic():

@@ -42,6 +42,7 @@ FACE_FRAME_WIDTH = 1280
 FACE_SAMPLES = 5
 THUMBNAIL_WIDTH = 480
 KEYFRAME_TIMEOUT_SECONDS = 1800
+MAX_KEYFRAMES_PER_SECOND = 2
 Role = Literal["subject", "interviewers", "wide", "ignore"]
 _PTS_RE = re.compile(r"pts_time:(-?[0-9.]+)")
 
@@ -111,10 +112,13 @@ def _stop(process: subprocess.Popen) -> None:
 
 def extract_keyframes(
     ffmpeg: str | Path, media_path: Path, *, should_cancel: Callable[[], bool],
-    timeout: float = KEYFRAME_TIMEOUT_SECONDS,
+    timeout: float = KEYFRAME_TIMEOUT_SECONDS, max_frames: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     command = [
-        str(ffmpeg), "-hide_banner", "-nostats", "-threads", "4", "-skip_frame", "nokey", "-i", str(media_path),
+        # `-discard nokey` drops non-key packets in the demuxer for any codec; the VP9
+        # decoder ignores `-skip_frame nokey` and would decode every frame.
+        str(ffmpeg), "-hide_banner", "-nostats", "-threads", "4", "-discard", "nokey", "-skip_frame", "nokey",
+        "-i", str(media_path),
         "-vf", f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=area,showinfo", "-fps_mode", "passthrough", "-an",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:",
     ]
@@ -143,6 +147,12 @@ def extract_keyframes(
                 if len(raw) < size:
                     break
                 features.append(frame_features(np.frombuffer(raw, dtype=np.uint8).reshape(FRAME_HEIGHT, FRAME_WIDTH, 3)))
+                if max_frames is not None and len(features) > max_frames:
+                    _stop(process)
+                    raise CameraMapError(
+                        "O vídeo tem keyframes demais (quase todo quadro); o mapa de câmeras precisa de um "
+                        "master com keyframes espaçados, como os do YouTube"
+                    )
             try:
                 process.wait(timeout=30)
             except subprocess.TimeoutExpired:
@@ -167,6 +177,12 @@ def extract_keyframes(
     return np.array(times)[order], np.stack(features)[order]
 
 
+def nearest(features: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    """Index of the nearest centre per row, as an N x K matrix (no N x K x D array)."""
+    distances = (features ** 2).sum(axis=1)[:, None] - 2 * features @ centers.T + (centers ** 2).sum(axis=1)[None]
+    return np.argmin(distances, axis=1)
+
+
 def cluster(
     features: np.ndarray, threshold: float = CLUSTER_THRESHOLD, iterations: int = CLUSTER_ITERATIONS,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -178,7 +194,7 @@ def cluster(
     centers = np.array(leaders)
     labels = np.zeros(len(features), dtype=int)
     for _ in range(iterations):
-        labels = np.argmin(((features[:, None, :] - centers[None]) ** 2).sum(axis=2), axis=1)
+        labels = nearest(features, centers)
         centers = np.array([features[labels == k].mean(axis=0) if (labels == k).any() else centers[k]
                             for k in range(len(centers))])
     return labels, centers
@@ -335,7 +351,10 @@ def build_camera_map(
     except (SceneDetectionError, ValueError, OSError) as exc:
         raise CameraMapError(f"Não foi possível ler o vídeo: {exc}") from exc
     progress_cb(20, "Lendo os keyframes do episódio")
-    times, features = extract_keyframes(config.render.ffmpeg, source_path, should_cancel=should_cancel)
+    times, features = extract_keyframes(
+        config.render.ffmpeg, source_path, should_cancel=should_cancel,
+        max_frames=int(duration * MAX_KEYFRAMES_PER_SECOND) + 100,
+    )
     keyframes_done = time.monotonic()
     duration = max(duration, float(times[-1]))
     airtime = np.diff(np.append(times, duration))
