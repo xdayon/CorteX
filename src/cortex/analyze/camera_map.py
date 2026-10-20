@@ -412,4 +412,3 @@ def thumbnail_file(config: CortexConfig, project_id: str, group: CameraGroup) ->
 
 def read_document(artifact: StageArtifact) -> CameraMapDocument:
     return CameraMapDocument.model_validate_json(Path(artifact.path).read_text(encoding="utf-8"))
-
