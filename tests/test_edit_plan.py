@@ -876,4 +876,56 @@ def test_edit_plan_endpoint_teaser_fields_pair_into_payload(tmp_path: Path) -> N
     assert response.status_code == 201, response.text
     assert response.json()["payload"]["teaser"] == {"start": 1.0, "end": 2.5}
     plain = client.post(url, json=base).json()
-    assert "teaser" not in plain["payload"]
+    assert "teaser" not in plain["payload"] and "question" not in plain["payload"]
+    assert client.post(url, json={**base, "question_start": 1.0}).status_code == 422
+    asked = client.post(url, json={**base, "question_start": 0.2, "question_end": 0.5})
+    assert asked.status_code == 201 and asked.json()["payload"]["question"] == {"start": 0.2, "end": 0.5}
+
+
+def _question_plan(tmp_path: Path, **kwargs):
+    config = _config(tmp_path)
+    config.ensure_runtime_dirs()
+    domain = DomainStore(config.paths.database)
+    words = [
+        _word("e", 0.4, 0.6), _word("o", 0.7, 0.8), _word("que", 0.9, 1.1), _word("você", 1.2, 1.5),
+        _word("acha?", 1.6, 2.0),
+        _word("eu", 3.0, 3.3), _word("acho", 3.4, 3.8), _word("que", 3.9, 4.1), _word("sim.", 4.2, 4.8),
+        _word("é", 5.5, 5.8), _word("isso.", 5.9, 6.5),
+    ]
+    _project, _source, transcript, analysis = _fixture(config, domain, words, 8.0)
+    result = EditPlanService(config, domain).run(
+        transcript_artifact=transcript, analysis_artifact=analysis,
+        start=3.0, end=6.6, profile="balanced",
+        progress_cb=lambda *_args: None, should_cancel=lambda: False, **kwargs,
+    )
+    document = EditPlanDocument.model_validate_json(Path(result["edit_plan_path"]).read_text())
+    return result, document
+
+
+def test_question_opens_the_body_without_overlapping_the_answer(tmp_path: Path) -> None:
+    _result, plain = _question_plan(tmp_path / "a")
+    result, document = _question_plan(tmp_path / "b", question_range=(0.4, 2.0))
+    assert result["question_applied"] is True and result["question_dropped"] is None
+    flags = [segment.question for segment in document.segments]
+    assert flags[0] is True and flags[-1] is False and flags == sorted(flags, reverse=True)
+    answer = next(segment for segment in document.segments if not segment.question)
+    questions = [segment for segment in document.segments if segment.question]
+    assert questions[0].start <= 0.4 and all(
+        max(s.end, s.video_end, s.audio_end) <= min(answer.start, answer.video_start, answer.audio_start) + 1e-6
+        for s in questions
+    )
+    assert questions[-1].transition.kind == "hard"
+    assert [segment.timeline_order for segment in document.segments] == list(range(len(document.segments)))
+    assert document.timeline_duration_seconds > plain.timeline_duration_seconds
+    assert document.input_hash != plain.input_hash
+    assert document.diagnostics.saved_seconds == plain.diagnostics.saved_seconds
+
+
+def test_question_dropped_when_it_breaks_the_maximum_or_has_no_speech(tmp_path: Path) -> None:
+    _result, plain = _question_plan(tmp_path / "a")
+    result, document = _question_plan(
+        tmp_path / "b", question_range=(0.4, 2.0), maximum_seconds=plain.timeline_duration_seconds + 0.2,
+    )
+    assert result["question_dropped"] == "max_duration" and not any(s.question for s in document.segments)
+    result, document = _question_plan(tmp_path / "c", question_range=(2.1, 2.9))
+    assert result["question_dropped"] == "no_speech" and document.diagnostics.question_dropped == "no_speech"

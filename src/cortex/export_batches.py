@@ -25,6 +25,7 @@ def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> 
     teaser = item.clip.get("teaser")
     settings = item.render_settings or revision.render_settings or {}
     teaser_on = bool((settings.get("transitions") or {}).get("teaser"))
+    question = (settings.get("transitions") or {}).get("question")
     return {
         "transcript_artifact_id": run.artifacts["transcript"],
         "analysis_artifact_id": run.artifacts["analysis"],
@@ -43,6 +44,7 @@ def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> 
         "tighten": True,
         **({"teaser": {"start": teaser["start"], "end": teaser["end"]}}
            if teaser_on and teaser else {}),
+        **({"question": {"start": question["start"], "end": question["end"]}} if question else {}),
         "export_batch_id": batch.id, "export_item_id": item.id,
     }
 

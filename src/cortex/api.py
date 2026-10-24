@@ -96,6 +96,11 @@ class CameraRolesRequest(BaseModel):
     roles: dict[str, Literal["subject", "interviewers", "wide", "ignore"]]
 
 
+class SceneReviewsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decisions: dict[str, Literal["accepted", "rejected"] | None] = Field(max_length=200)
+
+
 class VoiceProfileCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     episode_id: str
@@ -171,6 +176,8 @@ class EditPlanRequest(BaseModel):
     primary_subject: str | None = Field(default=None, max_length=100)
     teaser_start: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     teaser_end: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    question_start: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    question_end: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def clip_order(self) -> "EditPlanRequest":
@@ -180,6 +187,10 @@ class EditPlanRequest(BaseModel):
             raise ValueError("teaser_start and teaser_end must be sent together")
         if self.teaser_start is not None and self.teaser_end <= self.teaser_start:
             raise ValueError("teaser_end must be greater than teaser_start")
+        if (self.question_start is None) != (self.question_end is None):
+            raise ValueError("question_start and question_end must be sent together")
+        if self.question_start is not None and self.question_end <= self.question_start:
+            raise ValueError("question_end must be greater than question_start")
         return self
 
 
@@ -364,6 +375,7 @@ def create_app(config: CortexConfig | None = None):
 
     @app.get(f"{router_prefix}/episodes/{{episode_id}}/cameras")
     def get_episode_cameras(episode_id: str):
+        from cortex.analyze.camera_map import suggest_role
         try:
             entry = library.get(episode_id)
         except ValueError as exc:
@@ -384,7 +396,10 @@ def create_app(config: CortexConfig | None = None):
                 "artifact_id": artifact.id, "duration_seconds": document.duration_seconds,
                 "keyframe_count": document.keyframe_count, "shots": len(document.shots),
                 "voice": (document.engine.get("voice") or {}),
+                # Roles are re-suggested on read, so maps built before a rule change benefit
+                # without a rebuild (which would orphan the roles confirmed on them).
                 "groups": [{**{k: v for k, v in g.model_dump().items() if k != "thumbnail_path"},
+                            "suggested_role": suggest_role(g.faces, g.subject_voice_share, g.airtime_share),
                             "thumbnail_url": f"{base}/{g.id}/thumbnail"} for g in document.groups],
             }
             break
@@ -405,6 +420,76 @@ def create_app(config: CortexConfig | None = None):
             return library.detail(entry)
         except (ValueError, LookupError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def scene_review_summary(entry) -> dict:
+        decisions = (entry.scene_reviews or {}).get("decisions", {})
+        accepted = sum(1 for value in decisions.values() if value == "accepted")
+        rejected = sum(1 for value in decisions.values() if value == "rejected")
+        return {"accepted": accepted, "rejected": rejected,
+                "approval_rate": round(accepted / (accepted + rejected), 4) if accepted + rejected else None}
+
+    @app.get(f"{router_prefix}/episodes/{{episode_id}}/scenes")
+    def get_episode_scenes(episode_id: str, edit_plan_artifact_id: str):
+        from cortex.analyze.camera_map import read_document
+        from cortex.analyze.scene_suggestions import SCENE_SUGGESTIONS_VERSION, suggest_scenes
+        from cortex.diarize.service import DiarizationDocument
+        from cortex.diarize.voice_match import SUBJECT_LABEL
+        from cortex.edit.schemas import EditPlanDocument
+        from cortex.transcribe.schemas import TranscriptDocument
+        try:
+            entry = library.get(episode_id)
+            artifact = domain.get_stage_artifact(edit_plan_artifact_id)
+            if artifact.stage != "edit_plan" or artifact.project_id not in entry.project_ids:
+                raise ValueError("Plano de edição não pertence ao episódio")
+            plan = EditPlanDocument.model_validate_json(Path(artifact.path).read_text())
+        except (ValueError, LookupError, OSError) as exc:
+            raise HTTPException(status_code=404, detail="Plano de edição indisponível") from exc
+        base = {"algorithm_version": SCENE_SUGGESTIONS_VERSION, "project_id": plan.project_id,
+                "source_asset_id": plan.source_asset_id, "suggestions": [], "question": None,
+                "decisions": {}, "review": scene_review_summary(entry)}
+        maps = sorted(
+            (a for p in entry.project_ids for a in domain.list_stage_artifacts(p, stage="camera_map") if Path(a.path).is_file()),
+            key=lambda a: a.created_at, reverse=True)
+        if not maps:
+            return {**base, "status": "needs_camera_map", "camera_map_artifact_id": None}
+        camera = maps[0]
+        base["camera_map_artifact_id"] = camera.id
+        roles = (entry.camera_roles or {}).get("roles")
+        if entry.camera_roles.get("artifact_id") != camera.id or not roles:
+            return {**base, "status": "needs_roles"}
+        try:
+            document = read_document(camera)
+            if not document.voice_artifact_id:
+                return {**base, "status": "needs_voice"}
+            voice = domain.get_stage_artifact(document.voice_artifact_id)
+            turns = DiarizationDocument.model_validate_json(Path(voice.path).read_text()).turns
+            transcript = TranscriptDocument.model_validate_json(
+                Path(domain.get_transcript_artifact(plan.transcript_artifact_id).path).read_text())
+        except (ValueError, LookupError, OSError) as exc:
+            raise HTTPException(status_code=409, detail=f"Dados do episódio ilegíveis: {exc}"[:300]) from exc
+        result = suggest_scenes(
+            plan, document, {int(k): v for k, v in roles.items()}, turns,
+            [word for segment in transcript.segments for word in segment.words], SUBJECT_LABEL,
+        )
+        decisions = (entry.scene_reviews or {}).get("decisions", {})
+        return {**base, **result.model_dump(mode="json"), "status": "ok",
+                "decisions": {s.id: decisions[s.id] for s in result.suggestions if s.id in decisions}}
+
+    @app.put(f"{router_prefix}/episodes/{{episode_id}}/scene-reviews")
+    def put_scene_reviews(episode_id: str, request: SceneReviewsRequest):
+        try:
+            entry = library.get(episode_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        decisions = dict((entry.scene_reviews or {}).get("decisions", {}))
+        for suggestion_id, decision in request.decisions.items():
+            if decision is None:
+                decisions.pop(suggestion_id, None)
+            else:
+                decisions[suggestion_id] = decision
+        entry.scene_reviews = {"decisions": decisions}
+        library.save(entry)
+        return scene_review_summary(entry)
 
     @app.get(f"{router_prefix}/episodes/{{episode_id}}/cameras/{{artifact_id}}/groups/{{group_id}}/thumbnail")
     def get_camera_thumbnail(episode_id: str, artifact_id: str, group_id: int):
@@ -937,6 +1022,8 @@ def create_app(config: CortexConfig | None = None):
                 "primary_subject": request.primary_subject,
                 **({"teaser": {"start": request.teaser_start, "end": request.teaser_end}}
                    if request.teaser_start is not None else {}),
+                **({"question": {"start": request.question_start, "end": request.question_end}}
+                   if request.question_start is not None else {}),
             },
         ))
 

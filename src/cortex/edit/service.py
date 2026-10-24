@@ -137,6 +137,7 @@ def _segment_to_schema(segment: dict) -> EditSegment:
         transition=EditTransition(**transition) if transition else None,
         piece_index=segment.get("piece_index"),
         teaser=bool(segment.get("teaser", False)),
+        question=bool(segment.get("question", False)),
     )
 
 
@@ -187,10 +188,13 @@ class EditPlanService:
         confirmed_voice: dict | None = None,
         minimum_seconds: float | None = None,
         teaser_range: tuple[float, float] | None = None,
+        question_range: tuple[float, float] | None = None,
     ) -> dict:
         """``teaser_range`` prepends a repeated phrase (flash-forward) planned like
         a body piece; it is dropped, with the reason recorded in
         ``diagnostics.teaser_dropped``, when it would break the duration ceiling.
+        ``question_range`` opens the body with the end of the interviewer's
+        question, never overlapping the answer (``diagnostics.question_dropped``).
         ``minimum_seconds`` never changes the plan (cutting dead time wins);
         a final timeline shorter than it is reported as ``below_minimum``."""
         if should_cancel():
@@ -210,6 +214,12 @@ class EditPlanService:
                 0 <= teaser_range[0] < teaser_range[1]
             ):
                 raise EditPlanPreconditionError("teaser inválido: início deve ser menor que o fim")
+        if question_range is not None:
+            question_range = (float(question_range[0]), float(question_range[1]))
+            if not all(math.isfinite(v) for v in question_range) or not (
+                0 <= question_range[0] < question_range[1]
+            ):
+                raise EditPlanPreconditionError("pergunta inválida: início deve ser menor que o fim")
         semantic_pieces = resolve_semantic_pieces(approximate_edl, start, end)
         semantic_ranges = [(a, b) for a, b, _piece in semantic_pieces]
         voice = ConfirmedVoice.model_validate(confirmed_voice) if confirmed_voice else None
@@ -310,6 +320,9 @@ class EditPlanService:
         if teaser_range is not None:
             hash_payload["teaser"] = [round(teaser_range[0], 4), round(teaser_range[1], 4)]
             hash_payload["teaser_planner_version"] = 1
+        if question_range is not None:
+            hash_payload["question"] = [round(question_range[0], 4), round(question_range[1], 4)]
+            hash_payload["question_planner_version"] = 1
         if voice is not None:
             hash_payload["confirmed_voice"] = {
                 "speaker": voice.speaker,
@@ -343,7 +356,9 @@ class EditPlanService:
                     "below_minimum": _below_minimum(cached_duration, minimum_seconds),
                     "voice_validation": cached.metadata.get("voice_validation"),
                     "teaser_applied": cached.metadata.get("teaser_applied", False),
-                    "teaser_dropped": cached.metadata.get("teaser_dropped")}
+                    "teaser_dropped": cached.metadata.get("teaser_dropped"),
+                    "question_applied": cached.metadata.get("question_applied", False),
+                    "question_dropped": cached.metadata.get("question_dropped")}
 
         if should_cancel():
             raise EditPlanJobCancelled()
@@ -523,6 +538,51 @@ class EditPlanService:
                         for index, segment in enumerate(segments):
                             segment["timeline_order"] = index
 
+        question_applied = False
+        question_dropped: str | None = None
+        if question_range is not None:
+            body = [segment for segment in segments if not segment.get("teaser")]
+            answer_start = min(
+                float(body[0].get(key, body[0]["start"])) for key in ("start", "video_start", "audio_start")
+            )
+            question_dropped = "no_speech"
+            question_end = min(question_range[1], answer_start)
+            spoken = any(
+                word.start >= question_range[0] - 0.05 and word.end <= question_end + 0.05 for word in words
+            )
+            if spoken and question_range[0] < question_end:
+                question_segments = []
+                for segment in self._plan_teaser(
+                    words, question_range[0], question_end, resolved_profile, energy, analysis,
+                ):
+                    # Boundary protection adds post-roll: never overlap the answer.
+                    for key in ("end", "video_end", "audio_end"):
+                        if key in segment:
+                            segment[key] = min(float(segment[key]), answer_start)
+                    if all(
+                        float(segment.get(a, segment["start"])) < float(segment.get(b, segment["end"]))
+                        for a, b in (("start", "end"), ("video_start", "video_end"), ("audio_start", "audio_end"))
+                    ):
+                        question_segments.append(segment)
+                if question_segments:
+                    for segment in question_segments:
+                        segment["question"] = True
+                        segment["piece_index"] = body[0].get("piece_index")
+                    question_segments[-1]["transition"] = {
+                        "video": "cut", "audio": "hard_concat", "duration": 0.0, "kind": "hard",
+                    }
+                    teaser_part = [segment for segment in segments if segment.get("teaser")]
+                    combined = [*teaser_part, *question_segments, *body]
+                    if maximum_seconds is not None and timeline_duration(
+                        combined, resolved_profile.crossfade,
+                    ) > maximum_seconds + 1e-6:
+                        question_dropped = "max_duration"
+                    else:
+                        segments = combined
+                        question_applied, question_dropped = True, None
+                        for index, segment in enumerate(segments):
+                            segment["timeline_order"] = index
+
         # Validate the confirmed voice only after every duration, J/L-cut, and
         # physical-source adjustment.  This is the audio timeline that render
         # will actually consume, rather than the earlier semantic proposal.
@@ -553,10 +613,12 @@ class EditPlanService:
             "cuts": max(0, len(segments) - 1),
             "saved_seconds": max(0.0, round(
                 (end - start) - sum(
-                    float(s["end"]) - float(s["start"]) for s in segments if not s.get("teaser")
+                    float(s["end"]) - float(s["start"])
+                    for s in segments if not s.get("teaser") and not s.get("question")
                 ), 3,
             )),
             "teaser_dropped": teaser_dropped,
+            "question_dropped": question_dropped,
             "scene_snap_count": scene_snap_count,
             "j_cuts": jl_counts["j_cuts"],
             "l_cuts": jl_counts["l_cuts"],
@@ -618,6 +680,8 @@ class EditPlanService:
                 "voice_validation": voice_validation,
                 "teaser_applied": teaser_applied,
                 "teaser_dropped": teaser_dropped,
+                "question_applied": question_applied,
+                "question_dropped": question_dropped,
             },
         ))
         progress_cb(100.0, "Plano de edição concluído")
@@ -625,4 +689,5 @@ class EditPlanService:
                 "duration_limit_applied": bool(duration_issues), "timeline_duration_seconds": document.timeline_duration_seconds,
                 "below_minimum": _below_minimum(document.timeline_duration_seconds, minimum_seconds),
                 "voice_validation": voice_validation,
-                "teaser_applied": teaser_applied, "teaser_dropped": teaser_dropped}
+                "teaser_applied": teaser_applied, "teaser_dropped": teaser_dropped,
+                "question_applied": question_applied, "question_dropped": question_dropped}

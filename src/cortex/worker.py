@@ -546,6 +546,8 @@ def run_edit_plan_job(
     teaser_range, teaser_dropped = _resolve_teaser_payload(
         job.payload.get("teaser"), approximate_edl,
     )
+    question = job.payload.get("question")
+    question_range = (float(question["start"]), float(question["end"])) if isinstance(question, dict) else None
 
     try:
         result = service.run(
@@ -564,6 +566,7 @@ def run_edit_plan_job(
             confirmed_voice=job.payload.get("confirmed_voice"),
             minimum_seconds=minimum_seconds,
             teaser_range=teaser_range,
+            question_range=question_range,
         )
     except EditPlanJobCancelled:
         return

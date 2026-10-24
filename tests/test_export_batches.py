@@ -283,6 +283,29 @@ def test_export_plan_payload_carries_teaser_only_when_toggled(tmp_path: Path) ->
     assert on.payload["teaser"] == {"start": 50.0, "end": 53.5}
 
 
+def test_export_plan_payload_carries_the_clip_question(tmp_path: Path) -> None:
+    config, _domain, project, run = _workflow(tmp_path)
+    client = TestClient(create_app(config))
+    clips = [{"key": key, "rank": rank, "title": key, "headline": key, "start_second": start,
+              "end_second": start + 60, "pacing": "dynamic"} for rank, (key, start) in enumerate((("a", 10), ("b", 90)))]
+    revision = client.post(
+        f"/api/v1/projects/{project.id}/runs/{run.id}/revisions",
+        json={"selection_artifact_id": run.artifacts["suggestion"], "selected_clips": clips,
+              "render_settings": _settings(),
+              "clip_settings": {"a": {"transitions": {"question": {"start": 5.5, "end": 9.8}}}}},
+    ).json()
+    client.post(f"/api/v1/projects/{project.id}/runs/{run.id}/export-batches",
+                json={"revision_id": revision["id"], "idempotency_key": "question"})
+    plans = [job for job in JobStore(config.paths.database).list() if job.type == "edit_plan"]
+    assert plans and plans[0].payload["start"] == 10
+    assert plans[0].payload["question"] == {"start": 5.5, "end": 9.8}
+    assert "question" not in export_plan_payload_for(plans, 90)
+
+
+def export_plan_payload_for(plans, start):
+    return next((job.payload for job in plans if job.payload["start"] == start), {})
+
+
 def test_clip_settings_override_only_their_clip(tmp_path: Path) -> None:
     config, _domain, project, run = _workflow(tmp_path)
     client = TestClient(create_app(config))

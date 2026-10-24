@@ -55,6 +55,9 @@ class EditSegment(BaseModel):
     # the body. Teaser segments come first in timeline order and are the only
     # ones allowed to break chronological source order.
     teaser: bool = False
+    # Opening question: the end of the interviewer's question right before the
+    # answer, real image and voice, placed after the teaser and before the body.
+    question: bool = False
 
     @model_validator(mode="after")
     def _fill_and_check_clocks(self) -> "EditSegment":
@@ -95,6 +98,8 @@ class EditPlanDiagnostics(BaseModel):
     # Why a requested opening teaser was not applied (e.g. "max_duration");
     # None when it was applied or never requested.
     teaser_dropped: str | None = None
+    # Same for the opening question (e.g. "no_speech", "max_duration").
+    question_dropped: str | None = None
 
 
 class EditQualityIssue(BaseModel):
