@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from cortex.api import RenderRequest
 from cortex.config import load_config
-from cortex.render.schemas import RenderSettings, RenderSettingsPatch
+from cortex.render.schemas import RenderSettings, RenderSettingsPatch, settings_cache_payload
 from cortex.render.service import _export_render_files, _merge_render_settings
 
 
@@ -180,3 +180,19 @@ def test_caption_weight_case_and_position_survive_patch_merge() -> None:
     assert merged.captions.font_family == base.captions.font_family
     with pytest.raises(ValidationError):
         RenderSettingsPatch.model_validate({"captions": {"font_weight": 500}})
+
+
+def test_unused_inserts_and_question_stay_out_of_cache_keys() -> None:
+    settings = RenderSettings.model_validate(_payload())
+    payload = settings_cache_payload(settings)
+    assert "inserts" not in payload and "question" not in payload["transitions"]
+    used = _merge_render_settings(settings, RenderSettingsPatch.model_validate({
+        "inserts": [{"kind": "reaction", "anchor": 12.0, "duration": 1.5, "source_start": 300.0}],
+        "transitions": {"question": {"start": 8.0, "end": 11.5}},
+    }))
+    assert settings_cache_payload(used)["inserts"][0]["source_start"] == 300.0
+    assert settings_cache_payload(used)["transitions"]["question"] == {"start": 8.0, "end": 11.5}
+    overlay = settings_cache_payload(used, overlay=True)
+    assert overlay == settings_cache_payload(settings, overlay=True)
+    with pytest.raises(ValidationError):
+        RenderSettingsPatch.model_validate({"transitions": {"question": {"start": 5.0, "end": 4.0}}})

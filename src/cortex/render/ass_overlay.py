@@ -21,7 +21,12 @@ from PIL import ImageFont
 
 from cortex.render.captions import CaptionCue, TimelineWord
 from cortex.render.safe_zones import CAPTION_ACTION_MARGIN_PX, canvas_key, right_actions_limit
-from cortex.render.schemas import RenderCaptionSettings, RenderHeadlineSettings, RenderSettings
+from cortex.render.schemas import (
+    RenderCaptionSettings,
+    RenderHeadlineSettings,
+    RenderSettings,
+    settings_cache_payload,
+)
 
 ASS_GENERATOR_VERSION = 6
 
@@ -894,7 +899,7 @@ def build_ass_overlay(
     )
     payload = {
         "generator_version": ASS_GENERATOR_VERSION,
-        "settings": settings.model_dump(mode="json"),
+        "settings": settings_cache_payload(settings, overlay=True),
         "headline_text": headline_text,
         "junctions": list(junctions),
         "cues": [

@@ -254,6 +254,19 @@ class RenderSubtitleSettings(BaseModel):
     sidecar_srt: bool
 
 
+class RenderQuestionRange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: float = Field(ge=0, allow_inf_nan=False)
+    end: float = Field(gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def ordered(self) -> "RenderQuestionRange":
+        if self.end <= self.start or self.end - self.start > 12:
+            raise ValueError("pergunta deve ter de 0 a 12 s")
+        return self
+
+
 class RenderTransitionStyleSettings(BaseModel):
     """Visual treatment at junctions between two selection pieces (not at the
     pause/filler cuts inside one piece)."""
@@ -265,6 +278,26 @@ class RenderTransitionStyleSettings(BaseModel):
     flash_seconds: float = Field(default=0.12, ge=0.04, le=0.4, allow_inf_nan=False)
     # Open the clip with a repeated key phrase (flash-forward) when the plan has one.
     teaser: bool = False
+    # Open the clip with the end of the interviewer's question (real image and voice),
+    # as absolute source seconds. Per clip: the range comes from the scene suggestions.
+    question: RenderQuestionRange | None = None
+
+
+class RenderInsert(BaseModel):
+    """A cutaway that replaces only the picture: the clip's audio and captions go on.
+
+    ``anchor`` is the absolute source second on the clip's own video clock where the
+    insert starts; ``source_start`` is the absolute source second of the inserted
+    footage (another moment of the same master)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["reaction", "wide"]
+    anchor: float = Field(ge=0, allow_inf_nan=False)
+    duration: float = Field(ge=0.5, le=4.0, allow_inf_nan=False)
+    source_start: float = Field(ge=0, allow_inf_nan=False)
+    group: int | None = Field(default=None, ge=0)
+    suggestion_id: str | None = Field(default=None, max_length=80)
 
 
 class RenderSettings(BaseModel):
@@ -279,6 +312,20 @@ class RenderSettings(BaseModel):
     subtitles: RenderSubtitleSettings
     template: RenderTemplateSettings = Field(default_factory=RenderTemplateSettings)
     transitions: RenderTransitionStyleSettings = Field(default_factory=RenderTransitionStyleSettings)
+    # Per clip (stored in clip_settings): accepted scene suggestions.
+    inserts: list[RenderInsert] = Field(default_factory=list, max_length=16)
+
+
+def settings_cache_payload(settings: RenderSettings, *, overlay: bool = False) -> dict[str, Any]:
+    """Settings as they enter a cache key. Inserts and the question opening are left
+    out while unused, so caches from before they existed stay valid; the overlay never
+    depends on them (the question reaches it through the edit plan)."""
+    payload = settings.model_dump(mode="json")
+    if overlay or not payload["inserts"]:
+        payload.pop("inserts")
+    if overlay or payload["transitions"]["question"] is None:
+        payload["transitions"].pop("question")
+    return payload
 
 
 class RenderCaptionSettingsPatch(BaseModel):
@@ -368,6 +415,7 @@ class RenderTransitionStyleSettingsPatch(BaseModel):
     flash_opacity: float | None = Field(default=None, ge=0.1, le=1.0, allow_inf_nan=False)
     flash_seconds: float | None = Field(default=None, ge=0.04, le=0.4, allow_inf_nan=False)
     teaser: bool | None = None
+    question: RenderQuestionRange | None = None
 
 
 class RenderSettingsPatch(BaseModel):
@@ -381,6 +429,7 @@ class RenderSettingsPatch(BaseModel):
     subtitles: RenderSubtitleSettings | None = None
     template: RenderTemplateSettingsPatch | None = None
     transitions: RenderTransitionStyleSettingsPatch | None = None
+    inserts: list[RenderInsert] | None = Field(default=None, max_length=16)
 
 
 class RenderEngineInfo(BaseModel):
@@ -593,6 +642,24 @@ class RenderTeaserInfo(BaseModel):
     input_duration_seconds: float = Field(gt=0)
 
 
+class RenderInsertInfo(BaseModel):
+    """Requested-vs-effective insert: where it landed on the output timeline, or why not."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["reaction", "wide"]
+    anchor: float
+    requested_duration: float
+    source_start: float
+    applied: bool
+    reason: str | None = None
+    effective_duration: float = 0.0
+    segment_order: int | None = None
+    output_start: float | None = None
+    focus_x: float | None = None
+    suggestion_id: str | None = None
+
+
 class RenderDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -622,6 +689,7 @@ class RenderDocument(BaseModel):
     transitions: list[RenderTransitionInfo] = Field(default_factory=list)
     punch_ins: list[RenderPunchInInfo] = Field(default_factory=list)
     teaser: RenderTeaserInfo | None = None
+    inserts: list[RenderInsertInfo] = Field(default_factory=list)
     engine: RenderEngineInfo
     requested_settings: RenderSettings | None = None
     effective_settings: RenderSettings | None = None

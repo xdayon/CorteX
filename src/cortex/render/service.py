@@ -51,6 +51,7 @@ from cortex.render.schemas import (
     RenderSubtitleSettings,
     RenderTemplateSettings,
     RenderTransitionInfo,
+    settings_cache_payload,
 )
 from cortex.render.safe_zones import SAFE_ZONES, SAFE_ZONES_VERSION, canvas_key, occlusion_issues
 from cortex.render.technical_quality import (
@@ -1576,7 +1577,7 @@ class RenderService:
             },
             "render_sources": {source.id: source.sha256},
             "encoder": requested_encoder,
-            "render_settings": effective_settings.model_dump(mode="json"),
+            "render_settings": settings_cache_payload(effective_settings),
             "render_settings_override": (
                 render_settings_override.model_dump(mode="json", exclude_none=True)
                 if render_settings_override is not None else None
