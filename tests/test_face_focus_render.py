@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from cortex.analyze.face_detect import FaceDetectionError
-from cortex.edit.schemas import EditSegment
+from cortex.edit.schemas import EditPlanDocument, EditSegment, EditTransition
 from cortex.ingest.ffprobe import probe_media
 from cortex.render import face_focus
 from cortex.render.face_focus import FaceFocusSpan
@@ -251,3 +251,48 @@ def test_detection_failure_fails_the_render_with_a_clear_error(tmp_path, monkeyp
             edit_plan_artifact=edit, encoder=None, headline=None, render_settings=settings,
             progress_cb=lambda *_: None, should_cancel=lambda: False,
         )
+
+
+def _xfade_plan(kinds: list[str]) -> EditPlanDocument:
+    segments = []
+    for order, kind in enumerate([*kinds, None]):
+        transition = EditTransition(
+            video="fade", audio="tri", duration=0.2 if kind == "crossfade" else 0.0, kind=kind,
+        ) if kind else None
+        segments.append(EditSegment(start=order * 1.0, end=order * 1.0 + 1.0, timeline_order=order,
+                                    transition=transition))
+    base = _one_segment_plan()
+    return base.model_copy(update={"segments": segments, "clip_end": float(len(segments)),
+                                   "timeline_duration_seconds": float(len(segments))})
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg required")
+@pytest.mark.parametrize("split_faces", [False, True])
+def test_xfade_after_concat_or_face_split_runs_in_ffmpeg(tmp_path, split_faces):
+    # Regression: concat outputs 1/1000000 while trimmed segments are 1/fps, and
+    # xfade refuses mismatched timebases ("First input link main timebase ...").
+    ffmpeg = shutil.which("ffmpeg")
+    source = tmp_path / "source.mp4"
+    subprocess.run([
+        ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-shortest",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(source),
+    ], check=True)
+    plan = _xfade_plan(["hard", "crossfade"])
+    kwargs = {}
+    if split_faces:
+        geometry = _geo(0.5)
+        spans = [_span(0, 0.0, 1.0, 0.5), _span(1, 1.0, 1.5, 0.25), _span(1, 1.5, 2.0, 0.75, scene=1),
+                 _span(2, 2.0, 3.0, 0.5)]
+        plan = _xfade_plan(["crossfade", "hard"])
+        kwargs = {"face_spans": spans, "face_geometries": [geometry] * 4, "face_punches": [None] * 4}
+    graph, video, audio = _filtergraph(
+        plan, *CANVAS, 30, -14.0, -1.0, framing_mode="blurred_background", source_size=SOURCE,
+        framing_zoom=2.0, **kwargs,
+    )
+    assert "xfade" in graph
+    result = subprocess.run([
+        ffmpeg, "-v", "error", "-i", str(source), "-filter_complex", graph,
+        "-map", video, "-map", audio, "-f", "null", "-",
+    ], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[:400]

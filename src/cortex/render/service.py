@@ -865,8 +865,13 @@ def _filtergraph(
             audio_out = "[aout]" if index == len(plan.segments) - 1 else f"[ax{index}]"
             if fade > 0:
                 offset = max(0.001, video_duration_acc - fade)
+                # concat outputs a 1/1000000 timebase while trimmed segments
+                # keep 1/fps, and xfade refuses mismatched inputs: a hard join
+                # or a face-split segment right before a fade broke the render.
+                transitions.append(f"{previous_video}settb=1/{fps}[xfa{index}]")
+                transitions.append(f"[v{index}]settb=1/{fps}[xfb{index}]")
                 transitions.append(
-                    f"{previous_video}[v{index}]xfade=transition=fade:duration={fade:.6f}:"
+                    f"[xfa{index}][xfb{index}]xfade=transition=fade:duration={fade:.6f}:"
                     f"offset={offset:.6f}{video_out}"
                 )
                 video_duration_acc += durations[index] - fade
