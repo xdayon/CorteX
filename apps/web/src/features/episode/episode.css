@@ -93,3 +93,18 @@
 .qp-msg { position: relative; color: var(--tx2); font-size: 13px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
 .qp-label { margin: 0; color: var(--tx2); font-size: 12px; }
 .ep2-tools .selall { margin: 0 0 -8px 2px; }
+
+.eps { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.eps-done { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-radius: var(--r-card); border: 1px solid var(--line); background: var(--s1); }
+.eps-ok { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ok); }
+.eps-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.eps-head h2 { font-size: 14px; font-weight: 600; }
+.eps-list { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 10px; }
+.eps-step { flex: 1 1 200px; min-width: 0; display: flex; gap: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line2); background: var(--s2); }
+.eps-step.done { border-color: transparent; }
+.eps-n { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--s4); color: var(--tx2); font-size: 12px; font-weight: 600; }
+.eps-step.done .eps-n { background: var(--oks); color: var(--ok); }
+.eps-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.eps-note { font-size: 12px; color: var(--tx3); }
+.eps-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.eps-next { font-size: 12px; line-height: 1.5; color: var(--tx3); }

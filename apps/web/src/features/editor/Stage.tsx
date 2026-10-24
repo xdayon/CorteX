@@ -1,18 +1,18 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
-import { api, type CaptionCorrection, type ClipRow, type EditPlanSegment, type OverlayPreview, type RenderSettings } from "../../api";
+import { api, type CaptionCorrection, type SceneSuggestions, type ClipRow, type EditPlanSegment, type OverlayPreview, type RenderSettings } from "../../api";
 import { clipDuration } from "../../editor/clips";
 import { Chip, Icon, IconButton } from "../../ui";
 import { PreviewPlayer, type PlayerHandle } from "./PreviewPlayer";
 import type { PreviewView } from "./previewQueue";
 import { Timeline } from "./Timeline";
-import { buildTrechos, captionBlocks } from "./timeline";
+import { buildTrechos, captionBlocks, sceneBlocks } from "./timeline";
 import { formatBlockTime } from "./timecode";
 
 const TEASER_DROP_REASONS: Record<string, string> = {
   max_duration: "o corte ficaria acima da duração máxima",
   teaser_removed_by_refine: "o enxugamento da IA removeu a frase do teaser",
   outside_source: "a frase está fora da mídia disponível",
-  no_speech: "não há fala na frase escolhida",
+  no_speech: "não há fala no trecho escolhido",
   invalid_teaser: "o trecho do teaser é inválido",
 };
 
@@ -20,8 +20,8 @@ const LIVE: Record<string, [string, string]> = {
   ready: ["Prévia atualizada · rascunho", "ok"], stale: ["Prévia desatualizada", "warn"], error: ["Falha ao gerar a prévia", "bad"],
 };
 
-export function Stage({ row, preview, overlay, overlayError, settings, corrections, time, onTime, onRetry, ref }: {
-  row: ClipRow; preview: PreviewView; overlay: OverlayPreview | null; overlayError: string; settings: RenderSettings;
+export function Stage({ row, preview, overlay, overlayError, settings, scenes, corrections, time, onTime, onRetry, ref }: {
+  row: ClipRow; preview: PreviewView; overlay: OverlayPreview | null; overlayError: string; settings: RenderSettings; scenes: SceneSuggestions | null;
   corrections: CaptionCorrection[]; time: number; onTime: (seconds: number) => void; onRetry: () => void; ref?: Ref<PlayerHandle>;
 }) {
   const player = useRef<PlayerHandle>(null);
@@ -48,6 +48,7 @@ export function Stage({ row, preview, overlay, overlayError, settings, correctio
   const total = overlay?.timeline_duration_seconds ?? (duration || preview.timeline || 0);
   const { blocks, joins } = useMemo(() => buildTrechos(segments, total), [segments, total]);
   const captions = useMemo(() => captionBlocks(overlay?.pages ?? [], time, corrections), [overlay, time, corrections]);
+  const sceneLane = useMemo(() => sceneBlocks(scenes, settings.inserts ?? []), [scenes, settings.inserts]);
   const [liveText, liveTone] = LIVE[preview.phase] ?? (preview.videoUrl ? ["Atualizando prévia…", "ac"] : ["Preparando a prévia…", "ac"]);
   const refine = preview.refine;
   const reason = preview.teaserDropped ? (TEASER_DROP_REASONS[preview.teaserDropped] ?? preview.teaserDropped) : "";
@@ -60,6 +61,7 @@ export function Stage({ row, preview, overlay, overlayError, settings, correctio
         : refine && <span title={refine.reason}><Chip><Icon name="spark" small />Refino da IA não aplicado</Chip></span>}
       {preview.belowMinimum && <Chip tone="warn">Abaixo da duração mínima</Chip>}
       {reason && <Chip tone="warn">Teaser não aplicado: {reason}</Chip>}
+      {preview.questionDropped && <Chip tone="warn">Pergunta não aplicada: {TEASER_DROP_REASONS[preview.questionDropped] ?? preview.questionDropped}</Chip>}
       <div className="grow" />
       <IconButton icon="safeZones" aria-label="Mostrar áreas da interface do Reels e TikTok" aria-pressed={zonesOn} className={zonesOn ? "on" : ""} onClick={() => setZonesOn(value => !value)} />
     </div>
@@ -78,7 +80,7 @@ export function Stage({ row, preview, overlay, overlayError, settings, correctio
       {overlayError && <span className="live bad" role="status" title={overlayError}><i />Legenda da prévia indisponível</span>}
       <IconButton icon={muted ? "volumeOff" : "volume"} aria-label={muted ? "Ativar o som" : "Silenciar"} aria-pressed={muted} onClick={() => setMuted(value => !value)} />
     </div>
-    <Timeline total={total} time={time} onSeek={seconds => player.current?.seek(seconds)} trechos={blocks} joins={joins} captions={captions}
+    <Timeline total={total} time={time} onSeek={seconds => player.current?.seek(seconds)} trechos={blocks} joins={joins} captions={captions} scenes={sceneLane}
       headline={{ on: settings.headline.enabled, seconds: settings.headline.persistent ? null : settings.headline.duration_seconds }} />
   </main>;
 }

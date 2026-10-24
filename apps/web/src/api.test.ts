@@ -58,3 +58,13 @@ test("only loopback hosts skip the remote upload limit", () => {
   expect(isRemoteOrigin("localhost")).toBe(false);
   expect(isRemoteOrigin("cortex.synapses.academy")).toBe(true);
 });
+
+test("an episode never mapped is null whether the API answers 404 or an empty 200", async () => {
+  const empty = { artifact_id: null, document: null, roles: null, job: null };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(empty)))
+    .mockResolvedValueOnce(new Response("{}", { status: 404 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ...empty, job: { id: "j", status: "running" } }))));
+  expect(await api.episodeCameras("ep")).toBeNull();
+  expect(await api.episodeCameras("ep")).toBeNull();
+  expect((await api.episodeCameras("ep"))?.job?.id).toBe("j");
+});

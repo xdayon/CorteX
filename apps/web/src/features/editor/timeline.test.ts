@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { EditPlanSegment, OverlayPage } from "../../api";
-import { buildTrechos, captionBlocks, rulerTicks, seekFromPointer, tickLabel } from "./timeline";
+import type { EditPlanSegment, OverlayPage, SceneSuggestions } from "../../api";
+import { buildTrechos, captionBlocks, rulerTicks, sceneBlocks, seekFromPointer, tickLabel } from "./timeline";
 
 const seg = (order: number, start: number, end: number, extra: Partial<EditPlanSegment> = {}): EditPlanSegment => ({ start, end, timeline_order: order, ...extra });
 
@@ -45,4 +45,16 @@ test("the ruler picks a readable step and labels minutes", () => {
   expect(rulerTicks(300).length).toBeLessThanOrEqual(10);
   expect(tickLabel(70)).toBe("1:10");
   expect(tickLabel(5)).toBe("0:05");
+});
+
+test("scene lane: accepted inserts are solid, undecided suggestions pending, rejected ones hidden", () => {
+  const item = (id: string, at: number) => ({ id, kind: "reaction" as const, anchor: at, duration: 2, output_start: at, source_start: 100, group: 1, score: 1, reason: "", alternatives: [] });
+  const data = {
+    status: "ok", suggestions: [item("a", 5), item("b", 10), item("c", 15)], decisions: { c: "rejected" },
+  } as unknown as SceneSuggestions;
+  expect(sceneBlocks(data, [{ kind: "reaction", anchor: 5, duration: 2, source_start: 100, suggestion_id: "a" }])).toEqual([
+    { id: "a", kind: "reaction", start: 5, duration: 2, state: "accepted" }, { id: "b", kind: "reaction", start: 10, duration: 2, state: "pending" },
+  ]);
+  expect(sceneBlocks(null, [])).toEqual([]);
+  expect(sceneBlocks({ ...data, status: "needs_voice" }, [])).toEqual([]);
 });

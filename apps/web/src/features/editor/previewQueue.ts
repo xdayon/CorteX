@@ -6,23 +6,24 @@ export type PreviewPhase = "queued" | "planning" | "rendering" | "ready" | "stal
 /** What the queue knows about one clip; `renderedKey` and `planTeaser` record the inputs the artifacts were built from. */
 export type ClipPreview = {
   planId: string | null; planTeaser: string; timeline: number | null; refine: RefineStatus | null;
-  belowMinimum: boolean; teaserDropped: string | null; videoUrl: string | null; renderedKey: string;
+  belowMinimum: boolean; teaserDropped: string | null; questionDropped: string | null; videoUrl: string | null; renderedKey: string;
   running: "planning" | "rendering" | null; progress: number; error: string; errorKey: string;
 };
 export type PreviewView = ClipPreview & { phase: PreviewPhase };
 
 export const EMPTY_PREVIEW: ClipPreview = {
-  planId: null, planTeaser: "", timeline: null, refine: null, belowMinimum: false, teaserDropped: null,
+  planId: null, planTeaser: "", timeline: null, refine: null, belowMinimum: false, teaserDropped: null, questionDropped: null,
   videoUrl: null, renderedKey: "", running: null, progress: 0, error: "", errorKey: "",
 };
 
-/** The inputs a clip's preview is built from right now. */
+/** The inputs a clip's preview is built from right now; `teaserKey` covers everything that re-plans the clip (teaser and opening question). */
 export type Target = { teaserKey: string; renderKey: string; errorKey: string };
 
 export function targetOf(row: ClipRow, settings: RenderSettings): Target {
   const teaser = settings.transitions.teaser && row.clip.teaser ? row.clip.teaser : null;
-  const teaserKey = teaser ? `${teaser.start}-${teaser.end}` : "";
-  const renderKey = JSON.stringify([settings.framing, settings.transitions.piece_junction]);
+  const question = settings.transitions.question;
+  const teaserKey = (teaser ? `${teaser.start}-${teaser.end}` : "") + (question ? `|q${question.start}-${question.end}` : "");
+  const renderKey = JSON.stringify([settings.framing, settings.transitions.piece_junction, settings.inserts ?? []]);
   return { teaserKey, renderKey, errorKey: `${teaserKey}|${renderKey}` };
 }
 

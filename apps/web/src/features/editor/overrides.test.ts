@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { defaultRenderSettings } from "../../editor/settings";
-import { applySettingsEdit, deepMerge, diffSettings, effectiveSettings, isCustomized } from "./overrides";
+import { applySettingsEdit, deepMerge, diffSettings, effectiveSettings, isCustomized, resetStyle } from "./overrides";
 
 const shared = defaultRenderSettings;
 
@@ -37,4 +37,23 @@ test("an edit applied to all changes the shared settings and clears only the tou
 test("diffSettings ignores equal arrays and reports changed ones whole", () => {
   expect(diffSettings({ a: { l: [1] }, b: 1 }, { a: { l: [1] }, b: 1 })).toEqual({});
   expect(diffSettings({ a: { l: [1] } }, { a: { l: [1, 2] } })).toEqual({ a: { l: [1, 2] } });
+});
+
+const insert = { kind: "reaction" as const, anchor: 12, duration: 1.8, source_start: 300, group: 1, suggestion_id: "s1" };
+
+test("scenes (inserts and the opening question) are not style: they never mark a clip as customized", () => {
+  const withScenes = applySettingsEdit(shared, {}, "k", "clip", s => ({ ...s, inserts: [insert], transitions: { ...s.transitions, question: { start: 1, end: 5 } } }));
+  expect(withScenes.overrides.k).toEqual({ inserts: [insert], transitions: { question: { start: 1, end: 5 } } });
+  expect(isCustomized(withScenes.overrides, "k")).toBe(false);
+  const styled = applySettingsEdit(shared, withScenes.overrides, "k", "clip", s => ({ ...s, framing: { ...s.framing, zoom: 2 } }));
+  expect(isCustomized(styled.overrides, "k")).toBe(true);
+  const onlyQuestionAndFlash = { k: { transitions: { question: { start: 1, end: 5 }, flash_opacity: 0.2 } } };
+  expect(isCustomized(onlyQuestionAndFlash, "k")).toBe(true);
+});
+
+test("resetting a clip keeps its inserts and question and drops the style overrides", () => {
+  const overrides = { k: { framing: { zoom: 2 }, inserts: [insert], transitions: { question: { start: 1, end: 5 }, flash_opacity: 0.2 } }, other: { framing: { zoom: 1.2 } } };
+  expect(resetStyle(overrides, "k")).toEqual({ k: { inserts: [insert], transitions: { question: { start: 1, end: 5 } } }, other: { framing: { zoom: 1.2 } } });
+  expect(resetStyle({ k: { framing: { zoom: 2 } } }, "k")).toEqual({});
+  expect(resetStyle(overrides, "missing")).toBe(overrides);
 });

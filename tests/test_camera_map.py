@@ -184,7 +184,8 @@ def test_api_cameras_flow(tmp_path, video, model_free):
     client = ASGITestClient(create_app(config))
     episode = next(e for e in client.get("/api/v1/episodes").json() if source.project_id in e["project_ids"])
     base = f"/api/v1/episodes/{episode['id']}/cameras"
-    assert client.get(base).status_code == 404
+    never = client.get(base)
+    assert never.status_code == 200 and never.json() == {"artifact_id": None, "document": None, "roles": None, "job": None}
     queued = client.post(base)
     assert queued.status_code == 200 and queued.json()["type"] == "camera_map"
     assert client.post(base).json()["id"] == queued.json()["id"]

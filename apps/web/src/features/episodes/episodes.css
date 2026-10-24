@@ -68,3 +68,5 @@
 .cam-card .seg { display: flex; flex-wrap: wrap; width: 100%; overflow: visible; }
 .cam-rare summary { cursor: pointer; margin-bottom: 10px; color: var(--tx2); font: 500 13px/1.4 var(--font, system-ui, sans-serif); }
 @media (max-width: 480px) { .cam-grid { grid-template-columns: 1fr; } }
+
+.voice-profile { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 14px; padding: 12px; border-radius: 10px; border: 1px solid var(--line2); background: var(--s2); font-size: 13px; color: var(--tx2); }

@@ -14,6 +14,7 @@ import { useCreateEpisodeRun } from "../episodes/useCreateEpisodeRun";
 import { useEpisodeActions } from "../episodes/useEpisodeActions";
 import { useEpisodeCatalog } from "../episodes/useEpisodeCatalog";
 import { EpisodeClips } from "./EpisodeClips";
+import { EpisodeSteps } from "./EpisodeSteps";
 import { ProcessingPanel } from "./ProcessingPanel";
 import "./episode.css";
 
@@ -73,6 +74,9 @@ export function EpisodePage({ id }: { id: string }) {
         <EpisodeMenu entry={entry} pending={!!actions.pending[entry.id]} onAction={action => void actions.act(entry, action)} onVoice={() => actions.setVoiceFor(entry)} onCameras={() => actions.setCamerasFor(entry)} />
       </div>
     </header>
+
+    <EpisodeSteps entry={entry} processing={processing} onDownload={() => void actions.act(entry, "download")} onGenerate={openOptions}
+      onVoice={() => actions.setVoiceFor(entry)} onCameras={() => actions.setCamerasFor(entry)} reloadKey={`${!!actions.voiceFor}${!!actions.camerasFor}${entry.source?.id ?? ""}`} />
 
     {create.busy && <div className="notice" role="status"><p>{create.message}</p></div>}
     {catalog.error && <div className="notice bad" role="alert"><p>{catalog.error}</p></div>}

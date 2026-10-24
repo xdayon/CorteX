@@ -167,6 +167,31 @@
 .opt.on .radio { border-color: var(--ac); }
 .opt.on .radio::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--ac); }
 
+/* Scene lane and Cenas tab */
+.scb { position: absolute; top: 3px; bottom: 3px; min-width: 6px; padding: 0; border-radius: 5px; cursor: pointer; }
+.scb.accepted { border: 1px solid var(--ac); background: var(--ac); }
+.scb.pending { border: 1px dashed var(--ac); background: transparent; }
+.scb:hover { background: var(--acs); }
+.scb.accepted:hover { background: var(--ac); filter: brightness(1.15); }
+.insp-step { margin: 0; padding: 0 16px 10px; font-size: 12px; line-height: 1.5; color: var(--tx3); border-bottom: 1px solid var(--line); }
+.insp-next { display: flex; justify-content: flex-end; padding: 4px 16px 20px; }
+.scn-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.scn-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.scn-card { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--s2); }
+.scn-card .bar { width: 100%; }
+.scn-quote { margin: 0; font-size: 13px; line-height: 1.5; color: var(--tx2); overflow-wrap: anywhere; }
+.scn-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.scn-row { display: flex; gap: 10px; padding: 8px; border-radius: 10px; border: 1px solid var(--line2); background: var(--s2); }
+.scn-row.on { border-color: var(--ac); background: var(--acs); }
+.scn-row.off { opacity: .6; }
+.scn-thumb { width: 96px; height: 54px; flex: none; border-radius: 6px; object-fit: cover; background: var(--s3); }
+.scn-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.scn-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.scn-title .mono { font-size: 12px; color: var(--tx3); }
+.scn-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.scn-watch { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--line2); background: var(--s2); }
+.scn-watch .spp { max-width: none; }
+
 /* Export dialog */
 .batch { display: flex; flex-direction: column; gap: 12px; }
 .batch-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

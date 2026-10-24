@@ -4,7 +4,7 @@ import { errorText } from "../../app/humanize";
 import { type EditorDraft, type VisualArtifacts } from "../../editorDraft";
 import { hookOf } from "../../editor/clips";
 import { draftKey, loadEditor, scoped } from "./loadEditor";
-import { applySettingsEdit, effectiveSettings, type Overrides } from "./overrides";
+import { applySettingsEdit, effectiveSettings, resetStyle, type Overrides } from "./overrides";
 import { useExportBatches } from "./useExportBatches";
 
 type Phase = { name: "loading" } | { name: "ready" } | { name: "error"; message: string };
@@ -67,8 +67,7 @@ export function useEditorSession(episodeId: string, urlKeys: string[], legacyRun
   }, [focusedKey, scope]);
   const resetOverride = useCallback((key: string) => setConfig(current => {
     if (!current || !current.overrides[key]) return current;
-    const { [key]: _removed, ...rest } = current.overrides;
-    return { ...current, overrides: rest };
+    return { ...current, overrides: resetStyle(current.overrides, key) };
   }), []);
 
   const revisionBody = useCallback((runId: string) => {

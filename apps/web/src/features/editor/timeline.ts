@@ -1,4 +1,4 @@
-import type { CaptionCorrection, EditPlanSegment, OverlayPage } from "../../api";
+import type { CaptionCorrection, EditPlanSegment, OverlayPage, RenderInsert, SceneSuggestion, SceneSuggestions } from "../../api";
 import { isDoubtful } from "../../editor/captions";
 
 export type Trecho = { label: string; start: number; end: number; teaser: boolean };
@@ -48,3 +48,17 @@ export function rulerTicks(total: number) {
 }
 
 export const tickLabel = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, "0")}`;
+
+export type SceneBlock = { id: string; kind: SceneSuggestion["kind"]; start: number; duration: number; state: "accepted" | "pending" };
+
+/** Scene lane: accepted inserts as solid blocks, undecided suggestions as dashed ones, rejected ones hidden. */
+export function sceneBlocks(data: SceneSuggestions | null, inserts: RenderInsert[]): SceneBlock[] {
+  if (!data || data.status !== "ok") return [];
+  const accepted = new Set(inserts.map(insert => insert.suggestion_id));
+  const blocks: SceneBlock[] = [];
+  for (const item of data.suggestions) {
+    const state = accepted.has(item.id) ? "accepted" : data.decisions[item.id] === "rejected" ? null : "pending";
+    if (state) blocks.push({ id: item.id, kind: item.kind, start: item.output_start, duration: item.duration, state });
+  }
+  return blocks;
+}

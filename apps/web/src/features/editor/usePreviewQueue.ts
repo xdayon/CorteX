@@ -50,6 +50,7 @@ export function usePreviewQueue(inputs: Inputs) {
       if ((statesRef.current[key] ?? EMPTY_PREVIEW).planId === null || statesRef.current[key].planTeaser !== target.teaserKey) {
         patch(key, { running: "planning", progress: 0, error: "" });
         const teaser = latest.current.settingsFor(key).transitions.teaser && row.clip.teaser ? row.clip.teaser : null;
+        const question = latest.current.settingsFor(key).transitions.question;
         const started = await api.startEditPlan(row.project_id, {
           transcriptArtifactId: run.artifacts.transcript, analysisArtifactId: run.artifacts.analysis,
           start: row.clip.start_second, end: row.clip.end_second, profile: row.clip.pacing,
@@ -57,6 +58,7 @@ export function usePreviewQueue(inputs: Inputs) {
           approximateEdl: row.clip.approximate_edl, confirmedVoice: run.brief.confirmed_voice, primarySubject: run.brief.primary_subject,
           headline: row.clip.headline || null, tighten: true, sceneIndexArtifactId: latest.current.sceneFor(row.run_id),
           ...(teaser ? { teaserStart: teaser.start, teaserEnd: teaser.end } : {}),
+          ...(question ? { questionStart: question.start, questionEnd: question.end } : {}),
         });
         job.jobId = started.id;
         const done = await finishJob(started, signal, update => patch(key, { progress: (update.progress || 0) / 2 }));
@@ -71,6 +73,7 @@ export function usePreviewQueue(inputs: Inputs) {
           timeline: typeof result.timeline_duration_seconds === "number" ? result.timeline_duration_seconds : null,
           refine: (result.refine as RefineStatus | undefined) ?? null, belowMinimum: result.below_minimum === true,
           teaserDropped: typeof result.teaser_dropped === "string" ? result.teaser_dropped : null,
+          questionDropped: typeof result.question_dropped === "string" ? result.question_dropped : null,
         });
         if (targetFor(key)?.teaserKey !== target.teaserKey) { patch(key, { running: null }); return; }
       }

@@ -70,4 +70,29 @@ export function applySettingsEdit(
   return { shared, overrides: rest };
 }
 
-export const isCustomized = (overrides: Overrides, key: string) => Object.keys(overrides[key] ?? {}).length > 0;
+/** Scenes (inserts and the opening question) are content, not style: they never count as a customized look and survive a style reset. */
+export function withoutScenes(override: SettingsPatch | undefined): SettingsPatch {
+  if (!override) return {};
+  const { inserts: _inserts, transitions, ...rest } = override;
+  if (!transitions) return rest;
+  const { question: _question, ...style } = transitions;
+  return Object.keys(style).length ? { ...rest, transitions: style } : rest;
+}
+
+export const isCustomized = (overrides: Overrides, key: string) => Object.keys(withoutScenes(overrides[key])).length > 0;
+
+/** The override left after "voltar ao padrão": only the scenes stay. */
+export function scenesOnly(override: SettingsPatch | undefined): SettingsPatch {
+  const out: SettingsPatch = {};
+  if (override?.inserts !== undefined) out.inserts = override.inserts;
+  if (override?.transitions && "question" in override.transitions) out.transitions = { question: override.transitions.question };
+  return out;
+}
+
+/** "Voltar ao padrão" for one clip: drops its style overrides and keeps its scenes. */
+export function resetStyle(overrides: Overrides, key: string): Overrides {
+  if (!overrides[key]) return overrides;
+  const { [key]: removed, ...rest } = overrides;
+  const kept = scenesOnly(removed);
+  return Object.keys(kept).length ? { ...rest, [key]: kept } : rest;
+}

@@ -403,8 +403,7 @@ def create_app(config: CortexConfig | None = None):
                             "thumbnail_url": f"{base}/{g.id}/thumbnail"} for g in document.groups],
             }
             break
-        if summary is None and active is None:
-            raise HTTPException(status_code=404, detail="Mapa de câmeras indisponível")
+        # "Never mapped" is a normal state, not an error (a 404 is logged by the browser).
         roles = entry.camera_roles.get("roles") if summary and entry.camera_roles.get("artifact_id") == summary["artifact_id"] else None
         return {"artifact_id": summary and summary["artifact_id"], "document": summary, "roles": roles, "job": active}
 

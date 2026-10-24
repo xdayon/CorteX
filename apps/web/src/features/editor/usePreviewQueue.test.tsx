@@ -43,14 +43,34 @@ test("a clip is prepared when nothing exists yet; stale previews refresh only fo
   expect(needsWork({ ...built, planTeaser: "" }, teaserOn, true)).toBe(true);
 });
 
-type Handle = { setZoom: (zoom: number) => void; focus: (key: string) => void; previews: ReturnType<typeof usePreviewQueue>["previews"] };
+test("the opening question re-plans the clip (plan key); accepted inserts only change the render key", () => {
+  const base = targetOf(rows[0], defaultRenderSettings);
+  const asked = targetOf(rows[0], { ...defaultRenderSettings, transitions: { ...defaultRenderSettings.transitions, question: { start: 10, end: 14 } } });
+  expect(asked.teaserKey).not.toBe(base.teaserKey);
+  expect(asked.renderKey).toBe(base.renderKey);
+  const inserted = targetOf(rows[0], { ...defaultRenderSettings, inserts: [{ kind: "wide", anchor: 5, duration: 2, source_start: 90, suggestion_id: "s" }] });
+  expect(inserted.teaserKey).toBe(base.teaserKey);
+  expect(inserted.renderKey).not.toBe(base.renderKey);
+  const built = { ...EMPTY_PREVIEW, planId: "plan", videoUrl: "/v", renderedKey: base.renderKey };
+  expect(needsWork(built, inserted, true)).toBe(true);
+  expect(needsWork(built, inserted, false)).toBe(false);
+  expect(needsWork(built, asked, true)).toBe(true);
+});
+
+type Handle = { setZoom: (zoom: number) => void; setQuestion: (on: boolean) => void; setInserted: (on: boolean) => void; focus: (key: string) => void; previews: ReturnType<typeof usePreviewQueue>["previews"] };
 const handle = {} as Handle;
 function Harness() {
   const [zoom, setZoom] = useState(1.45);
   const [focused, setFocused] = useState(A);
-  const settingsFor = useCallback((): RenderSettings => ({ ...defaultRenderSettings, framing: { ...defaultRenderSettings.framing, zoom } }), [zoom]);
+  const [question, setQuestion] = useState(false);
+  const [inserted, setInserted] = useState(false);
+  const settingsFor = useCallback((): RenderSettings => ({
+    ...defaultRenderSettings, framing: { ...defaultRenderSettings.framing, zoom },
+    transitions: { ...defaultRenderSettings.transitions, question: question ? { start: 10, end: 14 } : null },
+    inserts: inserted ? [{ kind: "reaction", anchor: 5, duration: 2, source_start: 90, suggestion_id: "s" }] : [],
+  }), [zoom, question, inserted]);
   const { previews } = usePreviewQueue({ rows, runs: { run }, focusedKey: focused, enabled: true, settingsFor, sceneFor: () => null });
-  Object.assign(handle, { setZoom, focus: setFocused, previews });
+  Object.assign(handle, { setZoom, setQuestion, setInserted, focus: setFocused, previews });
   return null;
 }
 
@@ -125,4 +145,27 @@ test("a framing change re-renders only the focused clip, after a short delay", a
   await flush(900);
   expect(pending.map(job => job.kind)).toEqual(["render"]);
   expect(peak).toBe(1);
+});
+
+test("toggling the question re-plans the focused clip with question_start/end; accepting an insert only re-renders it", async () => {
+  render(<Harness />);
+  await flush();
+  for (let i = 0; i < 6; i++) await finishNext();
+  expect(Object.values(handle.previews).every(preview => preview.phase === "ready")).toBe(true);
+  vi.mocked(api.startEditPlan).mockClear(); vi.mocked(api.startRender).mockClear();
+
+  act(() => handle.setInserted(true));
+  await flush(900);
+  expect(api.startEditPlan).not.toHaveBeenCalled();
+  expect(api.startRender).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(api.startRender).mock.calls[0][2].inserts).toHaveLength(1);
+  await finishNext();
+
+  act(() => handle.setQuestion(true));
+  await flush(900);
+  expect(api.startEditPlan).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(api.startEditPlan).mock.calls[0][1]).toMatchObject({ questionStart: 10, questionEnd: 14 });
+  await finishNext(); await finishNext();
+  expect(handle.previews[A].phase).toBe("ready");
+  expect(vi.mocked(api.startRender).mock.calls.at(-1)![2].transitions.question).toEqual({ start: 10, end: 14 });
 });

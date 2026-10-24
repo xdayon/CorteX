@@ -308,7 +308,28 @@ export type RenderSettings = {
     flash_opacity: number;
     flash_seconds: number;
     teaser: boolean;
+    question?: QuestionWindow | null;
   };
+  inserts?: RenderInsert[];
+};
+
+export type QuestionWindow = {start: number; end: number};
+export type RenderInsert = {kind: "reaction" | "wide"; anchor: number; duration: number; source_start: number; group?: number | null; suggestion_id?: string | null};
+export type SceneCandidate = {kind: "reaction" | "wide"; source_start: number; group: number | null; score: number};
+export type SceneSuggestion = {
+  id: string; kind: "reaction" | "wide"; anchor: number; duration: number; output_start: number; source_start: number;
+  group: number | null; score: number; reason: string; alternatives: SceneCandidate[];
+};
+export type SceneDecision = "accepted" | "rejected";
+export type SceneReview = {accepted: number; rejected: number; approval_rate: number | null};
+export type SceneSuggestions = {
+  status: "ok" | "needs_camera_map" | "needs_roles" | "needs_voice"; algorithm_version: string | number; project_id: string; source_asset_id: string;
+  camera_map_artifact_id: string | null; suggestions: SceneSuggestion[]; question: {start: number; end: number; text: string} | null;
+  decisions: Record<string, SceneDecision>; review: SceneReview;
+};
+export type VoiceProfile = {
+  exists: boolean; created_at?: string; threshold?: number; episode_id?: string; speaker?: string; seconds?: number;
+  calibration?: {balanced_accuracy?: number; [key: string]: unknown}; model_revision?: string;
 };
 
 export type DeepPartial<T> = { [K in keyof T]?: T[K] extends readonly unknown[] ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K] };
@@ -345,7 +366,7 @@ export type EditPlanOptions = {
   maximumSeconds?: number; minimumSeconds?: number; approximateEdl?: Array<Record<string, unknown>>;
   confirmedVoice?: Record<string, unknown> | null; sceneIndexArtifactId?: string | null;
   tighten?: boolean; headline?: string | null; primarySubject?: string | null;
-  teaserStart?: number; teaserEnd?: number;
+  teaserStart?: number; teaserEnd?: number; questionStart?: number; questionEnd?: number;
 };
 export type RefineStatus = {status: "accepted" | "skipped" | "rejected"; reason?: string};
 
@@ -381,12 +402,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   episodeCameras: async (id: string, signal?: AbortSignal): Promise<EpisodeCameras | null> => {
-    // 404 means "never mapped": the dialog offers to map instead of showing an error.
+    // "Never mapped" (no map, no job) is null: the dialog offers to map instead of showing an error.
     const response = await fetch(`/api/v1/episodes/${encodeURIComponent(id)}/cameras`, { signal });
     if (response.status === 404) return null;
     if (!response.ok) throw await failure(response);
-    return response.json() as Promise<EpisodeCameras>;
+    const body = await response.json() as EpisodeCameras;
+    return body.document || body.job ? body : null;
   },
+  scenes: (episodeId: string, planId: string, signal?: AbortSignal) =>
+    request<SceneSuggestions>(`/api/v1/episodes/${encodeURIComponent(episodeId)}/scenes?edit_plan_artifact_id=${encodeURIComponent(planId)}`, {signal}),
+  saveSceneReviews: (episodeId: string, decisions: Record<string, SceneDecision | null>) =>
+    request<SceneReview>(`/api/v1/episodes/${encodeURIComponent(episodeId)}/scene-reviews`, {method: "PUT", body: JSON.stringify({decisions})}),
+  voiceProfile: (signal?: AbortSignal) => request<VoiceProfile>("/api/v1/voice/profile", {signal}),
+  createVoiceProfile: (episodeId: string) => request<VoiceProfile>("/api/v1/voice/profile", {method: "POST", body: JSON.stringify({episode_id: episodeId})}),
   mapEpisodeCameras: (id: string) => request<ApiJob>(`/api/v1/episodes/${id}/cameras`, {method:"POST"}),
   saveCameraRoles: (id: string, artifact_id: string, roles: Record<string, CameraRole>) =>
     request<EpisodeEntry>(`/api/v1/episodes/${id}/cameras/roles`, {method:"PUT", body: JSON.stringify({artifact_id, roles})}),
@@ -486,7 +514,7 @@ export const api = {
         approximate_edl: o.approximateEdl, confirmed_voice: o.confirmedVoice ?? undefined,
         scene_index_artifact_id: o.sceneIndexArtifactId ?? undefined,
         tighten: o.tighten, headline: o.headline || undefined, primary_subject: o.primarySubject || undefined,
-        teaser_start: o.teaserStart, teaser_end: o.teaserEnd,
+        teaser_start: o.teaserStart, teaser_end: o.teaserEnd, question_start: o.questionStart, question_end: o.questionEnd,
       }),
     }),
 

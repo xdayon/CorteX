@@ -17,6 +17,7 @@ import { qualify } from "./loadEditor";
 import { useEditorSession } from "./useEditorSession";
 import { useEditorShortcuts } from "./useEditorShortcuts";
 import { usePreviewQueue } from "./usePreviewQueue";
+import { useSceneSuggestions } from "./useSceneSuggestions";
 import "./editor.css";
 
 const EMPTY_NUMBERS: number[] = [];
@@ -59,6 +60,7 @@ function Studio({ id, session }: { id: string; session: ReturnType<typeof useEdi
     headlineText: effectiveHeadline(row.clip, session.headlines[key]),
   });
 
+  const scenes = useSceneSuggestions(id, preview?.planId ?? null);
   useEffect(() => { setTime(0); }, [key]);
   const focusIndex = rows.findIndex(item => rowId(item) === key);
   const focus = useCallback((next: string) => setFocusedKey(next), [setFocusedKey]);
@@ -97,9 +99,10 @@ function Studio({ id, session }: { id: string; session: ReturnType<typeof useEdi
     <div className="ed">
       <ClipRail episodeId={id} rows={rows} previews={previews} focusedKey={key} onFocus={focus} exportStatus={exportStatus}
         customized={clip => isCustomized(session.overrides, clip)} />
-      <Stage ref={player} row={row} preview={preview} overlay={overlay.overlay} overlayError={overlay.error} settings={settings}
+      <Stage ref={player} row={row} preview={preview} overlay={overlay.overlay} overlayError={overlay.error} settings={settings} scenes={scenes.data}
         corrections={corrections} time={time} onTime={onTime} onRetry={() => retry(key)} />
       <Inspector row={row} rows={rows} runs={runs} settings={settings} update={change => session.edit(change)} updateAll={change => session.edit(change, "all")}
+        updateClip={change => session.edit(change, "clip")} scenes={scenes} planId={preview?.planId ?? null} episodeId={id}
         onTeaser={on => session.edit(s => ({ ...s, transitions: { ...s.transitions, teaser: on } }), "clip")}
         scope={session.scope} onScope={session.setScope} customized={isCustomized(session.overrides, key)} onReset={() => session.resetOverride(key)}
         overlay={overlay.overlay} overlayLoading={overlay.loading} overlayError={overlay.error} time={time} onSeek={seconds => player.current?.seek(seconds)}

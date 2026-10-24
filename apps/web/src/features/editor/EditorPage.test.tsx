@@ -109,6 +109,19 @@ test("the editor plans, renders a draft and shows the real preview player", asyn
   expect(screen.getByText("Prévia atualizada · rascunho")).toBeTruthy();
 });
 
+test("the inspector lists the five steps in editing order with a hint and a Próximo button", async () => {
+  await openEditor();
+  expect(screen.getAllByRole("tab").map(item => item.textContent)).toEqual(["Legenda", "Manchete", "Cenas", "Enquadrar", "Estilo"]);
+  expect(screen.getByText(/Passo 1 de 5 · essencial — revise as palavras duvidosas/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /Próximo: Manchete/ }));
+  expect(screen.getByText(/Passo 2 de 5 · essencial — escolha a manchete/)).toBeTruthy();
+  tab("Cenas");
+  expect(screen.getByText(/Passo 3 de 5 · opcional, recomendado/)).toBeTruthy();
+  tab("Estilo");
+  expect(screen.getByText(/Passo 5 de 5 · opcional — vale para todos os cortes/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /Próximo/ })).toBeNull();
+});
+
 test("the timeline shows the pieces of the plan with a junction between them", async () => {
   await openEditor();
   const pieces = screen.getAllByTestId("trecho");
@@ -194,7 +207,7 @@ test("a legacy framing mode is replaced by the blurred frame with a notice", asy
   }));
   await openEditor();
   expect(screen.getByText(/enquadramento antigo/)).toBeTruthy();
-  tab("Enquadramento");
+  tab("Enquadrar");
   expect(screen.getByRole("button", { name: /Quadro com fundo desfocado/ }).getAttribute("aria-pressed")).toBe("true");
 });
 
@@ -312,7 +325,7 @@ test("leaving the editor ignores a late response", async () => {
 
 test("a change applied to one clip is a per-clip override: it drives that clip's draft and the revision's clip_settings", async () => {
   await openEditor([Q1, Q2]);
-  tab("Enquadramento");
+  tab("Enquadrar");
   fireEvent.click(screen.getByRole("radio", { name: "Este corte" }));
   fireEvent.change(screen.getByRole("slider", { name: /Zoom do vídeo/ }), { target: { value: "2" } });
   expect(screen.getByText("Personalizado")).toBeTruthy();
@@ -332,7 +345,7 @@ test("a change applied to one clip is a per-clip override: it drives that clip's
 
 test("an edit applied to all clips changes the shared settings and clears the clip overrides it touches", async () => {
   await openEditor([Q1, Q2]);
-  tab("Enquadramento");
+  tab("Enquadrar");
   fireEvent.click(screen.getByRole("radio", { name: "Este corte" }));
   fireEvent.change(screen.getByRole("slider", { name: /Zoom do vídeo/ }), { target: { value: "2" } });
   fireEvent.click(screen.getByRole("radio", { name: /Todos \(2\)/ }));
