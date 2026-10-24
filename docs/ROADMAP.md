@@ -1,6 +1,6 @@
 # CorteX — contrato de entrega
 
-Atualizado em 2026-10-16 (Studio integrado). Objetivo: o melhor editor pessoal de
+Atualizado em 2026-10-23 (triangulação). Objetivo: o melhor editor pessoal de
 cortes virais para @dayon.news — master único, processamento local, revisão humana
 e publicação manual. Itens entregues antes de 14/out estão em
 [history](history/ROADMAP-before-2026-09-10.md) e no git log.
@@ -70,10 +70,22 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
 - [x] Correção da deriva A/V em cortes com muitas junções
   ([evidência](evidence/2026-10-16-av-sync-drift.md)); drafts mais rápidos
   ([evidência](evidence/2026-10-16-draft-speed.md)).
-- [ ] Usuário: reiniciar o serviço e cadastrar o perfil de voz (`POST /voice/profile`).
-- [ ] Botão no Studio para cadastrar/refazer o perfil de voz.
+- [x] Perfil de voz cadastrado (20/out) e botão no Studio para refazê-lo (diálogo de voz).
 - [ ] Salvar no Drive automaticamente (rclone com remoto do Google Drive) — opcional.
 - [ ] QA mais barato nos drafts (~4 s por prévia) e prévia progressiva enquanto renderiza.
+
+## Fase 5 — triangulação ([plano](TRIANGULATION.md))
+
+- [x] A: mapa de câmeras por episódio com papéis confirmados por uma pessoa.
+- [x] B: sugestões de reação e plano aberto por corte, tocáveis na fonte, com aprovação
+  medida ([evidência](evidence/2026-10-23-scene-suggestions.md)).
+- [x] C: inserções que trocam só a imagem, com prévia igual ao export (pixel + áudio).
+- [x] D: abertura com o fim da pergunta (determinística, por corte).
+- [x] E: "Aplicar triangulação" no editor (desligado por padrão).
+- [x] Studio: etapas do episódio e aba Cenas no editor (essencial × opcional).
+- [ ] Usuário aprova ≥ 80 % das sugestões em 2–3 episódios.
+- [ ] Depois do aceite: automático por padrão e a seleção da IA preferir cortes com
+  pergunta (prompt avaliado em worktree antes do merge).
 
 ## Regras de aceite
 

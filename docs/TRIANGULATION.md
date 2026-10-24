@@ -42,13 +42,29 @@ Regras das sugestões (determinísticas):
 - dura 1,2–2,5 s, começa logo após o fim de uma frase, com espaçamento ≥ 8 s;
 - os candidatos são ordenados por proximidade no tempo do episódio, estabilidade do plano e rosto visível.
 
-## Estado (2026-10-20)
+## Estado (2026-10-23)
 
-- Gate A pronto no branch `feat/triangulation`. Backend `analyze/camera_map.py`, job
-  `camera_map`, endpoints `/episodes/{id}/cameras*`, tela "Câmeras do episódio" no menu
-  do episódio. Validado num episódio real (evidência acima) e no Studio em 390 px e
-  1440 px. Falta o Dayon confirmar 2–3 episódios.
-- Próximo: Gate B (candidatos de reação e plano aberto por corte).
+- Gate A no `main`. Papel sugerido para grupos de 2 rostos refeito pela voz D:
+  - ≥ 30 % → plano a dois com o Dayon (subject);
+  - ≤ 12 % → entrevistadores;
+  - entre os dois → a pessoa decide.
+  O papel é recalculado na leitura, sem refazer mapas.
+- Branch `feat/triangulation-scenes`
+  ([evidência](evidence/2026-10-23-scene-suggestions.md)):
+  - **B**: `analyze/scene_suggestions.py` + `GET /episodes/{id}/scenes`. As decisões
+    ficam em `PUT /episodes/{id}/scene-reviews`, que mede a aprovação.
+  - **C**: `RenderSettings.inserts` por corte. O render troca só a imagem, com uma
+    entrada própria por inserção, e grava o manifesto em `RenderDocument.inserts`.
+  - **D, versão determinística**: `transitions.question` por corte →
+    `question_start/end` no plano (segmentos `question`). O prompt não muda.
+  - **E**: botão "Aplicar triangulação" na aba Cenas, desligado por padrão.
+  - **UI**:
+    - etapas do episódio: vídeo, cortes, voz, câmeras;
+    - aba Cenas e trilha "Cenas" no editor;
+    - perfil de voz no diálogo de voz.
+- Falta: o Dayon revisar sugestões até ≥ 80 % de aprovação. Depois disso, avaliar o
+  automático ligado por padrão e a seleção da IA preferir cortes com pergunta (prompt,
+  avaliado em worktree).
 
 ## Gates
 
