@@ -35,6 +35,8 @@ from cortex.render.schemas import (
     RenderDocument,
     RenderEngineInfo,
     RenderFaceFocusInfo,
+    RenderInsert,
+    RenderInsertInfo,
     RenderOverlayInfo,
     RenderPunchInInfo,
     RenderTeaserInfo,
@@ -162,6 +164,20 @@ class _CropGeometry:
     h: int
     window_w: int
     window_h: int
+
+
+@dataclass(frozen=True)
+class _AppliedInsert:
+    """A scene insert that made it into the render: ``anchor``/``duration`` are on the
+    clip's video clock inside its segment, ``source_start`` is where the footage comes
+    from and ``focus_x`` the horizontal focus of a reaction (None for a wide)."""
+
+    kind: str
+    segment_order: int
+    anchor: float
+    duration: float
+    source_start: float
+    focus_x: float | None
 
 
 def _even(value: float) -> int:
@@ -599,6 +615,87 @@ def _publication_checks(
     ]
 
 
+_INSERT_TOLERANCE = 1e-3
+_INSERT_MIN_SECONDS = 0.5
+_INSERTS_VERSION = 1
+
+
+@dataclass(frozen=True)
+class _FootageWindow:
+    """Pseudo segment so face focus can be resolved on an insert's own footage."""
+
+    timeline_order: int
+    video_start: float
+    video_end: float
+
+
+def _segment_output_starts(plan: EditPlanDocument) -> list[float]:
+    """Second of the output timeline where each segment starts (crossfades overlap)."""
+    durations = [segment.video_end - segment.video_start for segment in plan.segments]
+    starts = [0.0]
+    for index in range(1, len(plan.segments)):
+        configured = plan.segments[index - 1].transition
+        fade = configured.duration if configured is not None else 0.0
+        fade = max(0.0, min(fade, durations[index - 1] / 2, durations[index] / 2))
+        starts.append(starts[-1] + durations[index - 1] - fade)
+    return starts
+
+
+def _resolve_inserts(
+    plan: EditPlanDocument, requested: list[RenderInsert], source_duration: float,
+) -> list[RenderInsertInfo]:
+    """Where each requested insert lands, or why it does not. Deterministic and made
+    before the cache key; ``focus_x`` is filled in later for the applied reactions."""
+    starts = _segment_output_starts(plan)
+    resolved: list[RenderInsertInfo] = []
+    taken: list[tuple[int, float, float]] = []
+    for item in requested:
+        end = item.anchor + item.duration
+        fields = dict(
+            kind=item.kind, anchor=item.anchor, requested_duration=item.duration,
+            source_start=item.source_start, suggestion_id=item.suggestion_id,
+        )
+        host = effective = None
+        reason: str | None = None
+        for position, segment in enumerate(plan.segments):
+            if segment.teaser:
+                continue
+            if (
+                segment.video_start - _INSERT_TOLERANCE <= item.anchor
+                and end <= segment.video_end + _INSERT_TOLERANCE
+            ):
+                host, effective = position, min(item.duration, segment.video_end - item.anchor)
+                break
+            if (
+                segment.video_start - _INSERT_TOLERANCE <= item.anchor < segment.video_end
+                and segment.video_end - item.anchor >= _INSERT_MIN_SECONDS - _INSERT_TOLERANCE
+            ):
+                host, effective = position, segment.video_end - item.anchor
+                reason = "clipped_to_segment"
+                break
+        if host is None or effective is None:
+            resolved.append(RenderInsertInfo(applied=False, reason="outside_plan", **fields))
+            continue
+        order = plan.segments[host].timeline_order
+        if any(
+            order == other and item.anchor < other_end - 1e-6 and other_start < item.anchor + effective - 1e-6
+            for other, other_start, other_end in taken
+        ):
+            resolved.append(RenderInsertInfo(applied=False, reason="overlaps_insert", **fields))
+            continue
+        if item.source_start + effective > source_duration + _INSERT_TOLERANCE:
+            resolved.append(RenderInsertInfo(applied=False, reason="outside_source", **fields))
+            continue
+        taken.append((order, item.anchor, item.anchor + effective))
+        resolved.append(RenderInsertInfo(
+            applied=True, reason=reason, effective_duration=round(effective, 6),
+            segment_order=order,
+            output_start=round(starts[host] + item.anchor - plan.segments[host].video_start, 6),
+            **fields,
+        ))
+    return resolved
+
+
 def _source_input_window(plan: EditPlanDocument) -> tuple[float, float]:
     """Bound the decoded master using the clocks actually consumed by filters.
 
@@ -648,6 +745,7 @@ def _filtergraph(
     face_geometries: list[_CropGeometry] | None = None,
     face_punches: list[_PunchInResolution | None] | None = None,
     scale_flags: str | None = None,
+    inserts: list[_AppliedInsert] | None = None,
 ) -> tuple[str, str, str]:
     video_parts: list[str] = []
     audio_parts: list[str] = []
@@ -666,6 +764,7 @@ def _filtergraph(
     def compose_video(
         input_filter: str, output_label: str, segment_order: int,
         face_index: int | None = None,
+        insert: _AppliedInsert | None = None,
     ) -> str:
         # Punch-in (Gate 5) is a single extra static scale/crop bolted onto
         # the existing per-mode chain below — never a second temporal
@@ -679,9 +778,19 @@ def _filtergraph(
         if face_index is not None:
             assert face_geometries is not None and face_punches is not None
             geo, punch = face_geometries[face_index], face_punches[face_index]
-        effective_mode = framing_mode
+        # Inserts never punch in. A wide is the whole frame over the blur whatever the
+        # clip's mode; a reaction keeps the clip's framing around its own focus.
+        wide = insert is not None and insert.kind == "wide"
+        effective_mode = "blurred_background" if wide else framing_mode
+        focused_insert = insert is not None and not wide
+        if insert is not None:
+            punch = None
+            geo = None if wide or source_size is None else _focused_geometry(
+                framing_mode, source_size, width, height, framing_zoom,
+                0.5 if insert.focus_x is None else insert.focus_x,
+            )
         if effective_mode == "vertical_crop" and geo is not None and (
-            punch is not None or face_index is not None
+            punch is not None or face_index is not None or focused_insert
         ):
             crop_box = (
                 (punch.crop_width, punch.crop_height, punch.anchor_x, punch.anchor_y)
@@ -707,7 +816,7 @@ def _filtergraph(
             # Only explicit full-frame composition has a manual position. Keep
             # automatic context shots centered, including crops taller than the
             # canvas after a punch-in (there is no free vertical space then).
-            position_y = framing_position_y if framing_mode == "blurred_background" else 0.5
+            position_y = framing_position_y if framing_mode == "blurred_background" and not wide else 0.5
             foreground_y = "(H-h)/2" if position_y == 0.5 else (
                 f"if(gte(H,h),(H-h)*{position_y:.6f},(H-h)/2)"
             )
@@ -724,7 +833,7 @@ def _filtergraph(
                     source_crop = (
                         punch.crop_width, punch.crop_height, punch.anchor_x, punch.anchor_y,
                     )
-                elif framing_zoom != 1.0 or face_index is not None:
+                elif framing_zoom != 1.0 or face_index is not None or focused_insert:
                     source_crop = (geo.w, geo.h, geo.x, geo.y)
             if source_crop is not None:
                 assert geo is not None
@@ -762,6 +871,8 @@ def _filtergraph(
     # of the voice by the end of the clip.
     planned_elapsed = 0.0
     frames_emitted = 0
+    # Inputs: 0 = base window, 1 = teaser window (when the plan has one), then one per insert.
+    insert_base = 2 if any(segment.teaser for segment in plan.segments) else 1
 
     def exact_frames(raw_label: str, frame_count: int, output_label: str) -> str:
         return (
@@ -783,7 +894,75 @@ def _filtergraph(
         # input with its own window, never from the shared decoder.
         input_index = 1 if segment.teaser else 0
         offset = teaser_time_offset if segment.teaser else source_time_offset
-        if face_spans:
+        segment_inserts = [
+            (position, item) for position, item in enumerate(inserts or [])
+            if item.segment_order == segment.timeline_order and not segment.teaser
+        ]
+        if segment_inserts:
+            # Base footage (face spans or the whole segment) is cut around each insert;
+            # the insert reads its own input. Frame counts follow the cumulative-elapsed
+            # rounding of the face-span split and the last piece closes on segment_frames.
+            if face_spans:
+                base = [
+                    (face_spans[position].source_start, face_spans[position].source_end, position)
+                    for position, span in enumerate(face_spans)
+                    if span.segment_order == segment.timeline_order
+                ]
+                if not base:
+                    raise RenderPreconditionError("foco nos rostos não cobre o segmento")
+            else:
+                base = [(segment.video_start, segment.video_end, None)]
+            # (start, end, face span position, insert position) in clip-video order
+            pieces: list[tuple[float, float, int | None, int | None]] = [
+                (start, end, face_position, None) for start, end, face_position in base
+            ]
+            for position, item in segment_inserts:
+                cut_start, cut_end = item.anchor, item.anchor + item.duration
+                remaining: list[tuple[float, float, int | None, int | None]] = []
+                for start, end, face_position, taken in pieces:
+                    if taken is not None or end <= cut_start + 1e-6 or start >= cut_end - 1e-6:
+                        remaining.append((start, end, face_position, taken))
+                        continue
+                    if start < cut_start - 1e-6:
+                        remaining.append((start, cut_start, face_position, None))
+                    if end > cut_end + 1e-6:
+                        remaining.append((cut_end, end, face_position, None))
+                remaining.append((cut_start, cut_end, None, position))
+                pieces = sorted(remaining, key=lambda piece: piece[0])
+            labels = []
+            elapsed = 0.0
+            frame_cursor = 0
+            for part, (start, end, face_position, insert_position) in enumerate(pieces):
+                elapsed += end - start
+                frame_end = segment_frames if part == len(pieces) - 1 else min(
+                    segment_frames, round(elapsed * fps),
+                )
+                frame_count = frame_end - frame_cursor
+                frame_cursor = frame_end
+                if frame_count <= 0:
+                    continue
+                raw_label, label = f"[inspan{index}_{part}]", f"[intimed{index}_{part}]"
+                if insert_position is not None:
+                    item = inserts[insert_position]
+                    video_parts.append(compose_video(
+                        f"[{insert_base + insert_position}:v]trim=start=0.000000:"
+                        f"end={item.duration:.6f},setpts=PTS-STARTPTS",
+                        raw_label, segment.timeline_order, insert=item,
+                    ))
+                else:
+                    video_parts.append(compose_video(
+                        f"[{input_index}:v]trim=start={start - offset:.6f}:"
+                        f"end={end - offset:.6f},setpts=PTS-STARTPTS",
+                        raw_label, segment.timeline_order, face_index=face_position,
+                    ))
+                video_parts.append(
+                    f"{raw_label}tpad=stop_mode=clone:stop_duration=1,"
+                    f"trim=end_frame={frame_count},setpts=PTS-STARTPTS{label}"
+                )
+                labels.append(label)
+            video_parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[vraw{index}]")
+            video_parts.append(exact_frames(f"[vraw{index}]", segment_frames, f"[v{index}]"))
+        elif face_spans:
             indexed = [
                 position for position, span in enumerate(face_spans)
                 if span.segment_order == segment.timeline_order
@@ -1467,6 +1646,46 @@ class RenderService:
                 )
                 for span in face_spans
             ]
+        insert_infos = _resolve_inserts(plan, effective_settings.inserts, source_duration)
+        applied_inserts: list[_AppliedInsert] = []
+        for position, info in enumerate(insert_infos):
+            if not info.applied:
+                continue
+            focus_x: float | None = None
+            if info.kind == "reaction":
+                focus_x = 0.5
+                if effective_focus_mode == "faces":
+                    assert face_crop_fraction is not None
+                    try:
+                        insert_spans = resolve_face_focus(
+                            ffmpeg=self._config.render.ffmpeg, source_path=source_path,
+                            source_sha256=source.sha256,
+                            segments=[_FootageWindow(
+                                0, info.source_start, info.source_start + info.effective_duration,
+                            )],
+                            scene_threshold=self._config.analysis.scene_threshold,
+                            cache_dir=cache_dir(self._config, plan.project_id),
+                            crop_width_fraction=face_crop_fraction,
+                            manual_focus_x=effective_settings.framing.focus_x,
+                            primary_side=effective_settings.framing.primary_side,
+                            should_cancel=should_cancel,
+                        )
+                    except FaceFocusCancelled as exc:
+                        raise RenderJobCancelled() from exc
+                    except FaceFocusError as exc:
+                        raise RenderPreconditionError(
+                            f"não foi possível detectar rostos na cena inserida: {exc}"
+                        ) from exc
+                    if insert_spans:
+                        focus_x = max(
+                            insert_spans, key=lambda span: span.source_end - span.source_start,
+                        ).focus_x
+                insert_infos[position] = info = info.model_copy(update={"focus_x": focus_x})
+            assert info.segment_order is not None
+            applied_inserts.append(_AppliedInsert(
+                kind=info.kind, segment_order=info.segment_order, anchor=info.anchor,
+                duration=info.effective_duration, source_start=info.source_start, focus_x=focus_x,
+            ))
         junction_orders = frozenset(
             plan.segments[position].timeline_order for position, _moment in piece_junctions(plan)
         ) if (
@@ -1597,6 +1816,10 @@ class RenderService:
             "safe_zone_version": SAFE_ZONES_VERSION,
             "composition_version": 2,
             **({"teaser_window": list(teaser_window)} if teaser_window else {}),
+            **({
+                "inserts_version": _INSERTS_VERSION,
+                "inserts": [info.model_dump(mode="json") for info in insert_infos],
+            } if insert_infos else {}),
             "safe_zone_canvas": canvas_key,
             "technical_quality_version": TECHNICAL_QUALITY_VERSION,
         }
@@ -1679,6 +1902,7 @@ class RenderService:
             face_geometries=face_geometries,
             face_punches=face_punches,
             scale_flags=_DRAFT_SCALE_FLAGS if draft else None,
+            inserts=applied_inserts,
         )
         command = [str(self._config.render.ffmpeg), "-y", "-v", "error"]
         command.extend([
@@ -1688,6 +1912,11 @@ class RenderService:
         if teaser_window is not None:
             command.extend([
                 "-ss", f"{teaser_window[0]:.6f}", "-t", f"{teaser_window[1] - teaser_window[0]:.6f}",
+                "-i", str(source_path),
+            ])
+        for applied in applied_inserts:
+            command.extend([
+                "-ss", f"{applied.source_start:.6f}", "-t", f"{applied.duration:.6f}",
                 "-i", str(source_path),
             ])
         command.extend([
@@ -2072,6 +2301,7 @@ class RenderService:
                 segment_count=len(plan.segments),
                 transitions=_render_transitions(plan),
                 punch_ins=punch_ins_manifest,
+                inserts=insert_infos,
                 teaser=(
                     RenderTeaserInfo(
                         applied=True,
