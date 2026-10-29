@@ -167,6 +167,45 @@ class RemoteAccessConfig(BaseModel):
         return self
 
 
+class LessonsConfig(BaseModel):
+    """Math lesson videos (`python -m cortex.lessons`): Flow clips + Manim + narration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dir: Path = Path("data/lessons")
+    ingest_dir: Path = Path("~/Downloads/ingest")
+    language: str = "en"
+    lead_in_seconds: float = Field(default=0.8, ge=0.0)
+    flow_durations: list[float] = Field(default_factory=lambda: [4, 6, 8, 10], min_length=1)
+    flow_max_retime: float = Field(default=1.1, ge=1.0)
+    fps: int = Field(default=30, ge=15, le=120)
+    width: int = Field(default=1920, ge=64)
+    height: int = Field(default=1080, ge=64)
+    xfade_seconds: float = Field(default=0.4, gt=0.0)
+    voice_lufs: float = -14.0
+    music_lufs: float = -31.0
+    ducked_music_lufs: float = -20.0
+    sfx_lufs: float = -16.0
+    target_lufs: float = -14.0
+    true_peak_db: float = Field(default=-1.0, le=0.0)
+    manim_image: str = "docker.io/manimcommunity/manim:v0.19.0"
+    manim_workers: int = Field(default=4, ge=1, le=16)
+
+
+class SoundConfig(BaseModel):
+    """Sound library (`python -m cortex.sound`): Soundza + SFXMint searches, downloaded files, curated kits."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dir: Path = Path("data/sound")
+    default_kit: str = "dayon"
+    http_timeout_seconds: float = Field(default=30.0, gt=0)
+    max_retry_wait_seconds: float = Field(default=30.0, ge=0)
+    max_download_mb: float = Field(default=60.0, gt=0)
+    candidates_per_query: int = Field(default=12, ge=1, le=50)
+    reel_lufs: float = -16.0
+
+
 class CortexConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -181,6 +220,8 @@ class CortexConfig(BaseModel):
     edit: EditConfig = EditConfig()
     voice: VoiceConfig = VoiceConfig()
     remote_access: RemoteAccessConfig = RemoteAccessConfig()
+    lessons: LessonsConfig = LessonsConfig()
+    sound: SoundConfig = SoundConfig()
 
     def ensure_runtime_dirs(self) -> None:
         for path in (

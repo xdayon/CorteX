@@ -97,3 +97,38 @@ voice:
   default_threshold: 0.37
   max_threads: 8
   timeout_seconds: 1800
+
+# Lições de matemática em vídeo (python -m cortex.lessons): clipes do Flow + Manim
+# + narração ElevenLabs + música. Cortes derivados do alinhamento palavra a palavra.
+lessons:
+  dir: data/lessons
+  ingest_dir: ~/Downloads/ingest
+  language: en
+  lead_in_seconds: 0.8
+  flow_durations: [4, 6, 8, 10]
+  flow_max_retime: 1.1
+  fps: 30
+  width: 1920
+  height: 1080
+  xfade_seconds: 0.4
+  voice_lufs: -14.0
+  music_lufs: -31.0
+  # Promos (lesson.json com "sound"): música mais presente, abaixada sob a voz (ducking),
+  # e cada efeito nivelado pelo trecho mais alto de 400 ms antes da normalização final.
+  ducked_music_lufs: -20.0
+  sfx_lufs: -16.0
+  target_lufs: -14.0
+  true_peak_db: -1.0
+  manim_image: docker.io/manimcommunity/manim:v0.19.0
+  manim_workers: 4
+
+# Biblioteca de som (python -m cortex.sound): Soundza (principal) + SFXMint, arquivos
+# baixados e kits curados. Chave SOUNDZA_API_KEY no .env (comando login).
+sound:
+  dir: data/sound
+  default_kit: dayon
+  http_timeout_seconds: 30.0
+  max_retry_wait_seconds: 30.0
+  max_download_mb: 60.0
+  candidates_per_query: 12
+  reel_lufs: -16.0
