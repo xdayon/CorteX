@@ -25,7 +25,7 @@ class Beat(BaseModel):
 class FlowRef(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    clip: str = Field(pattern=r"^\d{2}$")
+    clip: str = Field(pattern=r"^\d{2,3}$")  # Flow prompt number; long lessons pass 99
     in_: float = Field(default=0.0, ge=0, alias="in")
     out: float | None = None
     prompt: str | None = None

@@ -49,3 +49,10 @@ def test_spec_rejects_gaps_and_bad_hybrid():
              manim=ManimRef(scene="s.py", cls="S", render="s.mov"))
     with pytest.raises(ValueError, match="needs 'flow'"):
         Shot(id="F", beats=["B1"], kind="flow")
+
+
+def test_flow_clip_numbers_take_two_or_three_digits():
+    assert FlowRef(clip="101").clip == "101"
+    for bad in ("1", "1000", "a1"):
+        with pytest.raises(ValueError):
+            FlowRef(clip=bad)
