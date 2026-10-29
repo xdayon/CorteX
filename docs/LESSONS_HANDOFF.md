@@ -16,14 +16,14 @@ usuário. Também promos 9:16 (Dayon News). A referência de qualidade é `data/
 - Ciclo: Etapa 1 (narração, um parágrafo por beat, vai direto para `init --script`) → `init` + `align` + `check`
   (a tabela de tempos volta para o Gabriel) → Etapa 2 (pacote visual) → importação.
 
-## Estado (2026-10-28, branch `feat/lessons`, NADA commitado)
+## Estado (2026-10-28, branch `feat/lessons`, commitado e enviado em 4 commits por assunto)
 - A fase 1 está pronta: `lessons/` com spec, align, timeline, ingest, flow_pack, manim (podman) e assemble
   (cache por hash de conteúdo). A aula de referência reproduz o piloto bit a bit (PSNR inf nas 17 tomadas).
 - Outra sessão acrescentou no mesmo branch: promos, `sound/` (Soundza/SFXMint), `lessons/sound.py`,
   `titles.py`, `cutout.py`, tomadas `image`, `aspect` 9:16, fontes IBM Plex Mono e STUDIO_AI.md. Preserve tudo.
 - Testes: `.venv/bin/pytest -q tests/test_lessons_*.py tests/test_sound_*.py` passa (39).
 - `i-quarter-turn` tem `music.gain_db: -6`: o Robert quer a música bem baixa (padrão das aulas dele).
-- Primeiro passo da sessão: pedir ao usuário para commitar esse trabalho em commits por assunto.
+- Aulas em produção: o curso Polymath Academy (plano em `data/lessons/_polymath/CURSO.md` e `data/lessons/polymath-00-intro/PLANO.md`, fora do Git).
 
 ## Regras que valem para toda a fase 2
 - **Narração primeiro.** Alinhar e só então escrever os prompts do Flow com a duração exata. O Flow (Omni 1.1
@@ -95,7 +95,6 @@ usuário. Também promos 9:16 (Dayon News). A referência de qualidade é `data/
    prévia e export. Ela segue as regras de prévia e verificação visual do AGENTS.md.
 
 ## Decisões pendentes (perguntar ao usuário)
-- Commitar o trabalho atual antes de começar.
 - Opções do HeyGen (item 4): o usuário manda o print do painel.
 - Mudar o contrato (`docs/chatgpt-gabriel/`) exige reenviar os arquivos ao Gabriel: mantenha o formato estável.
 
