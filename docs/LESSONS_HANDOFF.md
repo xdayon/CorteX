@@ -23,7 +23,9 @@ usuário. Também promos 9:16 (Dayon News). A referência de qualidade é `data/
   `titles.py`, `cutout.py`, tomadas `image`, `aspect` 9:16, fontes IBM Plex Mono e STUDIO_AI.md. Preserve tudo.
 - Testes: `.venv/bin/pytest -q tests/test_lessons_*.py tests/test_sound_*.py` passa (39).
 - `i-quarter-turn` tem `music.gain_db: -6`: o Robert quer a música bem baixa (padrão das aulas dele).
-- Aulas em produção: o curso Polymath Academy (plano em `data/lessons/_polymath/CURSO.md` e `data/lessons/polymath-00-intro/PLANO.md`, fora do Git).
+- Aulas em produção: o curso Polymath Academy. O handoff da produção está em `data/lessons/_polymath/HANDOFF.md`, fora do Git.
+  A Intro está montada (v1, sem avatar). Lições para o código: o plano precisa definir `flow.out`, senão o assemble acelera o
+  clipe; o número do clipe aceita 2 ou 3 dígitos; o `ingest` exige todos os clipes.
 
 ## Regras que valem para toda a fase 2
 - **Narração primeiro.** Alinhar e só então escrever os prompts do Flow com a duração exata. O Flow (Omni 1.1
