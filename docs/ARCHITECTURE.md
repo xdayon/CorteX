@@ -27,6 +27,8 @@ Não há runtime PodCLI, multicam ISO, servidor editorial alternativo ou cloud G
 | Foco por rostos | `render/face_focus.py`, `analyze/face_detect.py` (YuNet), `analyze/frames.py`, `analyze/scene_*` | face_focus, face_detect, face_focus_render, scene_index |
 | Mapa de câmeras e cenas | `analyze/camera_map.py` (grupos, papéis), `analyze/scene_suggestions.py` (reações, plano aberto, pergunta), inserções em `render/service.py` (`RenderSettings.inserts`) | camera_map, scene_suggestions, render_inserts |
 | Voz do protagonista | `diarize/voice_match.py` (perfil + rótulos D/O por voz, `voice.*`), `diarize/voice_runner.py` (torch, subprocesso), `diarize/service.py` (pyannote manual) | voice_match, speaker_attribution |
+| Estúdio IA (aulas e promos, CLI) | `lessons/` (`spec.py` lesson.json, `align.py`, `timeline.py`, `flow_pack.py`, `manim.py`, `sound.py` âncoras/efeitos/dips, `titles.py` textos libass, `cutout.py` recorte de mockup, `assemble.py` mix com ducking e 16:9/9:16) — fluxo em [STUDIO_AI](STUDIO_AI.md) | lessons_* |
+| Biblioteca de som | `sound/` (Soundza + SFXMint, `library.py` arquivo + licença + âncora, `kit.py` kits e página de audição) | sound_* |
 
 Python paths são relativos a `src/cortex/`; testes em `tests/`. Mídia/SQLite/cache
 ficam em `data/` (fora do Git).
