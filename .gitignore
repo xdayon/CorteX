@@ -33,5 +33,7 @@ apps/web/vite.config.d.ts
 
 # Runtime local do CorteX
 data/
+# Arquivos que o usuário gera fora (ElevenLabs, Flow, HeyGen) e salva para o CorteX ler
+entrada/
 
 .venv-diarization/

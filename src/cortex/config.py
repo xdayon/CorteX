@@ -173,7 +173,7 @@ class LessonsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dir: Path = Path("data/lessons")
-    ingest_dir: Path = Path("~/Downloads/ingest")
+    ingest_dir: Path = Path("entrada")
     language: str = "en"
     lead_in_seconds: float = Field(default=0.8, ge=0.0)
     flow_durations: list[float] = Field(default_factory=lambda: [4, 6, 8, 10], min_length=1)

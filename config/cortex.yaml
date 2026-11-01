@@ -102,7 +102,7 @@ voice:
 # + narração ElevenLabs + música. Cortes derivados do alinhamento palavra a palavra.
 lessons:
   dir: data/lessons
-  ingest_dir: ~/Downloads/ingest
+  ingest_dir: entrada
   language: en
   lead_in_seconds: 0.8
   flow_durations: [4, 6, 8, 10]
