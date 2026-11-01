@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 
 from cortex.config import CortexConfig
-from cortex.lessons.common import (ENCODE, LessonError, cache_store, cache_valid, canvas, ffmpeg, hash_parts, probe,
-                                   run, sha256_file)
+from cortex.lessons.common import (ENCODE, FFMPEG_TIMEOUT, LessonError, cache_store, cache_valid, canvas, ffmpeg,
+                                   hash_parts, probe, run, sha256_file)
 from cortex.lessons.cutout import cutout
 from cortex.lessons.sound import PlacedSfx, credits_text, dip_expr, music_source, resolve_cues, sfx_chain
 from cortex.lessons.spec import LessonSpec, Shot
@@ -347,7 +347,8 @@ def assemble(cfg: CortexConfig, directory: Path, spec: LessonSpec, timings: Timi
     report_path = export / "report.json"
     if not cache_valid(out, final_key, force):
         ffmpeg(cfg, "-i", video, "-i", mix, "-vf", vf, "-c:v", "libx264", "-preset", "slow", "-tune", "grain",
-               "-crf", 19, "-c:a", "copy", "-shortest", "-movflags", "+faststart", out)  # AAC peak-checked in make_mix
+               "-crf", 19, "-c:a", "copy", "-shortest", "-movflags", "+faststart", out,  # AAC peak-checked in make_mix
+               timeout=max(FFMPEG_TIMEOUT, 10 * timings.total))  # preset slow: a long lesson on a busy host outlasts 1 h
         cache_store(out, final_key)
     previous = json.loads(report_path.read_text()) if report_path.exists() else {}
     if previous.get("final_key") == final_key:

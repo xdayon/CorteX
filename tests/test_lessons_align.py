@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from cortex.lessons.align import BeatSpan, beat_spans, cut_timings
+from cortex.lessons.align import BeatSpan, beat_spans, cut_timings, split_dashes
 from cortex.lessons.common import LessonError
 from cortex.lessons.spec import Beat
 
@@ -43,3 +43,10 @@ def test_beat_spans_match_words_and_fail_on_missing():
     assert spans[1].first_start == 1.0 and spans[1].last_end == 1.6
     with pytest.raises(LessonError):
         beat_spans(words, ["hello world", "nothing matches here"])
+
+
+def test_dash_glued_words_split_and_match_a_one_word_beat():
+    words = [(0.0, 0.3, "larger"), (0.3, 1.3, "phenomenon—rhythm."), (1.5, 1.8, "The")]
+    assert split_dashes(words)[1:3] == [(0.3, 0.888, "phenomenon"), (0.888, 1.3, "rhythm.")]
+    spans = beat_spans(words, ["larger phenomenon.", "Rhythm.", "The"])
+    assert spans[1].first_start == 0.888 and spans[1].last_end == 1.3

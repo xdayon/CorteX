@@ -104,3 +104,15 @@ def test_cues_resolve_from_the_shot_start_and_reach_the_key(tmp_path, monkeypatc
         LessonSpec(slug="t", title="t", narration="n.mp3", beats=[Beat(id="B1", text="x")], shots=[
             Shot(id="A", beats=["B1"], kind="manim",
                  manim=ManimRef(scene="s.py", cls="S", render="s.mp4", cues={"x": Cue(at="word:B9:oi")}))])
+
+
+def test_sync_copy_rewrites_only_on_change(tmp_path):
+    src, dst = tmp_path / "a.json", tmp_path / "b.json"
+    src.write_text("one")
+    manim.sync_copy(src, dst)
+    inode = dst.stat().st_ino
+    manim.sync_copy(src, dst)
+    assert dst.read_text() == "one" and dst.stat().st_ino == inode   # same content: file left alone
+    src.write_text("two")
+    manim.sync_copy(src, dst)
+    assert dst.read_text() == "two" and not list(tmp_path.glob(".*.tmp"))

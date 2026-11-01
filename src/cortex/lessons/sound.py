@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cortex.config import CortexConfig
-from cortex.lessons.align import _norm
+from cortex.lessons.align import _norm, words_from_alignment
 from cortex.lessons.common import LessonError
 from cortex.lessons.spec import LessonSpec, Music
 from cortex.lessons.timeline import Timings, shot_windows
@@ -57,7 +57,7 @@ class Anchors:
             path = self.directory / "alignment.json"
             if not path.exists():
                 raise LessonError("word anchors need alignment.json; run `align`")
-            self._words = json.loads(path.read_text(encoding="utf-8"))["words"]
+            self._words = words_from_alignment(json.loads(path.read_text(encoding="utf-8")))
         scene, target = self.timings.scenes[beat], _norm(word)
         for start, _end, heard in self._words:
             t = float(start) + self.timings.audio_offset

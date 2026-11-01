@@ -34,8 +34,25 @@ def _norm(word: str) -> str:
     return re.sub(r"[^a-z0-9]", "", plain)
 
 
+def split_dashes(words: list[Word]) -> list[Word]:
+    """Whisper glues words across an em/en dash ("phenomenon—rhythm."): split them, sharing the time by length."""
+    out: list[Word] = []
+    for s, e, w in words:
+        parts = [p for p in re.split(r"[—–]", w) if p]
+        if len(parts) < 2:
+            out.append((s, e, w))
+            continue
+        total, t = sum(len(p) for p in parts), s
+        for p in parts:
+            end = round(t + (e - s) * len(p) / total, 3)
+            out.append((round(t, 3), end, p))
+            t = end
+    return out
+
+
 def beat_spans(words: list[Word], beat_texts: list[str]) -> list[BeatSpan]:
     """Match the heard words to the script (difflib on normalised tokens) and return per-beat first/last word."""
+    words = split_dashes(words)
     ref = [(k, _norm(w)) for k, text in enumerate(beat_texts) for w in text.split() if _norm(w)]
     hyp = [(s, e, _norm(w)) for s, e, w in words if _norm(w)]
     sm = difflib.SequenceMatcher(a=[r[1] for r in ref], b=[h[2] for h in hyp], autojunk=False)
@@ -94,7 +111,7 @@ def timings_payload(scenes: dict, lead_in: float, source: str) -> dict:
 
 
 def words_from_alignment(data: dict) -> list[Word]:
-    return [(float(s), float(e), str(w)) for s, e, w in data["words"]]
+    return split_dashes([(float(s), float(e), str(w)) for s, e, w in data["words"]])
 
 
 def timings_from_words(words: list[Word], beats: list[Beat], lead_in: float, source: str) -> dict:

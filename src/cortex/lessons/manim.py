@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -40,6 +42,20 @@ def run_container(cmd: list[str], log: Path, timeout: float = RENDER_TIMEOUT) ->
             return False
 
 
+def sync_copy(src: Path, dst: Path) -> None:
+    """Copy only when the content differs, through an atomic rename.
+
+    Parallel renders hash scenes/timings.json while other threads sync it; a plain copyfile truncates it first,
+    so a thread could hash half a file and store a wrong cache key (shots then re-rendered on every run).
+    """
+    data = src.read_bytes()
+    if dst.exists() and dst.read_bytes() == data:
+        return
+    tmp = dst.with_name(f".{dst.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, dst)
+
+
 def render_key(cfg: CortexConfig, scenes: Path, shot: Shot, size: tuple[int, int] | None = None,
                cues: dict[str, float] | None = None) -> str:
     lc, m = cfg.lessons, shot.manim
@@ -74,7 +90,7 @@ def render_shot(cfg: CortexConfig, directory: Path, shot: Shot, force: bool = Fa
     check.mkdir(exist_ok=True)
     if not (scenes / m.scene).exists():
         raise LessonError(f"shot {shot.id}: missing scene file {scenes / m.scene}")
-    shutil.copyfile(directory / "timings.json", scenes / "timings.json")  # brand.py reads it next to itself
+    sync_copy(directory / "timings.json", scenes / "timings.json")  # brand.py reads it next to itself
     out = renders / m.render
     key = render_key(cfg, scenes, shot, size, cues)
     if cache_valid(out, key, force):
