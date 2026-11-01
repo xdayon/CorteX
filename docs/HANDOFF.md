@@ -28,7 +28,7 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 Depois da seleção, o worker enfileira sozinho o mapa de câmeras do episódio (com perfil
 de voz).
 
-## Entregue em 01/nov (branch `feat/triangulation-auto`, pede restart + rebuild)
+## Entregue em 01/nov (no ar: `feat/lessons`, serviço reiniciado às 05:54)
 
 Triangulação automática por padrão ([plano](TRIANGULATION.md),
 [evidência](evidence/2026-11-01-auto-triangulation.md)):
@@ -50,12 +50,11 @@ Triangulação automática por padrão ([plano](TRIANGULATION.md),
 
 ## Próximo gate
 
-1. Merge de `feat/triangulation-auto` e `./scripts/update_and_verify.sh` (testa, compila
-   e reinicia com segurança, sem job ativo).
-2. Dayon revisa cortes automáticos de 2–3 episódios na aba Cenas. Meta: ≥ 80 % das cenas
-   mantidas (`GET /episodes/{id}/scenes` → `review`). Depois, avaliar a pergunta no
-   prompt de seleção (worktree).
-3. Prévias mais rápidas (QA mais barato e prévia progressiva nos drafts). Drive
+1. Dayon revisa cortes automáticos de 2–3 episódios na aba Cenas (os 8 episódios com
+   vídeo já têm mapa de câmeras). Meta: ≥ 80 % das cenas mantidas
+   (`GET /episodes/{id}/scenes` → `review`). Depois, avaliar a pergunta no prompt de
+   seleção (worktree).
+2. Prévias mais rápidas (QA mais barato e prévia progressiva nos drafts). Drive
    automático e acesso remoto ficam parados até o usuário pedir.
 
 ## Congelado (não evoluir)
