@@ -73,9 +73,14 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 def clip_render_settings(revision, key: str) -> dict[str, Any]:
-    """Shared settings plus the clip's own overrides (a fresh copy)."""
+    """Shared settings plus the clip's own overrides (a fresh copy). Inserts are the
+    clip's own content: without a choice of its own the clip gets the automatic
+    triangulation (None), whatever the shared settings carry."""
     base = json.loads(json.dumps(revision.render_settings))
-    return deep_merge(base, revision.clip_settings.get(key) or {})
+    override = revision.clip_settings.get(key) or {}
+    merged = deep_merge(base, override)
+    merged["inserts"] = override.get("inserts")
+    return merged
 
 
 class ExportBatchCreate(BaseModel):

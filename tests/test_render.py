@@ -267,7 +267,8 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
     assert document.overlays is not None
     assert document.overlays.renderer == "libass"
     assert document.requested_settings == render_settings
-    assert document.effective_settings == render_settings
+    # Inserts left automatic (None) and never resolved by a worker render as none.
+    assert document.effective_settings == render_settings.model_copy(update={"inserts": []})
     assert document.overlays.caption_font_size == 28
     assert document.overlays.caption_outline is False
     assert document.overlays.caption_shadow is True

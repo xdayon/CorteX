@@ -116,8 +116,9 @@ def test_cluster_is_deterministic():
     (0, 0.9, "ignore"), (0, None, "ignore"), (3, None, "wide"), (4, 0.1, "wide"), (1, None, None),
     (1, 0.6, "subject"), (1, 0.9, "subject"), (2, 0.8, "subject"), (3, 0.9, "subject"),
     (1, 0.5, None), (1, 0.4, None), (1, 0.35, "interviewers"),
-    # Two faces: two hosts (low share) or the subject beside a host (wk7PY31TQBc two-shots).
-    (2, 0.05, "interviewers"), (2, 0.12, "interviewers"), (2, 0.136, None), (2, 0.2, None),
+    # Two faces: two hosts or the subject beside a host at the table (low share, shown
+    # whole as a wide), or beside a co-guest (wk7PY31TQBc two-shots, the base camera).
+    (2, 0.05, "wide"), (2, 0.12, "wide"), (2, 0.136, None), (2, 0.2, None),
     (2, 0.32, "subject"), (2, 0.53, "subject"),
 ])
 def test_suggest_role(faces, share, expected):

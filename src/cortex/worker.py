@@ -600,6 +600,13 @@ def run_render_job(
     if edit_plan.project_id != job.project_id or edit_plan.stage != "edit_plan":
         raise ValueError("EditPlanArtifact do render não pertence ao projeto")
     service = RenderService(config, domain)
+    render_settings = (
+        RenderSettings.model_validate(job.payload["render_settings"])
+        if job.payload.get("render_settings") is not None else None
+    )
+    triangulation = None
+    if render_settings is not None and render_settings.inserts is None:
+        render_settings, triangulation = _auto_triangulation(config, domain, edit_plan, render_settings)
 
     def progress_cb(progress_percent: float, message: str) -> None:
         stage = PipelineStage.QUALITY if progress_percent >= 85 else PipelineStage.RENDER
@@ -612,10 +619,7 @@ def run_render_job(
             headline=job.payload.get("headline"),
             progress_cb=progress_cb,
             should_cancel=lambda: _job_is_cancelled(jobs, job.id),
-            render_settings=(
-                RenderSettings.model_validate(job.payload["render_settings"])
-                if job.payload.get("render_settings") is not None else None
-            ),
+            render_settings=render_settings,
             render_settings_override=(
                 RenderSettingsPatch.model_validate(job.payload["render_settings_override"])
                 if job.payload.get("render_settings_override") is not None else None
@@ -625,10 +629,29 @@ def run_render_job(
         )
     except RenderJobCancelled:
         return
+    if triangulation is not None:
+        result = {**result, "triangulation": triangulation}
     jobs.update(job.id, JobUpdate(
         status=JobStatus.SUCCEEDED, stage=PipelineStage.COMPLETE,
         message="Render concluído", result=result,
     ))
+
+
+def _auto_triangulation(config, domain, edit_plan, settings: RenderSettings) -> tuple[RenderSettings, dict]:
+    """Inserts of a clip whose scenes were never edited: its scene suggestions, resolved
+    before the render's cache key. Missing episode data renders without inserts and the
+    job result says why (the Cenas tab shows the same status)."""
+    from cortex.analyze.triangulation import TriangulationError, auto_inserts, scenes_for_plan
+    from cortex.edit.schemas import EditPlanDocument
+    from cortex.library import EpisodeLibrary
+
+    plan = EditPlanDocument.model_validate_json(Path(edit_plan.path).read_text(encoding="utf-8"))
+    try:
+        context = scenes_for_plan(domain, EpisodeLibrary(config, domain).for_project(plan.project_id), plan, config)
+    except TriangulationError as exc:
+        return settings.model_copy(update={"inserts": []}), {"mode": "auto", "status": "failed", "reason": str(exc)}
+    inserts = auto_inserts(context)
+    return settings.model_copy(update={"inserts": inserts}), context.summary(len(inserts))
 
 
 def run_diarization_job(job, config, jobs, domain):
@@ -855,7 +878,30 @@ def process_next(
             pass
     if not advance_export_batch(job, jobs, domain):
         _advance_workflow(job, jobs, domain)
+        _queue_camera_map_after_selection(job, config, jobs, domain)
     return True
+
+
+def _queue_camera_map_after_selection(job: Job, config: CortexConfig, jobs: JobStore, domain: DomainStore) -> None:
+    """Once the clips of an episode are ready, map its cameras (~1-2 min of CPU) so the
+    automatic triangulation is ready when the editor opens. Needs the voiceprint (the
+    roles come from the subject's voice share); runs once per source, never twice."""
+    from cortex.diarize.voice_match import load_profile
+
+    if job.type != JobType.SUGGESTION or not job.payload.get("workflow_run_id"):
+        return
+    try:
+        if jobs.get(job.id).status != JobStatus.SUCCEEDED or not config.voice.match_enabled or load_profile(config) is None:
+            return
+        run = domain.get_workflow_run(job.payload["workflow_run_id"])
+        if domain.list_stage_artifacts(run.project_id, stage="camera_map"):
+            return
+        jobs.create(JobCreate(
+            type=JobType.CAMERA_MAP, project_id=run.project_id, payload={"source_asset_id": run.source_asset_id},
+            idempotency_key=f"camera-map:auto:{run.source_asset_id}",
+        ))
+    except (OSError, ValueError, LookupError) as exc:  # the clips are ready either way
+        print(f"mapa de câmeras automático não enfileirado: {exc}", file=sys.stderr, flush=True)
 
 
 def run_worker(

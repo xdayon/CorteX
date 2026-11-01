@@ -250,9 +250,12 @@ def suggest_role(faces: int, share: float | None, airtime_share: float = 1.0) ->
     """A starting point for the person who confirms the roles. The subject's voice share
     is the strong signal; face counts only separate graphics and wide shots.
 
-    Two faces is ambiguous: two hosts (subject share 0-13 % in 2026-10-19) or the subject
-    beside a host, the base camera of many podcasts (32-53 % in wk7PY31TQBc, confirmed
-    "subject"). The middle stays unsuggested for the person to decide."""
+    Two faces is ambiguous: two hosts (subject share 0-13 % in 2026-10-19), the subject
+    beside a host at the table (8 % in zMb1o5QRTqw, the studio's two-shot) or beside a
+    co-guest, the base camera of many podcasts (32-53 % in wk7PY31TQBc, confirmed
+    "subject"). A low share is suggested as "wide": shown whole, it reads as the studio
+    with either pair, while a reaction framed on one face could land on the subject.
+    The middle stays unsuggested for the person to decide."""
     if faces == 0 or airtime_share < MIN_GROUP_SHARE:
         return "ignore"
     if share is not None and share >= 0.6:
@@ -262,7 +265,7 @@ def suggest_role(faces: int, share: float | None, airtime_share: float = 1.0) ->
     if share is None:
         return None
     if faces == 2:
-        return "subject" if share >= 0.3 else "interviewers" if share <= 0.12 else None
+        return "subject" if share >= 0.3 else "wide" if share <= 0.12 else None
     return "interviewers" if share <= 0.35 else None
 
 

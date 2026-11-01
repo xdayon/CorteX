@@ -312,8 +312,10 @@ class RenderSettings(BaseModel):
     subtitles: RenderSubtitleSettings
     template: RenderTemplateSettings = Field(default_factory=RenderTemplateSettings)
     transitions: RenderTransitionStyleSettings = Field(default_factory=RenderTransitionStyleSettings)
-    # Per clip (stored in clip_settings): accepted scene suggestions.
-    inserts: list[RenderInsert] = Field(default_factory=list, max_length=16)
+    # Per clip (stored in clip_settings). None: automatic triangulation, resolved by the
+    # render worker from the episode's scene suggestions; a list (even empty) is the
+    # person's own choice.
+    inserts: list[RenderInsert] | None = Field(default=None, max_length=16)
 
 
 def settings_cache_payload(settings: RenderSettings, *, overlay: bool = False) -> dict[str, Any]:

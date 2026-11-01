@@ -429,12 +429,9 @@ def create_app(config: CortexConfig | None = None):
 
     @app.get(f"{router_prefix}/episodes/{{episode_id}}/scenes")
     def get_episode_scenes(episode_id: str, edit_plan_artifact_id: str):
-        from cortex.analyze.camera_map import read_document
-        from cortex.analyze.scene_suggestions import SCENE_SUGGESTIONS_VERSION, suggest_scenes
-        from cortex.diarize.service import DiarizationDocument
-        from cortex.diarize.voice_match import SUBJECT_LABEL
+        from cortex.analyze.scene_suggestions import SCENE_SUGGESTIONS_VERSION
+        from cortex.analyze.triangulation import TriangulationError, scenes_for_plan
         from cortex.edit.schemas import EditPlanDocument
-        from cortex.transcribe.schemas import TranscriptDocument
         try:
             entry = library.get(episode_id)
             artifact = domain.get_stage_artifact(edit_plan_artifact_id)
@@ -443,36 +440,19 @@ def create_app(config: CortexConfig | None = None):
             plan = EditPlanDocument.model_validate_json(Path(artifact.path).read_text())
         except (ValueError, LookupError, OSError) as exc:
             raise HTTPException(status_code=404, detail="Plano de edição indisponível") from exc
-        base = {"algorithm_version": SCENE_SUGGESTIONS_VERSION, "project_id": plan.project_id,
-                "source_asset_id": plan.source_asset_id, "suggestions": [], "question": None,
-                "decisions": {}, "review": scene_review_summary(entry)}
-        maps = sorted(
-            (a for p in entry.project_ids for a in domain.list_stage_artifacts(p, stage="camera_map") if Path(a.path).is_file()),
-            key=lambda a: a.created_at, reverse=True)
-        if not maps:
-            return {**base, "status": "needs_camera_map", "camera_map_artifact_id": None}
-        camera = maps[0]
-        base["camera_map_artifact_id"] = camera.id
-        roles = (entry.camera_roles or {}).get("roles")
-        if entry.camera_roles.get("artifact_id") != camera.id or not roles:
-            return {**base, "status": "needs_roles"}
         try:
-            document = read_document(camera)
-            if not document.voice_artifact_id:
-                return {**base, "status": "needs_voice"}
-            voice = domain.get_stage_artifact(document.voice_artifact_id)
-            turns = DiarizationDocument.model_validate_json(Path(voice.path).read_text()).turns
-            transcript = TranscriptDocument.model_validate_json(
-                Path(domain.get_transcript_artifact(plan.transcript_artifact_id).path).read_text())
-        except (ValueError, LookupError, OSError) as exc:
-            raise HTTPException(status_code=409, detail=f"Dados do episódio ilegíveis: {exc}"[:300]) from exc
-        result = suggest_scenes(
-            plan, document, {int(k): v for k, v in roles.items()}, turns,
-            [word for segment in transcript.segments for word in segment.words], SUBJECT_LABEL,
-        )
+            context = scenes_for_plan(domain, entry, plan, settings)
+        except TriangulationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         decisions = (entry.scene_reviews or {}).get("decisions", {})
-        return {**base, **result.model_dump(mode="json"), "status": "ok",
-                "decisions": {s.id: decisions[s.id] for s in result.suggestions if s.id in decisions}}
+        result = context.suggestions.model_dump(mode="json") if context.suggestions else {
+            "algorithm_version": SCENE_SUGGESTIONS_VERSION, "suggestions": [], "question": None}
+        return {
+            "project_id": plan.project_id, "source_asset_id": plan.source_asset_id, **result,
+            "status": context.status, "camera_map_artifact_id": context.camera_map_artifact_id,
+            "roles_source": context.roles_source, "review": scene_review_summary(entry),
+            "decisions": {s["id"]: decisions[s["id"]] for s in result["suggestions"] if s["id"] in decisions},
+        }
 
     @app.put(f"{router_prefix}/episodes/{{episode_id}}/scene-reviews")
     def put_scene_reviews(episode_id: str, request: SceneReviewsRequest):

@@ -1,11 +1,18 @@
 """Scene suggestions for one clip: cutaways (reaction, wide shot) and the interviewer's question.
 
-Deterministic and cheap (no media decoding). The episode's confirmed camera map says which
-camera is on air at every second, the voiceprint turns say who speaks, and the transcript
+Deterministic and cheap: the only media decoded is a few small frames of the chosen
+borrowed footage, through the optional ``verify`` (``footage_check``), because the
+keyframe-only camera map misses cuts without a keyframe. The episode's camera map says
+which camera is on air at every second, the voiceprint turns say who speaks, and the transcript
 says where phrases end. A reaction is footage of the interviewers' camera from another
 moment while only the subject spoke (they listen in silence); a wide shot is the studio
-camera while the subject spoke (he gestures as if speaking). Inserts only replace the
-picture (``RenderInsert``): the clip's audio and captions go on.
+camera while the subject spoke (he gestures as if speaking) or, when the episode has no
+usable studio footage, the camera on air at that very moment without the zoom (a two-shot
+or wider, so the set shows). Inserts only replace the picture (``RenderInsert``): the
+clip's audio and captions go on.
+
+The suggestions of a clip are its triangulation: the first one establishes the studio
+(wide), then reactions and wides alternate two to one, with at least one reaction.
 """
 from __future__ import annotations
 
@@ -13,7 +20,7 @@ import bisect
 import hashlib
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
@@ -21,12 +28,17 @@ from cortex.analyze.camera_map import CameraMapDocument
 from cortex.edit.schemas import EditPlanDocument
 from cortex.transcribe.schemas import TranscriptWord
 
-SCENE_SUGGESTIONS_VERSION = "1"
+SCENE_SUGGESTIONS_VERSION = "2"
 HOOK_SECONDS = 3.0          # never cover the opening hook
 JOIN_MARGIN = 1.0           # keep inserts inside one segment, away from its cuts
 MIN_INSERT, DEFAULT_INSERT, MAX_INSERT = 1.2, 2.0, 2.5
 SPACING = 8.0               # between insert starts on the output timeline
 SECONDS_PER_INSERT = 15.0   # at most one suggestion per this much clip
+MIN_SUGGESTIONS = 2         # every clip tries for a wide and a reaction
+# The on-air camera unzoomed ranks below real studio footage; a close-up unzoomed shows
+# less of the set than a two-shot, so it is the last resort.
+LIVE_WIDE_SCORE, LIVE_CLOSE_UP_SCORE = 0.35, 0.2
+SHARED_REACTION = 0.7       # a reaction from a two-face group: one face is better
 SILENT_MARGIN = 0.4         # the others stay silent this long around the footage
 SUBJECT_PAUSE = 0.3         # a pause this short inside the subject's speech still counts
 SHOT_MARGIN = 0.3           # footage stays this far from its own camera cuts
@@ -34,6 +46,7 @@ CLIP_MARGIN = 0.5           # footage never repeats what the clip already shows
 PROXIMITY_SECONDS = 600.0   # nearby moments look alike (light, posture, topic)
 QUESTION_MAX, QUESTION_MIN, QUESTION_GAP = 6.0, 1.0, 4.0
 ALTERNATIVES = 3
+VERIFIED_PER_KIND = 3       # borrowed candidates decoded per insert when a verifier is given
 _SENTENCE_END = re.compile(r"[.!?…:;][\"')\]]*$")
 _CLAUSE_END = re.compile(r",[\"')\]]*$")
 _FOOTAGE_ROLE = {"reaction": "interviewers", "wide": "wide"}
@@ -183,9 +196,10 @@ def _candidates(
     for start, end, group, shot_length in windows:
         if end - start < duration:
             continue
-        # Nearest spot to the anchor, else right beside footage already used: a long
+        # The start of the stretch (the shot's own keyframe is close, so checking the
+        # footage decodes little), else right beside footage already used: a long
         # interviewers shot can feed several inserts of one clip.
-        spots = [min(max(anchor, start), end - duration)]
+        spots = [start]
         spots += [spot for a, b in used for spot in (b, a - duration) if start <= spot <= end - duration]
         free = [s for s in spots if not any(s < b and s + duration > a for a, b in used)]
         if not free:
@@ -194,9 +208,10 @@ def _candidates(
         proximity = math.exp(-abs(source_start - anchor) / PROXIMITY_SECONDS)
         stability = min(1.0, shot_length / 6.0)
         visible = 1.0 if faces.get(group, 0) >= 1 else 0.5
+        shared = SHARED_REACTION if kind == "reaction" and faces.get(group, 0) >= 2 else 1.0
         found.append(SceneCandidate(
             kind=kind, source_start=round(source_start, 3), group=group,
-            score=round(0.6 * proximity + 0.3 * stability + 0.1 * visible, 4),
+            score=round((0.6 * proximity + 0.3 * stability + 0.1 * visible) * shared, 4),
         ))
     found.sort(key=lambda c: (-c.score, c.source_start))
     return found
@@ -209,8 +224,31 @@ def _distance(seconds: float) -> str:
 
 
 def _reason(kind: str, anchor: float, source_start: float) -> str:
+    if kind == "wide" and abs(source_start - anchor) < 1e-3:
+        return "Plano aberto da câmera no ar, sem zoom"
     what = "Entrevistadores ouvindo calados" if kind == "reaction" else "Estúdio em plano aberto"
     return f"{what}, {_distance(source_start - anchor)} no episódio"
+
+
+def _live_wide(
+    camera_map: CameraMapDocument, shot_starts: list[float], faces: dict[int, int],
+    anchor: float, duration: float,
+) -> SceneCandidate | None:
+    """The camera on air at the anchor, unzoomed: in sync with the subject's voice, so it
+    needs no silent moment. The whole frame over the blur shows the set around him."""
+    group = _on_air(camera_map, shot_starts, anchor)
+    if group is None or _on_air(camera_map, shot_starts, anchor + duration) != group:
+        return None
+    score = LIVE_WIDE_SCORE if faces.get(group, 0) >= 2 else LIVE_CLOSE_UP_SCORE
+    return SceneCandidate(kind="wide", source_start=round(anchor, 3), group=group, score=score)
+
+
+def _kind_for(position: int, count: int) -> str:
+    """Wide first (it situates the viewer), then reaction, reaction, wide…; a clip with a
+    single insert shows the interviewer."""
+    if count == 1:
+        return "reaction"
+    return "wide" if position % 3 == 0 else "reaction"
 
 
 def _slots(
@@ -281,10 +319,27 @@ def detect_question(
     )
 
 
+Verify = Callable[[Sequence[tuple[str, float, float]]], list[bool]]
+
+
+def _checked(found: dict[str, list[SceneCandidate]], duration: float, anchor: float, verify: Verify) -> dict[str, list[SceneCandidate]]:
+    """Keeps the live wide and the borrowed candidates the verifier confirms: the best
+    few per kind, checked in one batch; the rest are dropped unchecked."""
+    def live(candidate: SceneCandidate) -> bool:
+        return abs(candidate.source_start - anchor) < 1e-3
+
+    batch = [(kind, c) for kind in found for c in [c for c in found[kind] if not live(c)][:VERIFIED_PER_KIND]]
+    passed = verify([(kind, c.source_start, duration) for kind, c in batch])
+    confirmed = {id(c) for (_kind, c), ok in zip(batch, passed) if ok}
+    return {kind: [c for c in found[kind] if live(c) or id(c) in confirmed] for kind in found}
+
+
 def suggest_scenes(
     plan: EditPlanDocument, camera_map: CameraMapDocument, roles: dict[int, str],
-    turns: Sequence, words: list[TranscriptWord], subject: str,
+    turns: Sequence, words: list[TranscriptWord], subject: str, verify: Verify | None = None,
 ) -> SceneSuggestions:
+    """``verify`` decodes borrowed footage to confirm the camera (``FootageChecker``);
+    without it the camera map alone is trusted."""
     words = sorted(words, key=lambda w: w.start)
     turns = sorted(turns, key=lambda t: t.start)
     question = detect_question(plan, words, turns, subject)
@@ -297,6 +352,13 @@ def suggest_scenes(
     faces = {group.id: group.faces for group in camera_map.groups}
     windows = _footage_windows(camera_map, roles, allowed, plan)
 
+    def options(anchor: float, duration: float, used: list[Interval]) -> dict[str, list[SceneCandidate]]:
+        found = {kind: _candidates(windows[kind], kind, anchor, duration, faces, used) for kind in _FOOTAGE_ROLE}
+        live = _live_wide(camera_map, shot_starts, faces, anchor, duration)
+        if live is not None:
+            found["wide"] = sorted([*found["wide"], live], key=lambda c: (-c.score, c.source_start))
+        return found
+
     scored = []
     for anchor, duration, output_start, weight in _slots(plan, words, starts, earliest):
         # The clip itself must show the subject speaking, with no one else's voice.
@@ -304,12 +366,12 @@ def suggest_scenes(
             continue
         if any(roles.get(_on_air(camera_map, shot_starts, t)) != "subject" for t in (anchor, anchor + duration)):
             continue
-        best = max((c for kind in _FOOTAGE_ROLE for c in _candidates(
-            windows[kind], kind, anchor, duration, faces, [])[:1]), key=lambda c: c.score, default=None)
+        best = max((found[0] for found in options(anchor, duration, []).values() if found),
+                   key=lambda c: c.score, default=None)
         if best is not None:
             scored.append((best.score * weight, anchor, duration, output_start))
 
-    limit = max(1, int(plan.timeline_duration_seconds // SECONDS_PER_INSERT))
+    limit = max(MIN_SUGGESTIONS, int(plan.timeline_duration_seconds // SECONDS_PER_INSERT))
     picked: list[tuple[float, float, float]] = []
     for _score, anchor, duration, output_start in sorted(scored, key=lambda item: (-item[0], item[3])):
         if len(picked) >= limit:
@@ -319,16 +381,25 @@ def suggest_scenes(
 
     suggestions: list[SceneSuggestion] = []
     used: list[Interval] = []
-    for anchor, duration, output_start in sorted(picked, key=lambda item: item[2]):
-        options = {kind: _candidates(windows[kind], kind, anchor, duration, faces, used) for kind in _FOOTAGE_ROLE}
-        recent = [s.kind for s in suggestions[-2:]]
-        kind = "wide" if options["wide"] and (not options["reaction"] or recent == ["reaction", "reaction"]) else "reaction"
-        if not options[kind]:
+    ordered = sorted(picked, key=lambda item: item[2])
+    for position, (anchor, duration, output_start) in enumerate(ordered):
+        found = options(anchor, duration, used)
+        if verify is not None:
+            found = _checked(found, duration, anchor, verify)
+        kind = _kind_for(position, len(ordered))
+        # The last slots go to a kind the clip still lacks, the interviewer first.
+        missing = [k for k in ("reaction", "wide") if found[k] and all(s.kind != k for s in suggestions)]
+        if missing and len(ordered) - position <= len(missing) and kind not in missing:
+            kind = missing[0]
+        if not found[kind]:
+            kind = "wide" if kind == "reaction" else "reaction"
+        if not found[kind]:
             continue
-        chosen, *rest = options[kind]
+        chosen, *rest = found[kind]
         other = "wide" if kind == "reaction" else "reaction"
-        alternatives = [*rest[:ALTERNATIVES - 1], *options[other][:1]]
-        used.append((chosen.source_start - CLIP_MARGIN, chosen.source_start + duration + CLIP_MARGIN))
+        alternatives = [*rest[:ALTERNATIVES - 1], *found[other][:1]]
+        if abs(chosen.source_start - anchor) >= 1e-3:  # the live wide is the clip's own moment
+            used.append((chosen.source_start - CLIP_MARGIN, chosen.source_start + duration + CLIP_MARGIN))
         identity = f"{SCENE_SUGGESTIONS_VERSION}:{kind}:{anchor:.2f}:{chosen.source_start:.2f}"
         suggestions.append(SceneSuggestion(
             id="sc-" + hashlib.sha1(identity.encode()).hexdigest()[:12], kind=kind,

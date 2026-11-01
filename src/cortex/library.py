@@ -92,6 +92,11 @@ class EpisodeLibrary:
             rows = connection.execute("SELECT data FROM episode_library ORDER BY rowid").fetchall()
         return [Episode.model_validate_json(row[0]) for row in rows]
 
+    def for_project(self, project_id: str) -> Episode | None:
+        """The episode a project belongs to (an active one before an archived copy)."""
+        found = [episode for episode in self._stored_entries() if project_id in episode.project_ids]
+        return min(found, key=lambda episode: episode.archived, default=None)
+
     @serialized
     def set_archived(self, episode_id: str, archived: bool = True) -> Episode:
         episode = self.get(episode_id)

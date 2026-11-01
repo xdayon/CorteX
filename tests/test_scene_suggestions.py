@@ -108,6 +108,43 @@ def test_suggestions_follow_the_placement_rules():
     assert again == result
 
 
+def test_every_clip_gets_an_establishing_wide_and_a_reaction():
+    plan = _plan([EditSegment(start=20, end=60, timeline_order=0)])
+    words = _words(20, 60)
+    result = suggest_scenes(plan, _camera_map(SHOTS), ROLES, TURNS, words, D)
+    kinds = [s.kind for s in result.suggestions]
+    # 40 s of clip: the minimum of two, the studio first, then the interviewer.
+    assert kinds == ["wide", "reaction"]
+    assert result.suggestions[0].source_start >= 150.3 and result.suggestions[0].group == 2
+    # Longer clips alternate reaction, reaction, wide after the opening wide.
+    long_plan = _plan([EditSegment(start=20, end=100, timeline_order=0)])
+    long_kinds = [s.kind for s in suggest_scenes(long_plan, _camera_map(SHOTS), ROLES, TURNS, _words(20, 100), D).suggestions]
+    assert long_kinds[:4] == ["wide", "reaction", "reaction", "wide"] and long_kinds.count("reaction") >= 2
+
+
+def test_live_wide_when_the_episode_has_no_studio_footage():
+    plan = _plan([EditSegment(start=20, end=60, timeline_order=0)])
+    words = _words(20, 60)
+    no_studio = {**ROLES, 2: "ignore"}
+    result = suggest_scenes(plan, _camera_map(SHOTS), no_studio, TURNS, words, D)
+    wide = next(s for s in result.suggestions if s.kind == "wide")
+    # The two-shot on air, unzoomed: the clip's own moment, so it stays in sync.
+    assert wide.source_start == wide.anchor and wide.group == 0
+    assert wide.reason == "Plano aberto da câmera no ar, sem zoom"
+    assert any(s.kind == "reaction" for s in result.suggestions)
+    # A close-up on air unzoomed is the last resort, still the only way to show the set.
+    close_up = _camera_map(SHOTS).model_copy(deep=True)
+    close_up.groups[0].faces = 1
+    found = suggest_scenes(plan, close_up, no_studio, TURNS, words, D).suggestions
+    assert [s.kind for s in found] == ["wide", "reaction"] and found[0].score == 0.2 < wide.score
+
+
+def test_a_clip_with_room_for_one_insert_shows_the_interviewer():
+    plan = _plan([EditSegment(start=20, end=31, timeline_order=0)])
+    result = suggest_scenes(plan, _camera_map(SHOTS), ROLES, TURNS, _words(20, 31), D)
+    assert [s.kind for s in result.suggestions] == ["reaction"]
+
+
 def test_no_suggestion_over_another_camera_or_another_voice():
     plan = _plan([EditSegment(start=20, end=60, timeline_order=0)])
     words = _words(20, 60)
@@ -143,7 +180,25 @@ def _persist(tmp_path: Path, domain, source, name: str, stage: str, payload: str
     ))
 
 
-def test_api_scenes_statuses_and_reviews(tmp_path, video):  # noqa: F811
+def accept_footage(monkeypatch) -> list:
+    """The API and the worker check borrowed footage by decoding it; the synthetic maps
+    here have no thumbnails, so the check accepts everything and records the batches."""
+    from cortex.analyze.footage_check import FootageChecker
+
+    batches: list = []
+
+    def verifier(_self, _roles):
+        def verify(items):
+            batches.append(list(items))
+            return [True] * len(items)
+        return verify
+
+    monkeypatch.setattr(FootageChecker, "verifier", verifier)
+    return batches
+
+
+def test_api_scenes_statuses_and_reviews(tmp_path, video, monkeypatch):  # noqa: F811
+    checked = accept_footage(monkeypatch)
     config, _jobs, domain, source = _setup(tmp_path, video)
     client = ASGITestClient(create_app(config))
     episode = next(e for e in client.get("/api/v1/episodes").json() if source.project_id in e["project_ids"])
@@ -170,15 +225,24 @@ def test_api_scenes_statuses_and_reviews(tmp_path, video):  # noqa: F811
     voice = _persist(tmp_path, domain, source, "voice", "diarization", DiarizationDocument(
         engine="voice-match", engine_version="1", requested_device="cpu", effective_device="cpu",
         elapsed_seconds=1, turns=TURNS).model_dump_json())
-    camera = _camera_map(SHOTS).model_copy(update={"project_id": source.project_id, "voice_artifact_id": voice.id})
+    other_media = _camera_map(SHOTS).model_copy(update={"project_id": source.project_id, "voice_artifact_id": voice.id})
+    _persist(tmp_path, domain, source, "other", "camera_map", other_media.model_dump_json())
+    # A map of another file of the episode has other clocks: never used.
+    assert client.get(url).json()["status"] == "needs_camera_map"
+    camera = other_media.model_copy(update={"source_sha256": source.sha256})
     camera_artifact = _persist(tmp_path, domain, source, "camera", "camera_map", camera.model_dump_json())
-    assert client.get(url).json()["status"] == "needs_roles"
+    # Unconfirmed roles come from the voice share and faces; without voice share only the
+    # three-face group gets one (wide), so there is no base camera to cut away from.
+    unconfirmed = client.get(url).json()
+    assert unconfirmed["status"] == "ok" and unconfirmed["roles_source"] == "suggested"
+    assert unconfirmed["camera_map_artifact_id"] == camera_artifact.id and unconfirmed["suggestions"] == []
     roles = client.request("PUT", f"/api/v1/episodes/{episode['id']}/cameras/roles", json={
         "artifact_id": camera_artifact.id, "roles": {str(k): v for k, v in ROLES.items()}})
     assert roles.status_code == 200
 
     body = client.get(url).json()
     assert body["status"] == "ok" and body["source_asset_id"] == source.id and body["suggestions"]
+    assert body["roles_source"] == "confirmed" and checked
     assert body["question"]["end"] <= 20.0 and body["review"] == {"accepted": 0, "rejected": 0, "approval_rate": None}
     first, *rest = [s["id"] for s in body["suggestions"]]
     reviews = f"/api/v1/episodes/{episode['id']}/scene-reviews"
@@ -189,3 +253,25 @@ def test_api_scenes_statuses_and_reviews(tmp_path, video):  # noqa: F811
     assert cleared["accepted"] == 0
     assert client.request("PUT", reviews, json={"decisions": {first: "maybe"}}).status_code == 422
     assert json.loads(Path(camera_artifact.path).read_text())["voice_artifact_id"] == voice.id
+
+
+def test_a_verifier_rejects_footage_and_the_next_candidate_is_used():
+    plan = _plan([EditSegment(start=20, end=60, timeline_order=0)])
+    words = _words(20, 60)
+    plain = suggest_scenes(plan, _camera_map(SHOTS), ROLES, TURNS, words, D)
+    reaction = next(s for s in plain.suggestions if s.kind == "reaction")
+    asked: list[tuple[str, float, float]] = []
+
+    def verify(items):
+        asked.extend(items)
+        return [not (kind == "reaction" and abs(start - reaction.source_start) < 1e-6) for kind, start, _d in items]
+
+    checked = suggest_scenes(plan, _camera_map(SHOTS), ROLES, TURNS, words, D, verify=verify)
+    replaced = next(s for s in checked.suggestions if s.kind == "reaction")
+    assert replaced.source_start != reaction.source_start and replaced.anchor == reaction.anchor
+    assert all(c.source_start != reaction.source_start for s in checked.suggestions for c in s.alternatives)
+    # Only borrowed footage is decoded, a few candidates per kind and insert.
+    assert asked and all(kind in {"reaction", "wide"} for kind, _s, _d in asked)
+    # Nothing confirmed: only the live wide (the clip's own moment) is left.
+    nothing = suggest_scenes(plan, _camera_map(SHOTS), ROLES, TURNS, words, D, verify=lambda items: [False] * len(items))
+    assert nothing.suggestions and all(s.kind == "wide" and s.source_start == s.anchor for s in nothing.suggestions)

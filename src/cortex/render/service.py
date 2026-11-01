@@ -1548,6 +1548,9 @@ class RenderService:
         headline_text = normalize_headline_text(requested_settings.headline.text)
         effective_settings = requested_settings.model_copy(update={
             "encoder": requested_encoder,
+            # None (automatic triangulation) is resolved by the render worker before this
+            # call; whatever is left unresolved renders without inserts.
+            "inserts": requested_settings.inserts or [],
             "framing": requested_settings.framing.model_copy(update={
                 "position_y": (requested_settings.framing.position_y
                                if requested_settings.framing.mode == "blurred_background" else 0.5),
