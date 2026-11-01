@@ -18,6 +18,15 @@ de voz). Papéis sugeridos conferidos pelas miniaturas:
 - `y7pj7E-blLo` (Filhos do Todo): 9 de 9 grupos certos. Dayon com D 0,91–0,98,
   apresentador com 0,03. É um podcast só de closes, sem câmera aberta.
 - `wk7PY31TQBc`: papéis já confirmados pelo Dayon; nada muda.
+- `Rn_7McUFPF8` (Na Fogueira com Elas): tudo certo. Closes do Dayon (D 0,87–0,97),
+  closes da apresentadora como entrevistadora (0,05–0,10), mesa a dois como base (0,76).
+- `0feL2iE8Ubw` (Prosa Inversa): closes do Dayon (D 0,82–1,0) e do apresentador
+  (0–0,06) certos; planos a dois na mesa (0,22–0,45) ficam como base ou sem papel.
+- `EgHjfefLt0w` (FritaMente): Dayon certo (D 0,83–0,90). Os planos com os dois
+  apresentadores (2 rostos, D ≤ 0,10) e o estúdio com 3 rostos viram plano aberto. Sem
+  close individual de apresentador, a cena do entrevistador vem desses planos inteiros.
+- `aKnMQWta8lo` e `kh76Q_cEUKY` (vídeos solo do Dayon News): todo grupo é subject, sem
+  entrevistador (correto); só entra o plano aberto ao vivo.
 
 ## Composição v2 (61 planos de edição guardados, sem decodificar)
 
