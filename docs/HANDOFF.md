@@ -1,6 +1,6 @@
 # CorteX — estado atual para agentes
 
-Atualizado em 2026-10-23. Histórico anterior em
+Atualizado em 2026-11-01. Histórico anterior em
 [history](history/HANDOFF_FABLE_5-before-2026-09-10.md) — não é fila de instruções.
 
 ## Produto e restrições
@@ -21,43 +21,40 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 → analisa áudio → voz do protagonista (perfil de voz, rótulos D/O por frase)
 → seleção Claude (1 chamada/episódio, transcrição em cache) → Studio: cortes integrados
 → editor de estúdio (refino Claude por corte, fila de prévias draft) → plano de edição
-→ render libass com quadros exatos por segmento → QA técnico → MP4/SRT/manifest
+→ triangulação automática (inserções) → render libass com quadros exatos por segmento
+→ QA técnico → MP4/SRT/manifest
 ```
 
-## Entregue em 23/out (branch `feat/triangulation-scenes`, pede restart + rebuild)
+Depois da seleção, o worker enfileira sozinho o mapa de câmeras do episódio (com perfil
+de voz).
 
-- Prévias quebradas com fade depois de corte seco ou foco por rosto (`xfade` com bases de
-  tempo diferentes) corrigidas.
-- Triangulação B–E ([plano](TRIANGULATION.md),
-  [evidência](evidence/2026-10-23-scene-suggestions.md)):
-  - sugestões de cena por corte (reação calada, plano aberto);
-  - inserções que trocam só a imagem;
-  - abertura com o fim da pergunta;
-  - "Aplicar triangulação";
-  - etapas do episódio no Studio e aba Cenas no editor.
+## Entregue em 01/nov (branch `feat/triangulation-auto`, pede restart + rebuild)
 
-## Entregue em 19/out
+Triangulação automática por padrão ([plano](TRIANGULATION.md),
+[evidência](evidence/2026-11-01-auto-triangulation.md)):
 
-- Legenda: linhas equilibradas por página (sem palavra solta na 2ª linha, evita fechar
-  linha em artigo/preposição, prefere quebrar após pontuação) e quebra manual por palavra
-  (`captions.line_break_word_indices`, revisão `line_breaks`, botão no editor da palavra);
-  `ASS_GENERATOR_VERSION` 6 refaz overlays e exports.
-- Downloads de MP4/SRT com o nome da manchete do corte (`render_download_name`).
+- todo corte sem escolha própria ganha plano aberto + entrevistador, resolvidos pelo
+  worker de render (prévia = export);
+- imagem emprestada conferida por quadros, porque o mapa por keyframes perde cortes;
+- papéis de câmera vindos da voz até alguém confirmar;
+- aba Cenas com "Automáticas" e "Voltar ao automático".
 
-## Entregue em 16/out
+## Entregas anteriores
 
-Cortes integrados ao episódio (estados aprovado/descartado/salvo, exports ligados ao
-corte), Studio novo (episódios, editor de estúdio com fila de prévias e ajustes por
-corte), voz do protagonista em ~3 min ([voice-match](evidence/2026-10-16-voice-match.md)),
-correção de deriva A/V ([av-sync](evidence/2026-10-16-av-sync-drift.md)).
+- 23/out: triangulação B–E manual ([evidência](evidence/2026-10-23-scene-suggestions.md)) e
+  prévias com fade corrigidas.
+- 19/out: legenda com linhas equilibradas e quebra manual; downloads com o nome da manchete.
+- 16/out: cortes integrados ao episódio, Studio novo, voz do protagonista
+  ([voice-match](evidence/2026-10-16-voice-match.md)), deriva A/V corrigida
+  ([av-sync](evidence/2026-10-16-av-sync-drift.md)).
 
 ## Próximo gate
 
-1. Usuário: merge do branch e `./scripts/update_and_verify.sh` (testa, compila e reinicia
-   com segurança).
-2. Dayon revisa as sugestões da aba Cenas em 2–3 episódios. Meta: aprovação ≥ 80 %
-   (`GET /episodes/{id}/scenes` → `review`). Só depois avaliar o automático ligado por
-   padrão e a pergunta no prompt de seleção.
+1. Merge de `feat/triangulation-auto` e `./scripts/update_and_verify.sh` (testa, compila
+   e reinicia com segurança, sem job ativo).
+2. Dayon revisa cortes automáticos de 2–3 episódios na aba Cenas. Meta: ≥ 80 % das cenas
+   mantidas (`GET /episodes/{id}/scenes` → `review`). Depois, avaliar a pergunta no
+   prompt de seleção (worktree).
 3. Prévias mais rápidas (QA mais barato e prévia progressiva nos drafts). Drive
    automático e acesso remoto ficam parados até o usuário pedir.
 

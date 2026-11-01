@@ -83,9 +83,13 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
 - [x] D: abertura com o fim da pergunta (determinística, por corte).
 - [x] E: "Aplicar triangulação" no editor (desligado por padrão).
 - [x] Studio: etapas do episódio e aba Cenas no editor (essencial × opcional).
-- [ ] Usuário aprova ≥ 80 % das sugestões em 2–3 episódios.
-- [ ] Depois do aceite: automático por padrão e a seleção da IA preferir cortes com
-  pergunta (prompt avaliado em worktree antes do merge).
+- [x] Triangulação automática por padrão (pedido do Dayon em 01/nov): todo corte sem
+  escolha própria ganha plano aberto + entrevistador; mapa de câmeras roda sozinho após a
+  seleção; papéis pela voz até alguém confirmar; imagem emprestada conferida por quadros
+  ([evidência](evidence/2026-11-01-auto-triangulation.md)).
+- [ ] Dayon revisa cortes automáticos de 2–3 episódios (meta: ≥ 80 % das cenas mantidas,
+  `GET /episodes/{id}/scenes` → `review`).
+- [ ] Seleção da IA preferir cortes com pergunta (prompt avaliado em worktree antes do merge).
 
 ## Regras de aceite
 
