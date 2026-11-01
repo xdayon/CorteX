@@ -47,7 +47,7 @@ test("downloaded episode: generate, register the voice and map the cameras", asy
   fireEvent.click(screen.getByRole("button", { name: "Cadastrar voz" }));
   expect(handlers.onVoice).toHaveBeenCalled();
   expect(step("Câmeras").textContent).toContain("Opcional");
-  expect(step("Câmeras").textContent).toContain("Recomendado para cenas");
+  expect(step("Câmeras").textContent).toContain("Plano aberto e entrevistador nos cortes");
   fireEvent.click(screen.getByRole("button", { name: "Mapear câmeras" }));
   await act(async () => {});
   expect(api.mapEpisodeCameras).toHaveBeenCalledWith("ep");
@@ -59,7 +59,7 @@ test("processing shows 'Em andamento' on the selection step and hides its action
   expect(screen.queryByRole("button", { name: "Gerar seleção" })).toBeNull();
 });
 
-test("a mapped camera set without roles asks to confirm; a running job polls every 3 s", async () => {
+test("a running job polls every 3 s; a mapped camera set is ready with the roles from the voice, to check if wanted", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
   vi.mocked(api.episodeCameras).mockResolvedValueOnce(cameras(null, { id: "j", status: "running" })).mockResolvedValue(cameras(null));
   await show(entry({ source }));
@@ -67,7 +67,9 @@ test("a mapped camera set without roles asks to confirm; a running job polls eve
   expect(screen.queryByRole("button", { name: "Mapear câmeras" })).toBeNull();
   await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
   expect(api.episodeCameras).toHaveBeenCalledTimes(2);
-  fireEvent.click(screen.getByRole("button", { name: "Confirmar câmeras" }));
+  expect(step("Câmeras").textContent).toContain("Identificadas pela voz");
+  expect(step("Câmeras").textContent).toContain("Feito");
+  fireEvent.click(screen.getByRole("button", { name: "Conferir" }));
   expect(handlers.onCameras).toHaveBeenCalled();
 });
 

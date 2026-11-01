@@ -310,7 +310,8 @@ export type RenderSettings = {
     teaser: boolean;
     question?: QuestionWindow | null;
   };
-  inserts?: RenderInsert[];
+  /** Per clip. Absent or null: automatic triangulation (every scene suggestion); a list is the clip's own choice. */
+  inserts?: RenderInsert[] | null;
 };
 
 export type QuestionWindow = {start: number; end: number};
@@ -323,8 +324,8 @@ export type SceneSuggestion = {
 export type SceneDecision = "accepted" | "rejected";
 export type SceneReview = {accepted: number; rejected: number; approval_rate: number | null};
 export type SceneSuggestions = {
-  status: "ok" | "needs_camera_map" | "needs_roles" | "needs_voice"; algorithm_version: string | number; project_id: string; source_asset_id: string;
-  camera_map_artifact_id: string | null; suggestions: SceneSuggestion[]; question: {start: number; end: number; text: string} | null;
+  status: "ok" | "needs_camera_map" | "needs_voice"; algorithm_version: string | number; project_id: string; source_asset_id: string;
+  camera_map_artifact_id: string | null; roles_source?: "confirmed" | "suggested" | null; suggestions: SceneSuggestion[]; question: {start: number; end: number; text: string} | null;
   decisions: Record<string, SceneDecision>; review: SceneReview;
 };
 export type VoiceProfile = {

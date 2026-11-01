@@ -25,14 +25,15 @@ const sceneData = (extra: Partial<SceneSuggestions> = {}): SceneSuggestions => (
 
 const saved: Array<RenderSettings> = [];
 const refresh = vi.fn();
-function Harness({ initial, planId = "plan", loading = false, error = "", seek = vi.fn() }: { initial: SceneSuggestions | null; planId?: string | null; loading?: boolean; error?: string; seek?: (s: number) => void }) {
-  const [settings, setSettings] = useState<RenderSettings>(defaultRenderSettings);
+function Harness({ initial, planId = "plan", loading = false, error = "", seek = vi.fn(), own }: { initial: SceneSuggestions | null; planId?: string | null; loading?: boolean; error?: string; seek?: (s: number) => void; own?: RenderSettings["inserts"] }) {
+  const [settings, setSettings] = useState<RenderSettings>(own === undefined ? defaultRenderSettings : { ...defaultRenderSettings, inserts: own });
   const [data, setData] = useState(initial);
   saved[0] = settings;
   const scenes: SceneData = { data, loading, error, refresh, patch: change => setData(current => (current ? change(current) : current)) };
   return <ToastProvider><ScenesTab scenes={scenes} planId={planId} entryId="ep" settings={settings} update={change => setSettings(change)} onSeek={seek} disabled={false} /></ToastProvider>;
 }
-const inserts = () => saved[0].inserts ?? [];
+const inserts = () => saved[0].inserts;
+const auto = (id: string, anchor: number, extra = {}) => ({ kind: "reaction", anchor, duration: 1.8, source_start: 500 + anchor, group: 1, suggestion_id: id, ...extra });
 
 beforeEach(() => {
   vi.resetAllMocks(); saved.length = 0;
@@ -54,13 +55,13 @@ test("without a plan the tab shows a skeleton, and a failed load offers to retry
   expect(refresh).toHaveBeenCalledTimes(1);
 });
 
-test("needs_camera_map maps the cameras, polls the job and refreshes when it finishes", async () => {
+test("needs_camera_map starts mapping by itself, polls the job and refreshes when it finishes", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.mocked(api.mapEpisodeCameras).mockResolvedValue({ id: "j1", status: "running", progress: 10, message: "Mapeando" } as never);
   vi.mocked(api.job).mockResolvedValueOnce({ id: "j1", status: "running", progress: 60 } as never).mockResolvedValueOnce({ id: "j1", status: "succeeded", progress: 100 } as never);
   render(<Harness initial={sceneData({ status: "needs_camera_map", suggestions: [] })} />);
-  fireEvent.click(screen.getByRole("button", { name: "Mapear câmeras do episódio (~2 min)" }));
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(api.mapEpisodeCameras).toHaveBeenCalledWith("ep");
   expect(screen.getByRole("progressbar", { name: "Mapeando câmeras" })).toBeTruthy();
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
@@ -68,11 +69,22 @@ test("needs_camera_map maps the cameras, polls the job and refreshes when it fin
   expect(refresh).toHaveBeenCalledTimes(1);
 });
 
-test("needs_roles and needs_voice open the existing dialogs", async () => {
+test("a failed mapping offers to try again", async () => {
+  vi.mocked(api.mapEpisodeCameras).mockRejectedValueOnce(new Error("sem vídeo")).mockResolvedValue({ id: "j1", status: "succeeded" } as never);
+  render(<Harness initial={sceneData({ status: "needs_camera_map", suggestions: [] })} />);
+  await act(async () => {});
+  expect(screen.getByRole("alert").textContent).toContain("sem vídeo");
+  fireEvent.click(screen.getByRole("button", { name: "Tentar de novo" }));
+  await act(async () => {});
+  expect(api.mapEpisodeCameras).toHaveBeenCalledTimes(2);
+  expect(refresh).toHaveBeenCalledTimes(1);
+});
+
+test("roles suggested by the voice can be checked, and needs_voice opens the voice dialog", async () => {
   vi.mocked(api.episodes).mockResolvedValue([{ id: "ep", title: "Ep" } as EpisodeEntry]);
-  render(<Harness initial={sceneData({ status: "needs_roles" })} />);
-  expect(screen.getByText("Confirme quem aparece em cada câmera")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Confirmar câmeras" }));
+  render(<Harness initial={sceneData({ roles_source: "suggested" })} />);
+  expect(screen.getByText(/Câmeras identificadas pela voz/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Conferir câmeras" }));
   await act(async () => {});
   expect(screen.getByText("Dialog de câmeras ep")).toBeTruthy();
   cleanup();
@@ -82,45 +94,43 @@ test("needs_roles and needs_voice open the existing dialogs", async () => {
   expect(screen.getByText("Dialog de voz ep")).toBeTruthy();
 });
 
-test("accepting adds a clip-scoped insert with its suggestion id and saves the review; the same click again clears it", async () => {
+test("automatic: every suggestion is in the clip until a change makes the list the clip's own", async () => {
   render(<Harness initial={sceneData()} />);
-  expect(screen.getByText("0 de 2 aceitas")).toBeTruthy();
+  expect(screen.getByText("Automáticas")).toBeTruthy();
+  expect(screen.getByText(/O CorteX já colocou o plano aberto e o entrevistador/)).toBeTruthy();
   expect(screen.getByText("Aprovação no episódio: 83 %")).toBeTruthy();
-  fireEvent.click(within(row("Reação em 0:10")).getByRole("button", { name: "Aceitar" }));
-  await act(async () => {});
-  expect(inserts()).toEqual([{ kind: "reaction", anchor: 110, duration: 1.8, source_start: 610, group: 1, suggestion_id: "a" }]);
-  expect(api.saveSceneReviews).toHaveBeenCalledWith("ep", { a: "accepted" });
-  expect(screen.getByText("1 de 2 aceitas")).toBeTruthy();
+  expect(inserts()).toBeUndefined();
+  expect(within(row("Reação em 0:10")).getByRole("button", { name: "Aceita" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Voltar ao automático" })).toBeNull();
+  // The same click again takes it out; the other one stays.
   fireEvent.click(within(row("Reação em 0:10")).getByRole("button", { name: "Aceita" }));
   await act(async () => {});
-  expect(inserts()).toEqual([]);
-  expect(api.saveSceneReviews).toHaveBeenLastCalledWith("ep", { a: null });
+  expect(inserts()).toEqual([auto("b", 120, { kind: "wide" })]);
+  expect(api.saveSceneReviews).toHaveBeenCalledWith("ep", { a: null });
+  expect(screen.getByText("1 de 2 aceitas")).toBeTruthy();
+  fireEvent.click(within(row("Reação em 0:10")).getByRole("button", { name: "Aceitar" }));
+  await act(async () => {});
+  expect(inserts()).toEqual([auto("a", 110), auto("b", 120, { kind: "wide" })]);
+  expect(api.saveSceneReviews).toHaveBeenLastCalledWith("ep", { a: "accepted" });
+  fireEvent.click(screen.getByRole("button", { name: "Voltar ao automático" }));
+  expect(inserts()).toBeUndefined();
+  expect(screen.getByText("Automáticas")).toBeTruthy();
 });
 
 test("rejecting removes the insert and saves 'rejected'; the thumbnail points at the middle of the footage", async () => {
   render(<Harness initial={sceneData()} />);
   expect(row("Reação em 0:10").querySelector("img")?.getAttribute("src")).toBe("/frame/610.9.jpg");
-  fireEvent.click(within(row("Reação em 0:10")).getByRole("button", { name: "Aceitar" }));
   fireEvent.click(within(row("Reação em 0:10")).getByRole("button", { name: "Recusar" }));
   await act(async () => {});
-  expect(inserts()).toEqual([]);
+  expect(inserts()).toEqual([auto("b", 120, { kind: "wide" })]);
   expect(api.saveSceneReviews).toHaveBeenLastCalledWith("ep", { a: "rejected" });
   expect(within(row("Reação em 0:10")).getByRole("button", { name: "Recusada" })).toBeTruthy();
 });
 
-test("Aplicar triangulação accepts every pending suggestion at once, skipping the rejected", async () => {
-  render(<Harness initial={sceneData({ decisions: { b: "rejected" } })} />);
-  fireEvent.click(screen.getByRole("button", { name: "Aplicar triangulação" }));
-  await act(async () => {});
-  expect(inserts().map(item => item.suggestion_id)).toEqual(["a"]);
-  expect(api.saveSceneReviews).toHaveBeenCalledTimes(1);
-  expect(api.saveSceneReviews).toHaveBeenCalledWith("ep", { a: "accepted" });
-  expect((screen.getByRole("button", { name: "Aplicar triangulação" }) as HTMLButtonElement).disabled).toBe(true);
-});
-
 test("a failed review save keeps the insert and warns", async () => {
   vi.mocked(api.saveSceneReviews).mockRejectedValue(new Error("rede"));
-  render(<Harness initial={sceneData()} />);
+  render(<Harness initial={sceneData()} own={[]} />);
+  expect(screen.getByText("0 de 2 aceitas")).toBeTruthy();
   fireEvent.click(within(row("Reação em 0:10")).getByRole("button", { name: "Aceitar" }));
   await act(async () => {});
   expect(inserts()).toHaveLength(1);
@@ -153,13 +163,12 @@ test("no question shows a muted line; Ver opens the source player without autopl
 test("Trocar cycles the alternatives and updates an accepted insert", async () => {
   render(<Harness initial={sceneData()} />);
   const wide = () => row("Plano aberto em 0:20");
-  fireEvent.click(within(wide()).getByRole("button", { name: "Aceitar" }));
   fireEvent.click(within(wide()).getByRole("button", { name: "Trocar" }));
   await act(async () => {});
-  expect(inserts()).toEqual([{ kind: "reaction", anchor: 120, duration: 1.8, source_start: 777, group: 2, suggestion_id: "b" }]);
+  expect(inserts()).toEqual([auto("a", 110), auto("b", 120, { source_start: 777, group: 2 })]);
   expect(screen.getByRole("listitem", { name: "Reação em 0:20" })).toBeTruthy();
   fireEvent.click(within(screen.getByRole("listitem", { name: "Reação em 0:20" })).getByRole("button", { name: "Trocar" }));
-  expect(inserts()[0]).toMatchObject({ kind: "wide", source_start: 620, group: 1 });
+  expect(inserts()![1]).toMatchObject({ kind: "wide", source_start: 620, group: 1 });
 });
 
 test("accepted inserts missing from the current suggestions are listed apart and can be removed", () => {
@@ -172,6 +181,6 @@ test("accepted inserts missing from the current suggestions are listed apart and
   render(<Orphan />);
   const group = screen.getByRole("region", { name: "Fora do corte atual" });
   fireEvent.click(within(group).getByRole("button", { name: "Remover" }));
-  expect(inserts()).toEqual([]);
+  expect(saved[0].inserts).toEqual([]);
   expect(screen.queryByRole("region", { name: "Fora do corte atual" })).toBeNull();
 });

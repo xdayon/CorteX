@@ -60,7 +60,9 @@ export function EpisodeSteps({ entry, processing, onDownload, onGenerate, onVoic
   }
 
   const hasRoles = !!cameras?.roles && Object.keys(cameras.roles).length > 0;
-  const camerasState: State = cameras === undefined && entry.source ? "checking" : hasRoles ? "done" : running ? "running" : "optional";
+  // A mapped episode is ready: the roles come from the voice until someone confirms them.
+  const mapped = hasRoles || !!cameras?.document;
+  const camerasState: State = cameras === undefined && entry.source ? "checking" : running ? "running" : mapped ? "done" : "optional";
   const steps: Step[] = [
     entry.source ? { id: "video", title: "Vídeo", note: "Vídeo guardado", state: "done" }
       : { id: "video", title: "Vídeo", note: "Baixe o episódio para editar", state: processing ? "running" : "pending", action: entry.url && !processing ? { label: "Baixar vídeo", onClick: onDownload } : undefined },
@@ -72,10 +74,10 @@ export function EpisodeSteps({ entry, processing, onDownload, onGenerate, onVoic
         : { id: "voice", title: "Voz do Dayon", note: "Essencial para cenas", state: "pending", action: { label: "Cadastrar voz", onClick: onVoice, disabled: !entry.source } },
     {
       id: "cameras", title: "Câmeras", state: camerasState,
-      note: hasRoles ? "Câmeras confirmadas" : cameras?.document ? "Falta confirmar quem é quem" : "Recomendado para cenas",
+      note: running ? "Mapeando câmeras…" : hasRoles ? "Câmeras confirmadas" : cameras?.document ? "Identificadas pela voz" : "Plano aberto e entrevistador nos cortes",
       action: !entry.source || camerasState === "checking" || running ? undefined
         : hasRoles ? { label: "Revisar", onClick: onCameras, ghost: true }
-          : cameras?.document ? { label: "Confirmar câmeras", onClick: onCameras }
+          : cameras?.document ? { label: "Conferir", onClick: onCameras, ghost: true }
             : { label: "Mapear câmeras", onClick: () => void mapCameras() },
     },
   ];

@@ -35,7 +35,10 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
   const list = data?.suggestions;
   useEffect(() => { setChoice({}); setWatching(null); }, [list]);
 
-  const inserts = settings.inserts ?? [];
+  // No list of its own: the clip gets every suggestion (the render worker resolves the same).
+  const automatic = settings.inserts == null;
+  const autoInserts = useMemo(() => (list ?? []).map(insertOf), [list]);
+  const inserts = settings.inserts ?? autoInserts;
   const suggestions = useMemo(() => (list ?? []).map(item => {
     const pick = cycleOf(item)[choice[item.id] ?? 0] ?? cycleOf(item)[0];
     return { ...item, kind: pick.kind, source_start: pick.source_start, group: pick.group, score: pick.score };
@@ -59,35 +62,32 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
     try { await api.saveSceneReviews(entryId, changes); } catch (reason) { toast(`Não foi possível salvar a avaliação: ${errorText(reason)}`, "bad"); }
   }, [entryId, patch, toast]);
 
+  // Any change starts from what the clip shows now (the automatic pick included) and keeps it as the clip's own list.
+  const currentOf = (s: RenderSettings) => s.inserts ?? autoInserts;
   function accept(item: SceneSuggestion) {
     if (accepted.has(item.id)) {
-      update(s => ({ ...s, inserts: (s.inserts ?? []).filter(insert => insert.suggestion_id !== item.id) }));
+      update(s => ({ ...s, inserts: currentOf(s).filter(insert => insert.suggestion_id !== item.id) }));
       void save({ [item.id]: null });
       return;
     }
-    update(s => ({ ...s, inserts: byAnchor([...(s.inserts ?? []).filter(insert => insert.suggestion_id !== item.id), insertOf(item)]) }));
+    update(s => ({ ...s, inserts: byAnchor([...currentOf(s).filter(insert => insert.suggestion_id !== item.id), insertOf(item)]) }));
     void save({ [item.id]: "accepted" });
   }
   function reject(item: SceneSuggestion) {
     if (decisions[item.id] === "rejected" && !accepted.has(item.id)) { void save({ [item.id]: null }); return; }
-    update(s => ({ ...s, inserts: (s.inserts ?? []).filter(insert => insert.suggestion_id !== item.id) }));
+    update(s => ({ ...s, inserts: currentOf(s).filter(insert => insert.suggestion_id !== item.id) }));
     void save({ [item.id]: "rejected" });
   }
-  function applyAll() {
-    const pending = suggestions.filter(item => decisions[item.id] !== "rejected" && !accepted.has(item.id));
-    if (!pending.length) return;
-    update(s => ({ ...s, inserts: byAnchor([...(s.inserts ?? []), ...pending.map(insertOf)]) }));
-    void save(Object.fromEntries(pending.map(item => [item.id, "accepted" as const])));
-  }
+  const backToAutomatic = () => { setChoice({}); update(s => ({ ...s, inserts: undefined })); };
   function swap(item: SceneSuggestion) {
     const cycle = cycleOf(data!.suggestions.find(original => original.id === item.id)!);
     const next = ((choice[item.id] ?? 0) + 1) % cycle.length;
     setChoice(current => ({ ...current, [item.id]: next }));
     if (!accepted.has(item.id)) return;
     const pick = cycle[next];
-    update(s => ({ ...s, inserts: (s.inserts ?? []).map(insert => insert.suggestion_id === item.id ? { ...insert, kind: pick.kind, source_start: pick.source_start, group: pick.group } : insert) }));
+    update(s => ({ ...s, inserts: currentOf(s).map(insert => insert.suggestion_id === item.id ? { ...insert, kind: pick.kind, source_start: pick.source_start, group: pick.group } : insert) }));
   }
-  const removeOrphan = (target: RenderInsert) => update(s => ({ ...s, inserts: (s.inserts ?? []).filter(insert => insert !== target && !(insert.suggestion_id && insert.suggestion_id === target.suggestion_id)) }));
+  const removeOrphan = (target: RenderInsert) => update(s => ({ ...s, inserts: currentOf(s).filter(insert => insert !== target && !(insert.suggestion_id && insert.suggestion_id === target.suggestion_id)) }));
   const setQuestion = (on: boolean) => update(s => ({ ...s, transitions: { ...s.transitions, question: on && data?.question ? { start: data.question.start, end: data.question.end } : null } }));
 
   async function openDialog(kind: "cameras" | "voice") {
@@ -104,12 +104,6 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
   if (loading || !data) return <div className="pane" role="status" aria-label="Procurando cenas"><p className="field-help">Procurando cenas para este corte…</p><Skeleton height={64} /><Skeleton height={64} /></div>;
 
   if (data.status === "needs_camera_map") return <div className="pane"><CameraMapCard entryId={entryId} onDone={refresh} /></div>;
-  if (data.status === "needs_roles") return <div className="pane">
-    <div className="scn-card"><b>Confirme quem aparece em cada câmera</b>
-      <p className="field-help">As câmeras já foram mapeadas. Falta dizer qual é você, quem entrevista e qual é o plano aberto.</p>
-      <Button variant="primary" onClick={() => void openDialog("cameras")}>Confirmar câmeras</Button></div>
-    {dialog?.kind === "cameras" && <CamerasDialog entry={dialog.entry} onClose={closeDialog} />}
-  </div>;
   if (data.status === "needs_voice") return <div className="pane">
     <div className="scn-card"><b>Cadastre a voz do Dayon</b>
       <p className="field-help">Sem o perfil de voz, não dá para saber quando o entrevistador está ouvindo. Confirme a voz do episódio e cadastre o perfil.</p>
@@ -120,7 +114,6 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
   const question = data.question;
   const approval = data.review.approval_rate;
   const live = suggestions.filter(item => accepted.has(item.id)).length;
-  const pendingCount = suggestions.filter(item => decisions[item.id] !== "rejected" && !accepted.has(item.id)).length;
   return <fieldset disabled={disabled} className="pane">
     <legend className="sr-only">Cenas</legend>
     <section className="scn-sec" aria-label="Abertura">
@@ -135,10 +128,15 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
     <section className="scn-sec" aria-label="Inserções">
       <div className="scn-head">
         <span className="lbl">Inserções</span>
-        <Chip tone={live ? "ac" : "neutral"}>{live} de {suggestions.length} aceitas</Chip>
+        <Chip tone={live ? "ac" : "neutral"}>{automatic ? "Automáticas" : `${live} de ${suggestions.length} aceitas`}</Chip>
         <div className="grow" />
-        <Button size="sm" variant="primary" disabled={!pendingCount} onClick={applyAll}>Aplicar triangulação</Button>
+        {!automatic && <Button size="sm" variant="ghost" icon="refresh" onClick={backToAutomatic}>Voltar ao automático</Button>}
       </div>
+      {automatic && suggestions.length > 0 && <p className="field-help">
+        {suggestions.some(item => item.kind === "wide") && suggestions.some(item => item.kind === "reaction")
+          ? "O CorteX já colocou o plano aberto e o entrevistador neste corte." : "O CorteX já colocou estas cenas no corte."} Recuse ou troque uma cena para ajustar à mão.</p>}
+      {data.roles_source === "suggested" && <p className="field-help scn-note">Câmeras identificadas pela voz.
+        <Button size="sm" variant="ghost" onClick={() => void openDialog("cameras")}>Conferir câmeras</Button></p>}
       {approval !== null && <p className="field-help">Aprovação no episódio: {Math.round(approval * 100)} %</p>}
       {!suggestions.length && <p className="field-help">Nenhuma cena sugerida para este corte.</p>}
       <ul className="scn-list">
@@ -179,36 +177,40 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
       <div className="scn-head"><span className="lbl">{watching.label}</span><div className="grow" /><Button size="sm" variant="ghost" onClick={() => setWatching(null)}>Fechar</Button></div>
       <SourcePiecesPlayer key={watching.key} ref={player} src={api.sourceMediaUrl(data.project_id, data.source_asset_id)} pieces={[{ start: watching.start, end: watching.end }]} label={watching.label} />
     </div>}
+    {dialog?.kind === "cameras" && <CamerasDialog entry={dialog.entry} onClose={closeDialog} />}
   </fieldset>;
 }
 
 function CameraMapCard({ entryId, onDone }: { entryId: string; onDone: () => void }) {
   const [progress, setProgress] = useState<{ value: number; message: string } | null>(null);
   const [error, setError] = useState("");
-  const alive = useRef(true);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const [round, setRound] = useState(0);
 
-  async function map() {
-    setError(""); setProgress({ value: 0, message: "Enviando para a fila…" });
-    try {
-      let job = await api.mapEpisodeCameras(entryId);
-      while (alive.current && !FINISHED.includes(job.status)) {
-        setProgress({ value: job.progress || 0, message: job.message || "Mapeando câmeras…" });
-        await new Promise(resolve => setTimeout(resolve, POLL_MS));
-        if (!alive.current) return;
-        job = await api.job(job.id);
-      }
-      if (!alive.current) return;
-      if (job.status !== "succeeded") throw new Error(job.error || job.message || "O mapa de câmeras não terminou.");
-      setProgress(null); onDone();
-    } catch (reason) { if (alive.current) { setError(errorText(reason)); setProgress(null); } }
-  }
+  // Starts by itself: the server returns the job already queued (the episode maps its cameras after the selection).
+  useEffect(() => {
+    let stopped = false;
+    void (async () => {
+      setError(""); setProgress({ value: 0, message: "Enviando para a fila…" });
+      try {
+        let job = await api.mapEpisodeCameras(entryId);
+        while (!stopped && !FINISHED.includes(job.status)) {
+          setProgress({ value: job.progress || 0, message: job.message || "Mapeando câmeras…" });
+          await new Promise(resolve => setTimeout(resolve, POLL_MS));
+          if (stopped) return;
+          job = await api.job(job.id);
+        }
+        if (stopped) return;
+        if (job.status !== "succeeded") throw new Error(job.error || job.message || "O mapa de câmeras não terminou.");
+        setProgress(null); onDone();
+      } catch (reason) { if (!stopped) { setError(errorText(reason)); setProgress(null); } }
+    })();
+    return () => { stopped = true; };
+  }, [entryId, round, onDone]);
 
   return <div className="scn-card">
-    <b>As câmeras do episódio ainda não foram mapeadas</b>
-    <p className="field-help">Para achar reações e planos abertos, o CorteX precisa agrupar os planos do vídeo por câmera. Isso é feito uma vez por episódio.</p>
-    {progress ? <><ProgressBar value={progress.value} label="Mapeando câmeras" /><p className="field-help" role="status">{progress.message}</p></>
-      : <Button variant="primary" onClick={() => void map()}>Mapear câmeras do episódio (~2 min)</Button>}
-    {error && <p role="alert" className="notice bad">{error}</p>}
+    <b>Mapeando as câmeras do episódio</b>
+    <p className="field-help">Feito uma vez por episódio (~2 min). Depois, o plano aberto e o entrevistador entram sozinhos em todos os cortes.</p>
+    {progress && <><ProgressBar value={progress.value} label="Mapeando câmeras" /><p className="field-help" role="status">{progress.message}</p></>}
+    {error && <><p role="alert" className="notice bad">{error}</p><Button variant="primary" onClick={() => setRound(value => value + 1)}>Tentar de novo</Button></>}
   </div>;
 }

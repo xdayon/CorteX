@@ -23,7 +23,7 @@ export function targetOf(row: ClipRow, settings: RenderSettings): Target {
   const teaser = settings.transitions.teaser && row.clip.teaser ? row.clip.teaser : null;
   const question = settings.transitions.question;
   const teaserKey = (teaser ? `${teaser.start}-${teaser.end}` : "") + (question ? `|q${question.start}-${question.end}` : "");
-  const renderKey = JSON.stringify([settings.framing, settings.transitions.piece_junction, settings.inserts ?? []]);
+  const renderKey = JSON.stringify([settings.framing, settings.transitions.piece_junction, settings.inserts ?? "auto"]);
   return { teaserKey, renderKey, errorKey: `${teaserKey}|${renderKey}` };
 }
 

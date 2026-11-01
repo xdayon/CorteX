@@ -51,6 +51,8 @@ test("the opening question re-plans the clip (plan key); accepted inserts only c
   const inserted = targetOf(rows[0], { ...defaultRenderSettings, inserts: [{ kind: "wide", anchor: 5, duration: 2, source_start: 90, suggestion_id: "s" }] });
   expect(inserted.teaserKey).toBe(base.teaserKey);
   expect(inserted.renderKey).not.toBe(base.renderKey);
+  // Automatic (no list) and "no scenes at all" are different renders.
+  expect(targetOf(rows[0], { ...defaultRenderSettings, inserts: [] }).renderKey).not.toBe(base.renderKey);
   const built = { ...EMPTY_PREVIEW, planId: "plan", videoUrl: "/v", renderedKey: base.renderKey };
   expect(needsWork(built, inserted, true)).toBe(true);
   expect(needsWork(built, inserted, false)).toBe(false);

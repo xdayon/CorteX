@@ -57,6 +57,8 @@ export function normalizeSettings(raw: unknown, defaults: RenderSettings = defau
     legacyFraming = true;
     settings.framing = { ...settings.framing, mode: "blurred_background", primary_side: null, scene_overrides: [] };
   }
+  // Inserts are each clip's own content (clip overrides); shared settings never carry them.
+  delete (settings as Partial<RenderSettings>).inserts;
   if (settings.captions.font_family !== "Montserrat") settings.captions = { ...settings.captions, font_family: "Montserrat" };
   if (settings.headline.font_family !== "Montserrat") settings.headline = { ...settings.headline, font_family: "Montserrat" };
   return { settings, legacyFraming };

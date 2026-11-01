@@ -63,3 +63,8 @@ test("transitions saved before the teaser existed gain teaser: false and keep th
   const { settings } = normalizeSettings(old);
   expect(settings.transitions).toEqual({ piece_junction: "zoom", flash_opacity: 0.4, flash_seconds: 0.2, teaser: false });
 });
+
+test("shared settings never carry inserts: each clip without its own list gets the automatic triangulation", () => {
+  const stored = { ...defaultRenderSettings, inserts: [{ kind: "wide", anchor: 1, duration: 2, source_start: 9 }] };
+  expect("inserts" in normalizeSettings(stored).settings).toBe(false);
+});

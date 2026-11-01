@@ -48,7 +48,7 @@ export function Stage({ row, preview, overlay, overlayError, settings, scenes, c
   const total = overlay?.timeline_duration_seconds ?? (duration || preview.timeline || 0);
   const { blocks, joins } = useMemo(() => buildTrechos(segments, total), [segments, total]);
   const captions = useMemo(() => captionBlocks(overlay?.pages ?? [], time, corrections), [overlay, time, corrections]);
-  const sceneLane = useMemo(() => sceneBlocks(scenes, settings.inserts ?? []), [scenes, settings.inserts]);
+  const sceneLane = useMemo(() => sceneBlocks(scenes, settings.inserts), [scenes, settings.inserts]);
   const [liveText, liveTone] = LIVE[preview.phase] ?? (preview.videoUrl ? ["Atualizando prévia…", "ac"] : ["Preparando a prévia…", "ac"]);
   const refine = preview.refine;
   const reason = preview.teaserDropped ? (TEASER_DROP_REASONS[preview.teaserDropped] ?? preview.teaserDropped) : "";

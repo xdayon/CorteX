@@ -55,6 +55,9 @@ test("scene lane: accepted inserts are solid, undecided suggestions pending, rej
   expect(sceneBlocks(data, [{ kind: "reaction", anchor: 5, duration: 2, source_start: 100, suggestion_id: "a" }])).toEqual([
     { id: "a", kind: "reaction", start: 5, duration: 2, state: "accepted" }, { id: "b", kind: "reaction", start: 10, duration: 2, state: "pending" },
   ]);
+  // No list of the clip's own: the automatic triangulation has every suggestion.
+  expect(sceneBlocks(data, undefined).map(block => block.state)).toEqual(["accepted", "accepted", "accepted"]);
+  expect(sceneBlocks(data, []).map(block => block.state)).toEqual(["pending", "pending"]);
   expect(sceneBlocks(null, [])).toEqual([]);
   expect(sceneBlocks({ ...data, status: "needs_voice" }, [])).toEqual([]);
 });

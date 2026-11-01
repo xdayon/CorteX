@@ -52,9 +52,10 @@ export const tickLabel = (seconds: number) => `${Math.floor(seconds / 60)}:${Str
 export type SceneBlock = { id: string; kind: SceneSuggestion["kind"]; start: number; duration: number; state: "accepted" | "pending" };
 
 /** Scene lane: accepted inserts as solid blocks, undecided suggestions as dashed ones, rejected ones hidden. */
-export function sceneBlocks(data: SceneSuggestions | null, inserts: RenderInsert[]): SceneBlock[] {
+/** `inserts` null/undefined: the automatic triangulation, every suggestion is in the clip. */
+export function sceneBlocks(data: SceneSuggestions | null, inserts: RenderInsert[] | null | undefined): SceneBlock[] {
   if (!data || data.status !== "ok") return [];
-  const accepted = new Set(inserts.map(insert => insert.suggestion_id));
+  const accepted = new Set(inserts ? inserts.map(insert => insert.suggestion_id) : data.suggestions.map(item => item.id));
   const blocks: SceneBlock[] = [];
   for (const item of data.suggestions) {
     const state = accepted.has(item.id) ? "accepted" : data.decisions[item.id] === "rejected" ? null : "pending";
