@@ -13,11 +13,15 @@ nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap \
   --format=csv,noheader
 
 echo
-echo "== NVENC smoke test =="
-ffmpeg -y -hide_banner -loglevel error \
+# The FFmpeg the product renders with (render.ffmpeg), not the host one: the host 8.1.3 cannot open NVENC on the
+# Pascal driver 580 (docs/evidence/2026-11-02-nvenc-jellyfin.md).
+FFMPEG="$("$ROOT/.venv/bin/python" -c 'from cortex.config import load_config; print(load_config().render.ffmpeg)')"
+FFPROBE="$("$ROOT/.venv/bin/python" -c 'from cortex.config import load_config; print(load_config().render.ffprobe)')"
+echo "== NVENC smoke test ($FFMPEG) =="
+"$FFMPEG" -y -hide_banner -loglevel error \
   -f lavfi -i color=black:s=320x240:d=1:r=30 \
   -c:v h264_nvenc -preset p5 -cq 23 -pix_fmt yuv420p "$tmp"
-ffprobe -v error -select_streams v:0 \
+"$FFPROBE" -v error -select_streams v:0 \
   -show_entries stream=codec_name,width,height,pix_fmt \
   -of default=noprint_wrappers=1 "$tmp"
 
