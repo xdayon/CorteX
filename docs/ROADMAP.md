@@ -15,7 +15,7 @@ e publicação manual. Itens entregues antes de 14/out estão em
   duração; primeiro item do lote voltou a ser refinado (payload único).
 - [x] Transcrição registra modo batched efetivo; hotwords (config + por episódio).
 - [x] `update_and_verify.sh` seguro; instalador do serviço sem Codex obrigatório.
-- [x] NVENC: pré-checagem explícita; host em libx264 (ver evidência host-nvenc).
+- [x] NVENC: pré-checagem explícita; cortes e aulas em h264_nvenc pelo FFmpeg do Jellyfin (evidência nvenc-jellyfin).
 
 ## Fase 1 — edição viral e prévia fiel (entregue em 14/out)
 

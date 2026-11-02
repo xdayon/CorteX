@@ -794,7 +794,7 @@ def test_encoder_args_draft_uses_the_fastest_presets() -> None:
     assert _encoder_args("libx264", draft=True)[3] == "ultrafast"
     assert _encoder_args("h264_nvenc", draft=True)[3] == "p1"
     assert _encoder_args("libx264")[3] == "veryfast"
-    assert _encoder_args("h264_nvenc")[3] == "p4"
+    assert _encoder_args("h264_nvenc")[3] == "p5"
 
 
 def test_punch_resolution_without_source_size_keeps_the_canvas_pixel_contract() -> None:

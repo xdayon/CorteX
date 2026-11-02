@@ -434,7 +434,10 @@ def nvenc_unavailable_reason(ffmpeg: Path) -> str | None:
 
 def _encoder_args(encoder: str, *, draft: bool = False) -> list[str]:
     if encoder == "h264_nvenc":
-        return ["-c:v", encoder, "-preset", "p1" if draft else "p4", "-cq", "18"]
+        # Constant quality needs -b:v 0, or NVENC caps the bitrate. cq 24 matched x264 veryfast crf 18 to the eye
+        # and in SSIM on a 9:16 cut, ~4x faster (docs/evidence/2026-11-02-nvenc-jellyfin.md).
+        return ["-c:v", encoder, "-preset", "p1" if draft else "p5", "-tune", "hq", "-rc", "vbr", "-cq", "24",
+                "-b:v", "0", "-spatial-aq", "1"]
     if encoder == "libx264":
         return ["-c:v", encoder, "-preset", "ultrafast" if draft else "veryfast", "-crf", "18"]
     raise RenderPreconditionError(f"encoder não suportado: {encoder}")

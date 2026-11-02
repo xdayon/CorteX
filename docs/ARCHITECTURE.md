@@ -57,8 +57,9 @@ fontes servidas por `/overlay-fonts`. Nunca reimplementar layout de legenda em C
 ## Hardware
 
 GTX 1060 6 GB (driver 580, último para Pascal): faster-whisper `large-v3-turbo` CUDA
-`int8`, batch 8. Encode em `libx264` (NVENC incompatível com o FFmpeg 8.1.3 do host;
-pré-checagem explícita). Visão, voz do protagonista e diarização em CPU. Nunca trocar engine em silêncio.
+`int8`, batch 8. Encode em `h264_nvenc` (cortes e aulas) pelo FFmpeg 8.1.3 portátil do Jellyfin em
+`render.ffmpeg`; o do host não abre o NVENC no driver 580. Pré-checagem explícita, sem fallback. Decodificação e
+prévia rápida do editor ficam na CPU (medido, ver evidência nvenc-jellyfin). Visão, voz do protagonista e diarização em CPU. Nunca trocar engine em silêncio.
 
 ## Operação
 

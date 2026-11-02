@@ -34,9 +34,9 @@ render:
   ffmpeg: /var/home/dx/.local/opt/jellyfin-ffmpeg/8.1.3-1/ffmpeg
   ffprobe: /var/home/dx/.local/opt/jellyfin-ffmpeg/8.1.3-1/ffprobe
   fonts_dir: assets/fonts
-  # Cortes do podcast: ainda libx264. Com o FFmpeg do Jellyfin o h264_nvenc abre; trocar aqui
-  # exige reiniciar o cortex.service (decisão do usuário).
-  encoder: libx264
+  # Cortes do podcast na GPU (02/nov): ~4x mais rápido que libx264 veryfast, mesma qualidade.
+  # Vale depois de reiniciar o cortex.service. A prévia rápida do editor fica na CPU (medido: sem ganho).
+  encoder: h264_nvenc
   allow_cpu_fallback: false
   width: 1080
   height: 1920

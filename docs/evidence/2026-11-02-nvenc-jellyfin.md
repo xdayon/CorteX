@@ -31,3 +31,20 @@ arquivo NVENC saiu menor (116 × 152 MB).
 | Final com grão | 3 min 56 s | 56 s |
 Arquivo 386 → 293 MB, −13,9 LUFS nos dois. As tomadas continuam presas à CPU: quase toda tomada do
 Flow é desacelerada 1,02–1,1x com `minterpolate` (mci), que não tem versão em GPU.
+
+## Cortes do podcast (mesmo dia)
+Trecho vertical de 60 s (fonte VP9 1080p → 1080×1920), SSIM saturado em 0,956 em todas as variantes:
+| Variante | Tempo | Tamanho |
+|---|---|---|
+| libx264 veryfast crf 18 (export atual) | 24,5 s | 34 MB |
+| h264_nvenc p4 cq 18 (args antigos, sem `-b:v 0`) | 7,6 s | 90 MB |
+| h264_nvenc p5 hq cq 24 `-b:v 0` (escolhido) | 6,3 s | 51 MB |
+| h264_nvenc p5 hq cq 26 `-b:v 0` | 6,3 s | 40 MB |
+Recorte ampliado do rosto: x264, cq 24 e cq 26 iguais a olho. `render.encoder: h264_nvenc`.
+
+Rejeitados, medidos:
+- **Prévia rápida do editor (360×640):** x264 ultrafast 10,9/15,9 s × NVENC p1 9,1/16,1 s. O custo é decodificar a
+  fonte; fica na CPU.
+- **NVDEC (`-hwaccel cuda`) na análise:** VP9 1080p +15–25 %, VP9 4K +30 %, e AV1 1440p falha (Pascal não decodifica
+  AV1; levou 283 s até falhar). A análise extrai quadros soltos, um processo por quadro: o contexto CUDA custaria mais
+  do que ganha. Não usar.

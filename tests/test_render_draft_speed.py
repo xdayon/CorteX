@@ -44,7 +44,9 @@ def test_fast_scaling_is_draft_only_and_applies_to_every_scale(mode):
 
 def test_export_encoder_args_are_unchanged():
     assert _encoder_args("libx264") == ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
-    assert _encoder_args("h264_nvenc") == ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "18"]
+    assert _encoder_args("h264_nvenc") == ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr",
+                                           "-cq", "24", "-b:v", "0", "-spatial-aq", "1"]
+    assert _encoder_args("h264_nvenc", draft=True)[3] == "p1"
     assert _encoder_args("libx264", draft=True)[3] == "ultrafast"
 
 

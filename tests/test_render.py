@@ -32,6 +32,7 @@ from cortex.render.schemas import (
     RenderSubtitleSettings,
 )
 from cortex.render.service import (
+    nvenc_unavailable_reason,
     RenderPreconditionError,
     RenderService,
     _encoder_args,
@@ -49,8 +50,16 @@ from cortex.worker import process_next
 from conftest import FakeTranscriptionEngine
 
 
-def _config(tmp_path: Path) -> CortexConfig:
+def _config(tmp_path: Path, encoder: str = "libx264") -> CortexConfig:
     base = load_config()
+    if encoder == "h264_nvenc":  # the configured FFmpeg (the host one cannot open NVENC on the Pascal driver)
+        ffmpeg, ffprobe = Path(base.render.ffmpeg), Path(base.render.ffprobe)
+        reason = nvenc_unavailable_reason(ffmpeg) if ffmpeg.exists() else f"{ffmpeg} missing"
+        if reason:
+            pytest.skip(f"NVENC unavailable: {reason}")
+    else:
+        ffmpeg = Path(shutil.which("ffmpeg") or "ffmpeg")
+        ffprobe = Path(shutil.which("ffprobe") or "ffprobe")
     return base.model_copy(update={
         "paths": base.paths.model_copy(update={
             "data_dir": tmp_path,
@@ -60,9 +69,8 @@ def _config(tmp_path: Path) -> CortexConfig:
             "database": tmp_path / "cortex.sqlite3",
         }),
         "render": base.render.model_copy(update={
-            "ffmpeg": Path(shutil.which("ffmpeg") or "ffmpeg"),
-            "ffprobe": Path(shutil.which("ffprobe") or "ffprobe"),
-            "encoder": "libx264", "width": 320, "height": 320, "fps": 30,
+            "ffmpeg": ffmpeg, "ffprobe": ffprobe,
+            "encoder": encoder, "width": 320, "height": 320, "fps": 30,
         }),
     })
 
@@ -145,8 +153,9 @@ def test_render_refuses_legacy_framing_modes_with_clear_message(tmp_path: Path, 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
                     reason="ffmpeg and ffprobe required")
-def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> None:
-    config = _config(tmp_path)
+@pytest.mark.parametrize("encoder", ["libx264", "h264_nvenc"])
+def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path, encoder: str) -> None:
+    config = _config(tmp_path, encoder)
     config.ensure_runtime_dirs()
     domain = DomainStore(config.paths.database)
     project = domain.create_project("Render fixture")
@@ -227,7 +236,7 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
     from cortex.render.schemas import CaptionCorrection
     service = RenderService(config, domain)
     render_settings = RenderSettings(
-        encoder="libx264",
+        encoder=encoder,
         canvas=RenderCanvasSettings(width=320, height=320, fps=30),
         captions=RenderCaptionSettings(
             enabled=True, font_family="Montserrat", font_size=28,
@@ -259,7 +268,7 @@ def test_multi_segment_render_persists_valid_cached_artifact(tmp_path: Path) -> 
     assert document.quality.loudness_delta_lu <= 1.0
     assert document.quality.true_peak_dbfs is not None
     assert document.quality.true_peak_dbfs <= -1.0
-    assert document.engine.requested_encoder == document.engine.effective_encoder == "libx264"
+    assert document.engine.requested_encoder == document.engine.effective_encoder == encoder
     assert Path(document.output_path).stat().st_size == document.output_size_bytes
     assert document.quality.caption_cue_count == 2
     assert document.quality.subtitles_present is True
