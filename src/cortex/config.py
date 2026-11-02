@@ -190,6 +190,9 @@ class LessonsConfig(BaseModel):
     true_peak_db: float = Field(default=-1.0, le=0.0)
     manim_image: str = "docker.io/manimcommunity/manim:v0.19.0"
     manim_workers: int = Field(default=4, ge=1, le=16)
+    # Video encoder for every lesson stage (pieces and final). h264_nvenc must open on render.ffmpeg, or the
+    # render stops with the reason: never a silent switch to the CPU.
+    encoder: Literal["libx264", "h264_nvenc"] = "libx264"
 
 
 class SoundConfig(BaseModel):

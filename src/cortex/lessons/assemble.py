@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 
 from cortex.config import CortexConfig
-from cortex.lessons.common import (ENCODE, FFMPEG_TIMEOUT, LessonError, cache_store, cache_valid, canvas, ffmpeg,
-                                   hash_parts, probe, run, sha256_file)
+from cortex.lessons.common import (FFMPEG_TIMEOUT, LessonError, cache_store, cache_valid, canvas, ffmpeg,
+                                   hash_parts, probe, run, sha256_file, video_encode)
 from cortex.lessons.cutout import cutout
 from cortex.lessons.sound import PlacedSfx, credits_text, dip_expr, music_source, resolve_cues, sfx_chain
 from cortex.lessons.spec import LessonSpec, Shot
@@ -59,7 +59,7 @@ def make_plate(cfg: CortexConfig, directory: Path, shot: Shot, window: ShotWindo
     if retime_outside_range(factor):
         log(f"! {shot.id}: clip {flow.clip} retimed {factor:.2f}x to fill {length:.2f}s; plan a second shot instead")
     out = build / f"plate_{shot.id}.mp4"
-    key = hash_parts("plate-v2", file_key(src), t_in, t_out, length, lc.fps, w, h)
+    key = hash_parts("plate-v2", file_key(src), t_in, t_out, length, lc.fps, w, h, lc.encoder)
 
     def build_it() -> None:
         # fps after minterpolate: its last timestamps leave a gap that made tpad+trim drop two frames per shot.
@@ -68,7 +68,7 @@ def make_plate(cfg: CortexConfig, directory: Path, shot: Shot, window: ShotWindo
         # Cover the frame: a clip of another aspect (16:9 Flow clip in a 9:16 promo) is centre-cropped.
         vf = (f"{motion},scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h},"
               f"tpad=stop_mode=clone:stop_duration=1,trim=duration={length},setsar=1")
-        ffmpeg(cfg, "-ss", t_in, "-t", t_out - t_in, "-i", src, "-an", "-vf", vf, *ENCODE, "-preset", "fast", out)
+        ffmpeg(cfg, "-ss", t_in, "-t", t_out - t_in, "-i", src, "-an", "-vf", vf, *video_encode(cfg), out)
 
     return out, _stage(out, key, force, build_it), factor
 
@@ -109,7 +109,7 @@ def make_image_segment(cfg: CortexConfig, directory: Path, shot: Shot, window: S
         raise LessonError(f"shot {shot.id}: missing {src}")
     w, h = size
     out, length = build / f"seg_{shot.id}.mp4", window.needed
-    key = hash_parts("seg-image-v2", file_key(src), im.model_dump(), length, lc.fps, w, h)
+    key = hash_parts("seg-image-v2", file_key(src), im.model_dump(), length, lc.fps, w, h, lc.encoder)
 
     def build_it() -> None:
         iw, ih = image_size(cfg, src)
@@ -123,7 +123,7 @@ def make_image_segment(cfg: CortexConfig, directory: Path, shot: Shot, window: S
               f"trim=duration={length},setsar=1,format=yuv420p[v]")
         log(f"{shot.id}: still {iw}x{ih} → {width0}px wide, push-in {im.zoom:g}x")
         ffmpeg(cfg, *bg, "-loop", 1, "-framerate", lc.fps, "-t", length, "-i", layer, "-filter_complex", fc,
-               "-map", "[v]", *ENCODE, "-preset", "fast", "-r", str(lc.fps), out)
+               "-map", "[v]", *video_encode(cfg), "-r", str(lc.fps), out)
 
     return out, _stage(out, key, force, build_it)
 
@@ -133,20 +133,20 @@ def make_segment(cfg: CortexConfig, directory: Path, shot: Shot, window: ShotWin
     lc = cfg.lessons
     out = build / f"seg_{shot.id}.mp4"
     before, after, length = window.pad_before, window.pad_after, window.needed
-    enc = [*ENCODE, "-preset", "fast", "-r", str(lc.fps), out]
+    enc = [*video_encode(cfg), "-r", str(lc.fps), out]
     pad = f"tpad=start_duration={before}:stop_duration={after}:start_mode=clone:stop_mode=clone"
     factor = None
     if shot.kind == "image":
         return (*make_image_segment(cfg, directory, shot, window, build, force, size), None)
     if shot.kind == "flow":
         plate, plate_key, factor = make_plate(cfg, directory, shot, window, build, force, size)
-        key = hash_parts("seg-flow", plate_key, lc.fps)
+        key = hash_parts("seg-flow", plate_key, lc.fps, lc.encoder)
         return out, _stage(out, key, force, lambda: ffmpeg(cfg, "-i", plate, "-an", "-vf", "setsar=1", *enc)), factor
     render = directory / "renders" / shot.manim.render
     if not render.exists():
         raise LessonError(f"shot {shot.id}: missing {render}; run `render`")
     if shot.kind == "manim":
-        key = hash_parts("seg-manim", file_key(render), before, after, length, lc.fps)
+        key = hash_parts("seg-manim", file_key(render), before, after, length, lc.fps, lc.encoder)
 
         def build_it() -> None:
             ffmpeg(cfg, "-i", render, "-an", "-vf", f"{pad},trim=duration={length},setsar=1", *enc)
@@ -154,7 +154,7 @@ def make_segment(cfg: CortexConfig, directory: Path, shot: Shot, window: ShotWin
         return out, _stage(out, key, force, build_it), None
     plate, plate_key, factor = make_plate(cfg, directory, shot, window, build, force, size)
     shade = shot.manim.shade
-    key = hash_parts("seg-hybrid", plate_key, file_key(render), before, after, length, lc.fps, *([] if shade else ["plain"]))
+    key = hash_parts("seg-hybrid", plate_key, file_key(render), before, after, length, lc.fps, lc.encoder, *([] if shade else ["plain"]))
     if shade:
         inputs = ["-i", plate, "-loop", "1", "-i", ensure_gradient(cfg, build, size), "-i", render]
         fc = (f"[0]eq=brightness=-0.03:saturation=0.92[p];[p][1]overlay[g];"
@@ -172,7 +172,7 @@ def make_segment(cfg: CortexConfig, directory: Path, shot: Shot, window: ShotWin
 def make_cut(cfg: CortexConfig, segs: list[tuple[Path, str]], windows: list[ShotWindow], build: Path, force: bool) -> tuple[Path, str]:
     lc = cfg.lessons
     out = build / "video_cut.mp4"
-    key = hash_parts("cut", [k for _, k in segs], [w.start for w in windows], lc.xfade_seconds)
+    key = hash_parts("cut", [k for _, k in segs], [w.start for w in windows], lc.xfade_seconds, lc.encoder)
 
     def build_it() -> None:
         if len(segs) == 1:
@@ -183,7 +183,7 @@ def make_cut(cfg: CortexConfig, segs: list[tuple[Path, str]], windows: list[Shot
             fc.append(f"[{prev}][{i}:v]xfade=transition=fade:duration={lc.xfade_seconds}:offset={w.start - lc.xfade_seconds / 2:.3f}[x{i}]")
             prev = f"x{i}"
         inputs = [a for p, _ in segs for a in ("-i", p)]
-        ffmpeg(cfg, *inputs, "-filter_complex", ";".join(fc), "-map", f"[{prev}]", *ENCODE, "-preset", "fast", out)
+        ffmpeg(cfg, *inputs, "-filter_complex", ";".join(fc), "-map", f"[{prev}]", *video_encode(cfg), out)
 
     return out, _stage(out, key, force, build_it)
 
@@ -343,12 +343,12 @@ def assemble(cfg: CortexConfig, directory: Path, spec: LessonSpec, timings: Timi
         ass_path.write_text(ass, encoding="utf-8")
         titles_key = hash_parts(ass, sorted((p.name, p.stat().st_size) for p in fonts.glob("*.[ot]tf")))
         vf = f"subtitles=filename='{filter_path(ass_path)}':fontsdir='{filter_path(fonts)}',{GRAIN_FILTER}"
-    final_key = hash_parts("final", video_key, mix_key, GRAIN_FILTER, titles_key)
+    final_key = hash_parts("final", video_key, mix_key, GRAIN_FILTER, titles_key, lc.encoder)
     report_path = export / "report.json"
     if not cache_valid(out, final_key, force):
-        ffmpeg(cfg, "-i", video, "-i", mix, "-vf", vf, "-c:v", "libx264", "-preset", "slow", "-tune", "grain",
-               "-crf", 19, "-c:a", "copy", "-shortest", "-movflags", "+faststart", out,  # AAC peak-checked in make_mix
-               timeout=max(FFMPEG_TIMEOUT, 10 * timings.total))  # preset slow: a long lesson on a busy host outlasts 1 h
+        ffmpeg(cfg, "-i", video, "-i", mix, "-vf", vf, *video_encode(cfg, final=True),
+               "-c:a", "copy", "-shortest", "-movflags", "+faststart", out,  # AAC peak-checked in make_mix
+               timeout=max(FFMPEG_TIMEOUT, 10 * timings.total))  # x264 slow: a long lesson on a busy host outlasts 1 h
         cache_store(out, final_key)
     previous = json.loads(report_path.read_text()) if report_path.exists() else {}
     if previous.get("final_key") == final_key:
@@ -357,7 +357,7 @@ def assemble(cfg: CortexConfig, directory: Path, spec: LessonSpec, timings: Timi
         loud = measure_loudness(cfg, out, lc.target_lufs, lc.true_peak_db)
         measured = {"duration": round(probe(cfg, out).duration, 3), "integrated_lufs": float(loud["input_i"]),
                     "true_peak_dbtp": float(loud["input_tp"])}
-    report = {"final_key": final_key, "output": str(out), **measured, "shots": shots_report,
+    report = {"final_key": final_key, "output": str(out), "encoder": lc.encoder, **measured, "shots": shots_report,
               "sfx": [{"at": p.at, "ref": p.ref, "title": p.title, "time": p.time, "starts": p.delay,
                        "gain_db": p.gain_db} for p in sfx]}
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

@@ -10,7 +10,27 @@ from typing import Sequence
 from cortex.config import CortexConfig
 
 FFMPEG_TIMEOUT = 3600
-ENCODE = ["-c:v", "libx264", "-preset", "fast", "-crf", "14", "-pix_fmt", "yuv420p"]
+
+
+def video_encode(cfg: CortexConfig, final: bool = False) -> list[object]:
+    """Encoder arguments for a lesson stage, from `lessons.encoder` (requested = effective, no fallback).
+
+    Pieces (`final=False`) are near-lossless intermediates; the final pass carries the film grain. Measured on a
+    lesson (60 s, 1080p, GTX 1060): NVENC 4.5–4.8x faster than x264 at the same SSIM (0.959).
+    """
+    if cfg.lessons.encoder == "h264_nvenc":
+        from cortex.render.service import nvenc_unavailable_reason  # heavy module: only when NVENC is asked for
+
+        reason = nvenc_unavailable_reason(cfg.render.ffmpeg)
+        if reason:
+            raise LessonError(f"lessons.encoder is h264_nvenc but {cfg.render.ffmpeg} cannot open it: {reason}")
+        args: list[object] = ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr",
+                              "-cq", 19 if final else 14, "-b:v", 0, "-spatial-aq", 1]
+    elif final:
+        args = ["-c:v", "libx264", "-preset", "slow", "-tune", "grain", "-crf", 19]
+    else:
+        args = ["-c:v", "libx264", "-preset", "fast", "-crf", 14]
+    return [*args, "-pix_fmt", "yuv420p"]
 
 
 def canvas(cfg: CortexConfig, aspect: str) -> tuple[int, int]:
