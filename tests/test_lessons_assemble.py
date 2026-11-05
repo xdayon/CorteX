@@ -83,3 +83,29 @@ def test_hybrid_without_shade_is_a_plain_overlay(tmp_path):
                             "-vf", "crop=40:180:270:0,scale=1:1,format=gray", "-f", "rawvideo", "-"],
                            capture_output=True, check=True, timeout=60).stdout[0]
     assert plain - shaded >= 25 and abs(plain - plate) <= 3
+
+
+def test_parallel_segments_keep_order_and_cache_keys(tmp_path):
+    serial_cfg = small_config(tmp_path / "a")
+    lesson_a, spec = _lesson(tmp_path / "a")
+    serial = assemble(serial_cfg, lesson_a, spec, load_timings(lesson_a / "timings.json"))
+    parallel_cfg = small_config(tmp_path / "b")
+    parallel_cfg.lessons.assemble_workers = 3
+    lesson_b, spec_b = _lesson(tmp_path / "b")
+    parallel = assemble(parallel_cfg, lesson_b, spec_b, load_timings(lesson_b / "timings.json"))
+    assert parallel["shots"] == serial["shots"]
+    keys = lambda lesson: {p.name: p.read_text() for p in (lesson / "build").glob("seg_*.mp4.hash")}
+    assert keys(lesson_b) == keys(lesson_a)
+
+
+def test_ffmpeg_nice_prefixes_the_command(tmp_path, monkeypatch):
+    from cortex.lessons import common
+
+    seen = []
+    monkeypatch.setattr(common, "run", lambda cmd, **kw: seen.append([str(c) for c in cmd]))
+    cfg = small_config(tmp_path)
+    common.ffmpeg(cfg, "-i", "x")
+    cfg.lessons.ffmpeg_nice = 10
+    common.ffmpeg(cfg, "-i", "x")
+    assert seen[0][0] == str(cfg.render.ffmpeg)
+    assert seen[1][:4] == ["nice", "-n", "10", str(cfg.render.ffmpeg)]

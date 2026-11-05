@@ -54,7 +54,9 @@ def run(cmd: Sequence[object], *, timeout: float = FFMPEG_TIMEOUT, capture: bool
 
 
 def ffmpeg(cfg: CortexConfig, *args: object, timeout: float = FFMPEG_TIMEOUT) -> None:
-    run([cfg.render.ffmpeg, "-v", "error", "-y", *args], timeout=timeout)
+    nice = cfg.lessons.ffmpeg_nice
+    prefix = ["nice", "-n", nice] if nice else []  # the nice binary, not preexec_fn: assemble calls this from threads
+    run([*prefix, cfg.render.ffmpeg, "-v", "error", "-y", *args], timeout=timeout)
 
 
 def sha256_file(path: Path) -> str:

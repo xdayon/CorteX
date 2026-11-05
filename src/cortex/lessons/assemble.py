@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from cortex.config import CortexConfig
@@ -321,9 +322,17 @@ def assemble(cfg: CortexConfig, directory: Path, spec: LessonSpec, timings: Timi
     windows = shot_windows(spec, timings, lc.xfade_seconds)
     size = canvas(cfg, spec.aspect)
     sfx = resolve_cues(cfg, directory, spec, timings)  # fail on a bad cue before any encode
+    # Shared stills first: segments built in parallel would race to write the same build file.
+    if any(s.kind == "hybrid" and s.manim.shade for s in spec.shots):
+        ensure_gradient(cfg, build, size)
+    for s in spec.shots:
+        if s.kind == "image" and s.image.glow:
+            ensure_glow(cfg, build, size, round(s.image.center_y * size[1]))
+    with ThreadPoolExecutor(max_workers=lc.assemble_workers) as pool:  # map keeps the shot order
+        built = list(pool.map(lambda sw: make_segment(cfg, directory, sw[0], sw[1], build, force, size),
+                              zip(spec.shots, windows)))
     segs, shots_report = [], []
-    for shot, window in zip(spec.shots, windows):
-        path, key, factor = make_segment(cfg, directory, shot, window, build, force, size)
+    for shot, window, (path, key, factor) in zip(spec.shots, windows, built):
         segs.append((path, key))
         row = {"id": shot.id, "kind": shot.kind, "start": window.start, "duration": window.duration,
                "retime": round(factor, 4) if factor is not None else None, "flow_duration_requested": None}

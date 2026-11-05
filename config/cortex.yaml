@@ -122,6 +122,8 @@ lessons:
   true_peak_db: -1.0
   manim_image: docker.io/manimcommunity/manim:v0.19.0
   manim_workers: 4
+  assemble_workers: 3  # segmentos do assemble em paralelo (minterpolate ~1 núcleo, ~600 MB cada)
+  ffmpeg_nice: 10  # FFmpeg das aulas em prioridade baixa
   # Aulas: GPU nas peças e na versão final (4,5–4,8x mais rápido, mesmo SSIM; ver a evidência de 02/nov).
   encoder: h264_nvenc
 

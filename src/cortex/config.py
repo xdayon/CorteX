@@ -190,6 +190,11 @@ class LessonsConfig(BaseModel):
     true_peak_db: float = Field(default=-1.0, le=0.0)
     manim_image: str = "docker.io/manimcommunity/manim:v0.19.0"
     manim_workers: int = Field(default=4, ge=1, le=16)
+    # Shot segments built at once by `assemble`. Each Flow plate runs minterpolate, which is close to single-thread;
+    # a 1080p one holds ~600 MB of RAM, so a few workers fill the idle cores without swapping.
+    assemble_workers: int = Field(default=1, ge=1, le=16)
+    # Niceness of every lesson FFmpeg run (0 = inherit), so the desktop stays usable during a long render.
+    ffmpeg_nice: int = Field(default=0, ge=0, le=19)
     # Video encoder for every lesson stage (pieces and final). h264_nvenc must open on render.ffmpeg, or the
     # render stops with the reason: never a silent switch to the CPU.
     encoder: Literal["libx264", "h264_nvenc"] = "libx264"
