@@ -85,6 +85,13 @@ def test_cues_resolve_from_the_shot_start_and_reach_the_key(tmp_path, monkeypatc
     assert manim.render_key(cfg, scenes, plain, (320, 180), {}) == old
     keyed = manim.render_key(cfg, scenes, cued, (320, 180), info["END"]["cues"])
     assert keyed != manim.render_key(cfg, scenes, cued, (320, 180), {**info["END"]["cues"], "word": 0.2})
+    # A shared parts.py is a render input: editing it re-renders the scenes that import it.
+    (scenes / "parts.py").write_text("A = 1\n")
+    with_parts = manim.render_key(cfg, scenes, plain, (320, 180), {})
+    assert with_parts != old
+    (scenes / "parts.py").write_text("A = 2\n")
+    assert manim.render_key(cfg, scenes, plain, (320, 180), {}) != with_parts
+    (scenes / "parts.py").unlink()
 
     def fake(cmd, log, timeout=0):
         cls = cmd[-1]

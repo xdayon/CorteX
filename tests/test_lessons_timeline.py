@@ -51,8 +51,9 @@ def test_spec_rejects_gaps_and_bad_hybrid():
         Shot(id="F", beats=["B1"], kind="flow")
 
 
-def test_flow_clip_numbers_take_two_or_three_digits():
+def test_flow_clip_numbers_take_two_to_four_digits():
     assert FlowRef(clip="101").clip == "101"
-    for bad in ("1", "1000", "a1"):
+    assert FlowRef(clip="1001").clip == "1001"  # lessons 10+ number their clips 1001…
+    for bad in ("1", "10000", "a1"):
         with pytest.raises(ValueError):
             FlowRef(clip=bad)

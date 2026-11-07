@@ -60,8 +60,11 @@ def render_key(cfg: CortexConfig, scenes: Path, shot: Shot, size: tuple[int, int
                cues: dict[str, float] | None = None) -> str:
     lc, m = cfg.lessons, shot.manim
     w, h = size or (lc.width, lc.height)
+    # Scenes import a lesson's shared parts.py: it is a render input. Lessons without one keep their old keys.
+    parts = scenes / "parts.py"
     return hash_parts(sha256_file(scenes / m.scene), sha256_file(scenes / "brand.py"), sha256_file(scenes / "timings.json"),
-                      lc.manim_image, m.cls, w, h, lc.fps, m.transparent, *([cues] if cues else []))
+                      lc.manim_image, m.cls, w, h, lc.fps, m.transparent, *([cues] if cues else []),
+                      *([sha256_file(parts)] if parts.exists() else []))
 
 
 def shot_info(cfg: CortexConfig, directory: Path, spec: LessonSpec, timings: Timings) -> dict[str, dict]:
