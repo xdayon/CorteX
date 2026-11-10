@@ -1119,7 +1119,10 @@ def _filtergraph(
         transitions.append(
             f"{previous_audio}loudnorm=I={loudness_target_lufs:.2f}:"
             f"TP={normalization_true_peak:.2f}:LRA=11:print_format=none,"
-            f"atrim=duration={video_duration_acc:.6f},asetpts=PTS-STARTPTS[anorm]"
+            # Each j/l micro-crossfade overlaps (shortens) the audio by its length;
+            # pad the tail with silence so audio ends with the video instead of
+            # tripping the A/V duration gate (FFmpeg 9 also trims the AAC priming).
+            f"apad,atrim=duration={video_duration_acc:.6f},asetpts=PTS-STARTPTS[anorm]"
         )
         filters = video_parts + audio_parts + transitions
         video_label = "[vout]"
