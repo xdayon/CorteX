@@ -47,3 +47,12 @@ Provider Codex mantido; diarização pyannote + `.venv-diarization` (1,4 GB) con
 tipos de job legados só para ler o SQLite antigo; `cortex.eval`; acesso remoto (túnel nunca
 instalado); dividir `render/service.py` (2445 linhas); `data/lessons` ocupa 106 GB e o
 `maintain_data.py` não cobre aulas.
+
+## Decisões do usuário (10/nov, tarde)
+
+Codex mantido. Diarização completa removida (7h40 na única execução que terminou); o
+reconhecimento rápido de voz fica (166 s na 1ª vez, depois cache). Acesso remoto removido
+(uso só no PC). `render/service.py` não será dividido por ora. `data/lessons` fica: os
+57 GB de `build/` + `check/` são cache de montagem das aulas ainda em revisão. Drive
+automático entregue. Áudio: prévia rápida de 96k → 192k (medição em 30 s do episódio
+`0feL2iE8Ubw`: SNR de codificação 23,2 dB a 96k, 39,4 dB a 192k; loudnorm 82 dB, limpo).

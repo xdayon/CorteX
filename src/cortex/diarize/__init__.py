@@ -1,1 +1,1 @@
-"""Optional acoustic speaker diarization, isolated from the CUDA transcription runtime."""
+"""Fast voice match of the protagonist (WeSpeaker embeddings in the CPU env), isolated from the CUDA runtime."""

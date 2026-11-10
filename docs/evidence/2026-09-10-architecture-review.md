@@ -99,4 +99,4 @@ inspecionadas. Nenhum botão de análise ou render foi acionado nesse smoke.
 7. Sem garantia de viralização; avaliação editorial e dados de retenção permanecem humanos.
 
 Próximos passos e critérios: [ROADMAP](../ROADMAP.md). Recomendações e fontes
-externas: [revisão](../REVIEW_DAYON_NEWS.md) e [Cloudflare](../LOCAL_AND_CLOUDFLARE.md).
+externas: [revisão](../REVIEW_DAYON_NEWS.md) e [Cloudflare](../OPERACAO_LOCAL.md).

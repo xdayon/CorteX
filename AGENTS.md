@@ -86,8 +86,8 @@
   FFmpeg). Never re-implement caption/headline layout in React or CSS.
 - Preserve absolute source clocks in artifacts. Input seeking, local filter
   clocks, J/L-cut and borrowed reaction footage need audio/pixel regressions.
-- Keep the API on loopback. Private cloud access requires authenticated
-  Tunnel/Access for UI, API and media; a hidden URL is not authentication.
+- Keep the API on loopback. The app is PC-only: no tunnel or remote access
+  (removed 2026-11-10); clips reach the phone through Google Drive (`drive.*`).
 
 ## Operating The Local Service
 
@@ -115,7 +115,7 @@
 - Real behaviour without touching user data: reflink clone of `data/` plus API and
   worker on another port (see `docs/HANDOFF.md`, Operação).
 - Visual changes: inspect real FFmpeg frames (PNG) of the affected styles, and
-  the Studio at 390 px and desktop width, before calling them done:
+  the Studio at desktop width (the app is used only on the PC), before calling them done:
   `.venv/bin/python scripts/studio_visual_check.py --url <studio url>` (real Google
   Chrome via Flatpak; test-only Chromium builds cannot decode the H.264 previews).
 - GPU/NVENC host gate: `./scripts/check_gpu.sh` with host permission when needed.

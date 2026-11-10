@@ -26,7 +26,7 @@ Não há runtime PodCLI, multicam ISO, servidor editorial alternativo ou cloud G
 | Estado dos cortes | `clips.py`, `clips_api.py` | test_clips_api |
 | Foco por rostos | `render/face_focus.py`, `analyze/face_detect.py` (YuNet), `analyze/frames.py`, `analyze/scene_*` | face_focus, face_detect, face_focus_render, scene_index |
 | Mapa de câmeras e cenas | `analyze/camera_map.py` (grupos, papéis), `analyze/scene_suggestions.py` (composição: plano aberto, reações, pergunta), `analyze/footage_check.py` (confere a câmera da imagem emprestada), `analyze/triangulation.py` (triangulação automática; o worker de render resolve `RenderSettings.inserts = None`), inserções em `render/service.py` | camera_map, scene_suggestions, footage_check, triangulation, render_inserts |
-| Voz do protagonista | `diarize/voice_match.py` (perfil + rótulos D/O por voz, `voice.*`), `diarize/voice_runner.py` (torch, subprocesso), `diarize/service.py` (pyannote manual) | voice_match, speaker_attribution |
+| Voz do protagonista | `diarize/voice_match.py` (perfil + rótulos D/O por voz, `voice.*`), `diarize/voice_runner.py` (torch, subprocesso), `diarize/service.py` (documento de vozes) | voice_match, speaker_attribution |
 | Estúdio IA (aulas e promos, CLI) | `lessons/` (`spec.py` lesson.json, `align.py`, `timeline.py`, `flow_pack.py`, `manim.py`, `sound.py` âncoras/efeitos/dips, `titles.py` textos libass, `cutout.py` recorte de mockup, `assemble.py` mix com ducking e 16:9/9:16) — fluxo em [STUDIO_AI](STUDIO_AI.md) | lessons_* |
 | Biblioteca de som | `sound/` (Soundza + SFXMint, `library.py` arquivo + licença + âncora, `kit.py` kits e página de audição) | sound_* |
 
@@ -59,15 +59,15 @@ fontes servidas por `/overlay-fonts`. Nunca reimplementar layout de legenda em C
 GTX 1060 6 GB (driver 580, último para Pascal): faster-whisper em CUDA (`transcription.*`).
 Encode em NVENC (`render.encoder`, `lessons.encoder`) pelo FFmpeg portátil do Jellyfin em
 `render.ffmpeg`; o do host não abre o NVENC no driver 580. Pré-checagem explícita, sem fallback. Decodificação e
-prévia rápida do editor ficam na CPU (medido, ver evidência nvenc-jellyfin). Visão, voz do protagonista e diarização em CPU. Nunca trocar engine em silêncio.
+prévia rápida do editor ficam na CPU (medido, ver evidência nvenc-jellyfin). Visão e voz do protagonista em CPU. Nunca trocar engine em silêncio.
 
 ## Operação
 
 API-only é o default de `create_app`; `app.studio_dir` serve o build estático.
 `studio.sh` força loopback e supervisiona API + worker. O `cortex.service` (systemd de
 usuário) vive com a janela do app: `open_studio.py` o inicia e o para ao fechar a janela
-(espera jobs na fila terminarem); não sobe no login. Acesso remoto (Cloudflare Tunnel +
-Access) só funciona com o app aberto. Regras que não podem quebrar viram código em
+(espera jobs na fila terminarem); não sobe no login. Sem acesso remoto (só PC); exports
+vão ao Google Drive por `drive.py` (rclone, job `drive_upload`). Regras que não podem quebrar viram código em
 `.claude/settings.json` + `scripts/hooks/` (segredos, dados, git destrutivo, serviço,
 `dist`, verificações antes de encerrar).
 

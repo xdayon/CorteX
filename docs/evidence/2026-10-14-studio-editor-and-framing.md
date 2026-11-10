@@ -32,4 +32,4 @@
 ## Pendente
 - Episódio com plano aberto de duas pessoas para validar `primary_side`/`largest_face`
   com rostos reais.
-- Acesso remoto: passos do usuário no painel (ver LOCAL_AND_CLOUDFLARE.md).
+- Acesso remoto: passos do usuário no painel (ver OPERACAO_LOCAL.md).

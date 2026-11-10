@@ -7,8 +7,8 @@ Atualizado em 2026-11-10. Histórico anterior em
 
 Editor pessoal de cortes virais para @dayon.news (Instagram Reels/TikTok) a partir de
 entrevistas em que Dayon é convidado: master único do YouTube ou arquivo local,
-processamento local, revisão humana, publicação manual. Uso principal no PC (celular só
-não pode quebrar). Fluxo do usuário: escolhe vários cortes bons → exporta → guarda no
+processamento local, revisão humana, publicação manual. Uso só no PC (sem acesso remoto;
+o celular baixa os cortes do Drive). Fluxo do usuário: escolhe vários cortes bons → exporta → guarda no
 Drive → posta depois, marcando cada corte como salvo/postado/descartado. Estilo: corte
 seco e dinâmico, legenda animada, manchete, rosto grande com o estúdio visível; sem
 barra de progresso no vídeo, capa nunca como 1º frame. Modelos, esforços, durações e
@@ -27,6 +27,14 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 
 Depois da seleção, o worker enfileira sozinho o mapa de câmeras do episódio (com perfil
 de voz).
+
+## Entregue em 10/nov, tarde (tag de backup `pre-cleanup-2026-11-10`)
+
+- Áudio metalizado: a prévia rápida usava AAC 96k sobre o AAC do YouTube (SNR de
+  codificação 23 dB contra 39 dB a 192k); agora 192k, igual ao export.
+- Google Drive automático (`drive.py`, job `drive_upload`, `drive.*`): ver Próximo gate.
+- Removidos: diarização pyannote completa (fica o reconhecimento rápido de voz) e acesso
+  remoto (Cloudflare). Codex segue configurado e inativo.
 
 ## Entregue em 10/nov (auditoria; branch `audit/2026-11` → `main`)
 
@@ -57,13 +65,15 @@ Backup antes de tudo: tag `pre-audit-2026-11-10`. Evidência e medidas em
    vídeo já têm mapa de câmeras). Meta: ≥ 80 % das cenas mantidas
    (`GET /episodes/{id}/scenes` → `review`). Depois, avaliar a pergunta no prompt de
    seleção (worktree).
-2. Prévias mais rápidas (QA mais barato e prévia progressiva nos drafts). Drive
-   automático e acesso remoto ficam parados até o usuário pedir.
+2. Drive: o usuário instala o rclone e faz o login uma vez (ver
+   [operação local](OPERACAO_LOCAL.md)); conferir o 1º export real em
+   `CorteX/<episódio>/<data>/`.
+3. Prévias mais rápidas (QA mais barato e prévia progressiva nos drafts).
 
 ## Congelado (não evoluir)
 
-Diarização pyannote completa: só manual, para confirmar a voz de um episódio novo.
-(Análise de câmera/identidade/falante e reações emprestadas já foram removidas.)
+Nada da diarização pyannote completa (7h40 por episódio) nem do acesso remoto: removidos
+em 10/nov. (Análise de câmera/identidade/falante e reações emprestadas já foram removidas.)
 
 ## Operação
 

@@ -41,7 +41,7 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
 - [x] Modos congelados apagados (planos de câmera, reações emprestadas, identidade,
   `speaker_auto`/`speaker_face`/`face_static_crop`); dados antigos seguem legíveis.
 - [x] Diarização substituída pelo reconhecimento da voz do protagonista (perfil de voz +
-  embeddings por frase, ~3 min por episódio de 2h45, 97,6 % retido); pyannote só manual
+  embeddings por frase, ~3 min por episódio de 2h45, 97,6 % retido); pyannote completo removido em 10/nov
   ([evidência](evidence/2026-10-16-voice-match.md)).
 - [x] Teaser de abertura opcional (`transitions.teaser`, IA escolhe 1,2–4,5 s dentro do
   corte; entrada separada no render; validado em vídeo real com flash na virada).
@@ -53,10 +53,8 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   (0 registros desde 14/out). "Postado" virou estado manual do corte (botão, lote e atalho P).
 - [ ] Imagens ilustrativas opcionais: IA sugere momentos e termos; imagem enviada
   pelo usuário ou de acervo livre (ex.: Wikimedia), com licença registrada.
-- [x] Acesso remoto por Cloudflare Tunnel + Access no código: JWT validado na origem,
-  `scripts/setup_remote_access.py`, serviço `cortex-tunnel`, `cloudflared` instalado.
-- [x] Mensagem clara na UI para upload acima de 100 MB pelo túnel (antes de enviar).
-- [ ] Ativar no painel (Access app → túnel → rota) e testar do iPhone.
+- [x] ~~Acesso remoto por Cloudflare Tunnel + Access~~: removido em 10/nov (uso só no PC;
+  o celular baixa os cortes do Drive).
 
 ## Fase 4 — Studio integrado (entregue em 16/out)
 
@@ -70,7 +68,9 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   ([evidência](evidence/2026-10-16-av-sync-drift.md)); drafts mais rápidos
   ([evidência](evidence/2026-10-16-draft-speed.md)).
 - [x] Perfil de voz cadastrado (20/out) e botão no Studio para refazê-lo (diálogo de voz).
-- [ ] Salvar no Drive automaticamente (rclone com remoto do Google Drive) — opcional.
+- [x] Drive automático (10/nov): cada export sobe por rclone para
+  `CorteX/<episódio>/<data>/<NN - manchete>.mp4` e marca o corte como Salvo (`drive.*`,
+  `python -m cortex.drive`). Falta o login único do usuário no rclone.
 - [ ] QA mais barato nos drafts (~4 s por prévia) e prévia progressiva enquanto renderiza.
 
 ## Fase 5 — triangulação ([plano](TRIANGULATION.md))
@@ -143,8 +143,7 @@ Fluxo e regras em [LESSONS_HANDOFF](LESSONS_HANDOFF.md) e [STUDIO_AI](STUDIO_AI.
 ## Regras de aceite
 
 Feature concluída = artefato real persistido + verificação automatizada focada.
-Mudança visual = frames reais do FFmpeg inspecionados e Studio checado em 390 px e
-desktop. Não afirmar ganho de desempenho sem medida persistida em `docs/evidence/`.
+Mudança visual = frames reais do FFmpeg inspecionados e Studio checado em desktop. Não afirmar ganho de desempenho sem medida persistida em `docs/evidence/`.
 
 ## Fora de escopo
 

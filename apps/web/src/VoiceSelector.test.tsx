@@ -34,7 +34,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 test("an episode without detected voices offers nothing to confirm", async () => {
   openSelector();
   await settle();
-  expect(screen.getByText("Nenhuma voz detectada ainda neste episódio.")).toBeTruthy();
+  expect(screen.getByText(/Ainda sem vozes neste episódio/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Ouvir vozes detectadas" })).toBeNull();
 });
 
