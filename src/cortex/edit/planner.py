@@ -185,19 +185,16 @@ def plan_safe_segments(
 
 
 def _forbidden_zones(
-    words: list[TranscriptWord], vad_intervals: list[VadInterval] | None, guard: float = 0.035,
+    words: list[TranscriptWord], guard: float = 0.035,
 ) -> list[tuple[float, float]]:
-    # ``vad_intervals`` is accepted for call-site compatibility but no longer
-    # contributes to the forbidden set (Requirement R2) — VAD is diagnostic
-    # only, guarded word spans are the sole veto on boundary placement.
-    del vad_intervals
+    # VAD is diagnostic only (Requirement R2): guarded word spans are the sole
+    # veto on boundary placement.
     return word_intervals(words, guard)
 
 
 def resolve_jl_cuts(
     segments: list[dict],
     words: list[TranscriptWord],
-    vad_intervals: list[VadInterval] | None,
     energy: EnergyTrack | None,
     max_offset: float,
 ) -> tuple[list[dict], list[dict], dict]:
@@ -227,7 +224,7 @@ def resolve_jl_cuts(
             segment.setdefault("audio_end", segment["end"])
         return resolved, issues, counts
 
-    forbidden = _forbidden_zones(words, vad_intervals)
+    forbidden = _forbidden_zones(words)
 
     for index in range(len(resolved) - 1):
         current = resolved[index]
@@ -461,7 +458,7 @@ def limit_timeline_duration(
         raise ValueError("maximum_seconds deve ser positivo e finito")
     if timeline_duration(segments) <= maximum_seconds:
         return segments, []
-    forbidden = _forbidden_zones(words, vad_intervals)
+    forbidden = _forbidden_zones(words)
     kept: list[dict] = []
     for original in segments:
         segment = dict(original)

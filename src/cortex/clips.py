@@ -1,4 +1,4 @@
-"""One integrated view of every suggested clip: suggestions, exports, publication, manual state."""
+"""One integrated view of every suggested clip: suggestions, exports, manual state."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from cortex.domain.models import ClipPublication, ClipState, ExportItem, ExportItemStatus
+from cortex.domain.models import ClipState, ExportItem, ExportItemStatus
 from cortex.domain.store import DomainStore
 
 ClipStatus = Literal["new", "approved", "exported", "saved", "posted", "discarded"]
@@ -42,10 +42,8 @@ def clip_key(clip: dict[str, Any]) -> str:
                     ("rank", "start_second", "end_second", "pacing"))
 
 
-def derive_status(
-    state: ClipState | None, exports: list[dict[str, Any]], publication: ClipPublication | None,
-) -> ClipStatus:
-    if publication is not None and publication.published:
+def derive_status(state: ClipState | None, exports: list[dict[str, Any]]) -> ClipStatus:
+    if state is not None and state.posted:
         return "posted"
     if state is not None and state.decision == "discarded":
         return "discarded"
@@ -163,16 +161,6 @@ def _exports_by_clip(
     return result
 
 
-def _publication_for(
-    exports: list[dict[str, Any]], publications: dict[str, ClipPublication],
-) -> ClipPublication | None:
-    found = [publications[e["render_artifact_id"]] for e in exports
-             if e["render_artifact_id"] in publications]
-    if not found:
-        return None
-    return max(found, key=lambda p: (p.published, p.updated_at))
-
-
 def _run_summary(run, clip_count: int) -> dict[str, Any]:
     brief = run.brief or {}
     return {
@@ -189,7 +177,7 @@ def _run_summary(run, clip_count: int) -> dict[str, Any]:
 
 def _clip_row(
     clip: dict[str, Any], key: str, run, state: ClipState | None,
-    exports: list[dict[str, Any]], publication: ClipPublication | None,
+    exports: list[dict[str, Any]],
 ) -> dict[str, Any]:
     scores = clip.get("scores") if isinstance(clip.get("scores"), dict) else {}
     score = scores.get("total", clip.get("score"))
@@ -204,8 +192,7 @@ def _clip_row(
         "piece_count": len(clip.get("pieces") or []), "warnings": clip.get("warnings") or [],
         "clip": clip, "state": state.model_dump(mode="json") if state else None,
         "exports": exports,
-        "publication": publication.model_dump(mode="json") if publication else None,
-        "status": derive_status(state, exports, publication),
+        "status": derive_status(state, exports),
     }
 
 
@@ -241,8 +228,6 @@ def count_statuses(clips: list[dict[str, Any]]) -> dict[str, int]:
 def collect_clips(domain: DomainStore, project_ids: list[str], prefix: str) -> dict[str, Any]:
     warnings: list[str] = []
     states = {(s.workflow_run_id, s.clip_key): s for s in domain.list_clip_states(project_ids)}
-    publications = {p.render_artifact_id: p for project_id in project_ids
-                    for p in domain.list_clip_publications(project_id=project_id, limit=10000)}
     runs = sorted((run for project_id in project_ids
                    for run in domain.list_workflow_runs(project_id)),
                   key=lambda run: run.created_at, reverse=True)
@@ -256,10 +241,7 @@ def collect_clips(domain: DomainStore, project_ids: list[str], prefix: str) -> d
                 continue
             seen.add(key)
             clip_exports = exports.get(key, [])
-            rows.append(_clip_row(
-                clip, key, run, states.get((run.id, key)), clip_exports,
-                _publication_for(clip_exports, publications),
-            ))
+            rows.append(_clip_row(clip, key, run, states.get((run.id, key)), clip_exports))
         rows.sort(key=lambda row: (row["rank"] is None, row["rank"] or 0))
         summaries.append(_run_summary(run, len(rows)))
         clips.extend(rows)

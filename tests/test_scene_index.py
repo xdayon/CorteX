@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -170,7 +171,7 @@ def test_scene_index_service_detects_and_caches(tmp_path: Path) -> None:
 # -- 4. API endpoints --------------------------------------------------------
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
-def test_scene_index_endpoint_creates_job_and_get_returns_document(tmp_path: Path) -> None:
+def test_scene_index_endpoint_creates_job_and_persists_document(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config.ensure_runtime_dirs()
     domain = DomainStore(config.paths.database)
@@ -203,11 +204,9 @@ def test_scene_index_endpoint_creates_job_and_get_returns_document(tmp_path: Pat
     assert final.result is not None and final.result["cached"] is False
 
     artifact_id = final.result["scene_index_artifact_id"]
-    fetched = client.get(f"/api/v1/projects/{project.id}/scenes/{artifact_id}")
-    assert fetched.status_code == 200, fetched.text
-    payload = fetched.json()
-    assert payload["artifact"]["stage"] == "scene_index"
-    assert payload["document"]["cut_count"] == 3
+    artifact = domain.get_stage_artifact(artifact_id)
+    assert artifact.project_id == project.id and artifact.stage == "scene_index"
+    assert json.loads(Path(artifact.path).read_text(encoding="utf-8"))["cut_count"] == 3
 
 
 def test_scene_index_endpoint_rejects_missing_source(tmp_path: Path) -> None:

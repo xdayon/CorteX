@@ -422,7 +422,7 @@ def test_resolve_jl_cuts_applies_offset_and_classifies_kind() -> None:
     expected_offset = round(expected_candidate - 2.0, 3)
     assert abs(expected_offset) > 0.001  # sanity: fixture actually moves the boundary
 
-    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, [], energy, 0.30)
+    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, energy, 0.30)
 
     assert issues == []
     transition = resolved[0]["transition"]
@@ -448,7 +448,7 @@ def test_resolve_jl_cuts_blocks_when_entire_window_is_forbidden_by_word() -> Non
     words = [_word("continuo", 1.7, 2.3)]  # covers the whole +/-0.30 search radius
     energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=[0.5] * 500)
 
-    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, [], energy, 0.30)
+    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, energy, 0.30)
 
     assert counts == {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 1}
     assert len(issues) == 1
@@ -466,7 +466,6 @@ def test_resolve_jl_cuts_is_not_blocked_by_vad_covering_the_whole_window() -> No
     # stop a j/l-cut from finding the same quiet point it would find with no
     # VAD at all (contrast with the "by_word" test above, where an actual
     # guarded word still blocks it).
-    vad_intervals = [VadInterval(start=1.6, end=2.4, duration=0.8, start_sample=0, end_sample=1)]
     rms = [0.5] * 500
     for i in range(180, 195):
         rms[i] = 0.01
@@ -475,7 +474,7 @@ def test_resolve_jl_cuts_is_not_blocked_by_vad_covering_the_whole_window() -> No
     expected_offset = round(expected_candidate - 2.0, 3)
     assert abs(expected_offset) > 0.001  # sanity: fixture actually moves the boundary
 
-    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), [], vad_intervals, energy, 0.30)
+    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), [], energy, 0.30)
 
     assert counts["jl_blocked"] == 0
     assert issues == []
@@ -490,7 +489,7 @@ def test_resolve_jl_cuts_noop_when_max_offset_zero() -> None:
     words = [_word("um", 1.0, 1.8), _word("dois", 2.7, 3.2)]
     energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=[0.5] * 500)
 
-    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, [], energy, 0.0)
+    resolved, issues, counts = resolve_jl_cuts(_jl_segments(), words, energy, 0.0)
 
     assert issues == []
     assert counts == {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 0}
@@ -674,7 +673,7 @@ def test_resolve_jl_cuts_blocks_when_neighbor_segment_cannot_absorb_offset() -> 
         rms[i] = 0.01
     energy = EnergyTrack(origin=0.0, frame_seconds=0.01, rms=rms)
 
-    resolved, issues, counts = resolve_jl_cuts(segments, [], [], energy, 0.30)
+    resolved, issues, counts = resolve_jl_cuts(segments, [], energy, 0.30)
 
     assert counts == {"j_cuts": 0, "l_cuts": 0, "jl_blocked": 1}
     assert issues[0]["code"] == "jl_no_safe_boundary"

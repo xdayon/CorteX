@@ -16,7 +16,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from cortex.analyze.scope import SourceRange
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import (
-    RenderPreset,
     SourceAsset,
     SourceKind,
     WorkflowRun,
@@ -25,19 +24,15 @@ from cortex.domain.models import (
 from cortex.domain.store import (
     DomainStore,
     ProjectNotFoundError,
-    RenderPresetNameConflictError,
-    RenderPresetNotFoundError,
     SourceAssetNotFoundError,
     StageArtifactNotFoundError,
     TranscriptArtifactNotFoundError,
     WorkflowRunNotFoundError,
 )
-from cortex.hardware import collect_hardware_snapshot
 from cortex.ingest.ffprobe import FFprobeError, duration_seconds, probe_media
 from cortex.ingest.upload import UploadValidationError, store_upload_stream
 from cortex.jobs import InvalidJobTransitionError, JobNotFoundError, JobStore
 from cortex.paths import renders_dir, source_dir
-from cortex.project_status import read_project_status
 from cortex.render.schemas import RenderDocument, RenderSettings, RenderSettingsPatch
 from cortex.schemas import JobCreate, JobStatus, JobType
 
@@ -48,40 +43,10 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1)
 
 
-class RenderPresetCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=120)
-    settings: RenderSettings
-
-
-class RenderPresetUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str | None = Field(default=None, min_length=1, max_length=120)
-    settings: RenderSettings | None = None
-
-    @model_validator(mode="after")
-    def require_change(self) -> "RenderPresetUpdate":
-        if self.name is None and self.settings is None:
-            raise ValueError("name ou settings é obrigatório")
-        return self
-
-
 class YoutubeSourceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str = Field(min_length=1)
-
-
-class TranscribeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    source_asset_id: str
-    model: str | None = None
-    language: str | None = None
-    batch_size: int | None = Field(default=None, ge=0, le=64)
-    vad: bool | None = None
 
 
 class EpisodeVoiceSelection(BaseModel):
@@ -143,12 +108,6 @@ class WorkflowRunCreate(BaseModel):
         if self.maximum_seconds < self.minimum_seconds:
             raise ValueError("maximum_seconds deve ser maior ou igual a minimum_seconds")
         return self
-
-
-class AnalysisRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    transcript_artifact_id: str
 
 
 class EditPlanRequest(BaseModel):
@@ -220,24 +179,6 @@ class RenderRequest(BaseModel):
             self.encoder is not None or self.headline is not None or self.render_settings_override is not None
         ):
             raise ValueError("render_settings não pode ser combinado com encoder/headline legados")
-        return self
-
-
-class SuggestionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    transcript_artifact_id: str
-    analysis_artifact_id: str
-    count: int = Field(default=10, ge=1, le=25)
-    minimum_seconds: int = Field(default=50, ge=15, le=180)
-    maximum_seconds: int = Field(default=120, ge=15, le=180)
-    primary_subject: str | None = Field(default=None, max_length=200)
-    topic: str | None = Field(default=None, max_length=500)
-    instructions: str | None = Field(default=None, max_length=4000)
-    @model_validator(mode="after")
-    def duration_order(self) -> "SuggestionRequest":
-        if self.minimum_seconds > self.maximum_seconds:
-            raise ValueError("minimum_seconds cannot exceed maximum_seconds")
         return self
 
 
@@ -544,88 +485,13 @@ def create_app(config: CortexConfig | None = None):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.get(f"{router_prefix}/caption-fonts/{{family}}/{{weight}}")
-    def caption_font(family: str, weight: int):
-        if family not in {"Montserrat", "Lato", "DejaVu Sans"} or weight not in {400, 800, 900}:
-            raise HTTPException(status_code=404, detail="Fonte indisponível")
-        try:
-            result = subprocess.run(
-                ["fc-match", "-f", "%{file}", f"{family}:weight={ {400: 'regular', 800: 'extrabold', 900: 'black'}[weight]}"],
-                capture_output=True, text=True, timeout=5, check=True,
-            )
-            path = Path(result.stdout.strip())
-            if not path.is_file():
-                raise ValueError("Fonte não encontrada")
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            raise HTTPException(status_code=503, detail="Fonte local indisponível") from exc
-        return FileResponse(path, media_type="font/ttf")
-
     @app.get(f"{router_prefix}/health")
     def health() -> dict[str, str]:
         return {"status": "ok", "service": "cortex", "version": "0.1.0"}
 
-    @app.get(f"{router_prefix}/hardware")
-    def hardware():
-        return collect_hardware_snapshot()
-
-    @app.get(f"{router_prefix}/project-status")
-    def project_status():
-        return read_project_status()
-
     @app.post(f"{router_prefix}/projects", status_code=201)
     def create_project(request: ProjectCreate):
         return domain.create_project(request.name)
-
-    @app.get(f"{router_prefix}/projects")
-    def list_projects(limit: int = Query(default=100, ge=1, le=500)):
-        return domain.list_projects(limit)
-
-    @app.get(f"{router_prefix}/projects/{{project_id}}")
-    def get_project(project_id: str):
-        try:
-            return domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-
-    @app.get(f"{router_prefix}/projects/{{project_id}}/render-presets")
-    def list_render_presets(project_id: str):
-        try:
-            domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        return domain.list_render_presets(project_id)
-
-    @app.post(f"{router_prefix}/projects/{{project_id}}/render-presets", status_code=201)
-    def create_render_preset(project_id: str, request: RenderPresetCreate):
-        try:
-            domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        try:
-            return domain.create_render_preset(RenderPreset(
-                project_id=project_id,
-                name=request.name,
-                settings=request.settings.model_dump(mode="json"),
-            ))
-        except RenderPresetNameConflictError as exc:
-            raise HTTPException(status_code=409, detail="Já existe um preset com este nome") from exc
-
-    @app.put(f"{router_prefix}/projects/{{project_id}}/render-presets/{{preset_id}}")
-    def update_render_preset(project_id: str, preset_id: str, request: RenderPresetUpdate):
-        try:
-            domain.get_project(project_id)
-            return domain.update_render_preset(
-                project_id,
-                preset_id,
-                name=request.name,
-                settings=(request.settings.model_dump(mode="json") if request.settings else None),
-            )
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        except RenderPresetNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Preset não encontrado") from exc
-        except RenderPresetNameConflictError as exc:
-            raise HTTPException(status_code=409, detail="Já existe um preset com este nome") from exc
 
     @app.post(f"{router_prefix}/projects/{{project_id}}/sources/upload", status_code=201)
     async def upload_source(project_id: str, file: UploadFile = File(...)):
@@ -674,14 +540,6 @@ def create_app(config: CortexConfig | None = None):
             project_id=project_id,
             payload={"url": request.url},
         ))
-
-    @app.get(f"{router_prefix}/projects/{{project_id}}/sources")
-    def list_sources(project_id: str):
-        try:
-            domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        return domain.list_source_assets(project_id)
 
     def _preview_source(project_id: str, source_asset_id: str):
         try:
@@ -818,14 +676,6 @@ def create_app(config: CortexConfig | None = None):
             )
         return run
 
-    @app.get(f"{router_prefix}/projects/{{project_id}}/runs")
-    def list_workflow_runs(project_id: str):
-        try:
-            domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        return domain.list_workflow_runs(project_id)
-
     @app.get(f"{router_prefix}/projects/{{project_id}}/runs/{{run_id}}")
     def get_workflow_run(project_id: str, run_id: str):
         try:
@@ -835,35 +685,6 @@ def create_app(config: CortexConfig | None = None):
         if run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Processamento não encontrado")
         return run
-
-    @app.post(f"{router_prefix}/projects/{{project_id}}/transcribe", status_code=201)
-    def create_transcribe_job(project_id: str, request: TranscribeRequest):
-        try:
-            domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        try:
-            asset = domain.get_source_asset(request.source_asset_id)
-        except SourceAssetNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Fonte não encontrada") from exc
-        if asset.project_id != project_id:
-            raise HTTPException(status_code=400, detail="Fonte não pertence a este projeto")
-
-        overrides: dict[str, Any] = {}
-        if request.model is not None:
-            overrides["model"] = request.model
-        if request.language is not None:
-            overrides["language"] = request.language
-        if request.batch_size is not None:
-            overrides["batch_size"] = request.batch_size
-        if request.vad is not None:
-            overrides["vad"] = request.vad
-
-        return jobs.create(JobCreate(
-            type=JobType.TRANSCRIPTION,
-            project_id=project_id,
-            payload={"source_asset_id": request.source_asset_id, "overrides": overrides},
-        ))
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/transcripts/{{artifact_id}}")
     def get_transcript(project_id: str, artifact_id: str):
@@ -876,40 +697,6 @@ def create_app(config: CortexConfig | None = None):
         path = Path(artifact.path)
         if not path.exists():
             raise HTTPException(status_code=410, detail="Arquivo do transcript não está disponível")
-        return {
-            "artifact": artifact,
-            "document": json.loads(path.read_text(encoding="utf-8")),
-        }
-
-    @app.post(f"{router_prefix}/projects/{{project_id}}/analyze", status_code=201)
-    def create_analysis_job(project_id: str, request: AnalysisRequest):
-        try:
-            domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        try:
-            transcript = domain.get_transcript_artifact(request.transcript_artifact_id)
-        except TranscriptArtifactNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Transcript não encontrado") from exc
-        if transcript.project_id != project_id:
-            raise HTTPException(status_code=400, detail="Transcript não pertence a este projeto")
-        return jobs.create(JobCreate(
-            type=JobType.ANALYSIS,
-            project_id=project_id,
-            payload={"transcript_artifact_id": transcript.id},
-        ))
-
-    @app.get(f"{router_prefix}/projects/{{project_id}}/analysis/{{artifact_id}}")
-    def get_analysis(project_id: str, artifact_id: str):
-        try:
-            artifact = domain.get_stage_artifact(artifact_id)
-        except StageArtifactNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Análise não encontrada") from exc
-        if artifact.project_id != project_id or artifact.stage != "analysis":
-            raise HTTPException(status_code=404, detail="Análise não encontrada")
-        path = Path(artifact.path)
-        if not path.exists():
-            raise HTTPException(status_code=410, detail="Arquivo da análise não está disponível")
         return {
             "artifact": artifact,
             "document": json.loads(path.read_text(encoding="utf-8")),
@@ -938,22 +725,6 @@ def create_app(config: CortexConfig | None = None):
             payload={"source_asset_id": asset.id, "scene_threshold": request.scene_threshold,
                      "source_ranges": [r.model_dump() for r in request.source_ranges] if request.source_ranges else None},
         ))
-
-    @app.get(f"{router_prefix}/projects/{{project_id}}/scenes/{{artifact_id}}")
-    def get_scene_index(project_id: str, artifact_id: str):
-        try:
-            artifact = domain.get_stage_artifact(artifact_id)
-        except StageArtifactNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Índice de cenas não encontrado") from exc
-        if artifact.project_id != project_id or artifact.stage != "scene_index":
-            raise HTTPException(status_code=404, detail="Índice de cenas não encontrado")
-        path = Path(artifact.path)
-        if not path.exists():
-            raise HTTPException(status_code=410, detail="Arquivo do índice de cenas não está disponível")
-        return {
-            "artifact": artifact,
-            "document": json.loads(path.read_text(encoding="utf-8")),
-        }
 
     @app.post(f"{router_prefix}/projects/{{project_id}}/edit-plans", status_code=201)
     def create_edit_plan_job(project_id: str, request: EditPlanRequest):
@@ -1136,34 +907,6 @@ def create_app(config: CortexConfig | None = None):
             poster, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"},
         )
 
-    @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/report")
-    def get_render_report(project_id: str, artifact_id: str):
-        try:
-            artifact = domain.get_stage_artifact(artifact_id)
-        except StageArtifactNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Render não encontrado") from exc
-        if artifact.project_id != project_id or artifact.stage != "render":
-            raise HTTPException(status_code=404, detail="Render não encontrado")
-        render_root = renders_dir(settings, project_id).resolve()
-        manifest_path = Path(artifact.path).resolve()
-        if not manifest_path.is_relative_to(render_root) or not manifest_path.is_file():
-            raise HTTPException(status_code=410, detail="Relatório do render não está disponível")
-        try:
-            document = RenderDocument.model_validate_json(
-                manifest_path.read_text(encoding="utf-8")
-            )
-        except (OSError, UnicodeDecodeError, ValidationError) as exc:
-            raise HTTPException(
-                status_code=410, detail="Relatório do render não está disponível"
-            ) from exc
-        if document.project_id != project_id or document.publication is None:
-            raise HTTPException(status_code=410, detail="Relatório do render não está disponível")
-        return FileResponse(
-            manifest_path,
-            media_type="application/json",
-            filename=f"cortex-quality-report-{artifact.id[:12]}.json",
-        )
-
     @app.get(f"{router_prefix}/projects/{{project_id}}/renders/{{artifact_id}}/subtitles")
     def get_render_subtitles(project_id: str, artifact_id: str):
         artifact, document, render_root = render_document(project_id, artifact_id)
@@ -1182,46 +925,6 @@ def create_app(config: CortexConfig | None = None):
             filename=render_download_name(document, artifact.id, ".srt"),
         )
 
-    @app.get(f"{router_prefix}/projects/{{project_id}}/artifacts")
-    def list_stage_artifacts(project_id: str, stage: str | None = None):
-        try:
-            domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        return domain.list_stage_artifacts(project_id, stage)
-
-    @app.post(f"{router_prefix}/projects/{{project_id}}/suggest", status_code=201)
-    def create_suggestion_job(project_id: str, request: SuggestionRequest):
-        try:
-            domain.get_project(project_id)
-        except ProjectNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Projeto não encontrado") from exc
-        try:
-            artifact = domain.get_transcript_artifact(request.transcript_artifact_id)
-        except TranscriptArtifactNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Transcript não encontrado") from exc
-        if artifact.project_id != project_id:
-            raise HTTPException(status_code=400, detail="Transcript não pertence a este projeto")
-        try:
-            analysis = domain.get_stage_artifact(request.analysis_artifact_id)
-        except StageArtifactNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Análise não encontrada") from exc
-        if analysis.project_id != project_id or analysis.stage != "analysis":
-            raise HTTPException(status_code=400, detail="Análise não pertence a este projeto")
-        brief = request.model_dump(
-            exclude={"transcript_artifact_id", "analysis_artifact_id"},
-            exclude_none=True,
-        )
-        return jobs.create(JobCreate(
-            type=JobType.SUGGESTION,
-            project_id=project_id,
-            payload={
-                "transcript_artifact_id": request.transcript_artifact_id,
-                "analysis_artifact_id": request.analysis_artifact_id,
-                "brief": brief,
-            },
-        ))
-
     @app.get(f"{router_prefix}/projects/{{project_id}}/suggestions/{{artifact_id}}")
     def get_suggestion(project_id: str, artifact_id: str):
         try:
@@ -1234,10 +937,6 @@ def create_app(config: CortexConfig | None = None):
         if not path.exists():
             raise HTTPException(status_code=410, detail="Arquivo da sugestão não está disponível")
         return {"artifact": artifact, "document": json.loads(path.read_text(encoding="utf-8"))}
-
-    @app.post(f"{router_prefix}/jobs", status_code=201)
-    def create_job(request: JobCreate):
-        return jobs.create(request)
 
     @app.get(f"{router_prefix}/jobs")
     def list_jobs(limit: int = Query(default=50, ge=1, le=200)):
@@ -1284,8 +983,6 @@ def create_app(config: CortexConfig | None = None):
 
     from cortex.review_api import create_review_router
     app.include_router(create_review_router(router_prefix, domain, jobs))
-    from cortex.publication_api import create_publication_router
-    app.include_router(create_publication_router(router_prefix, domain))
     from cortex.clips_api import create_clips_router
     app.include_router(create_clips_router(router_prefix, domain, library, settings))
     from cortex.overlay_api import create_overlay_router

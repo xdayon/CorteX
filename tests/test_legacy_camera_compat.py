@@ -19,7 +19,7 @@ from cortex.domain.models import (
 )
 from cortex.domain.store import DomainStore
 from cortex.jobs import JobStore
-from cortex.render.schemas import RenderDocument, RenderSettings
+from cortex.render.schemas import RenderDocument, RenderSettings, RenderSettingsPatch
 from cortex.schemas import JobCreate, JobStatus, JobType
 from cortex.worker import process_next
 
@@ -112,7 +112,18 @@ def test_legacy_render_manifest_still_validates() -> None:
     assert document.static_face_crops[0]["provenance"] == {"fallback": "center_crop"}
     assert document.requested_settings.framing.mode == "speaker_auto"
     assert document.effective_settings.framing.mode == "speaker_face"
-    assert document.requested_settings.framing.scene_overrides[0].target == "full"
+    assert not hasattr(document.requested_settings.framing, "scene_overrides")
+    assert "scene_overrides" not in document.requested_settings.model_dump()["framing"]
+
+
+def test_retired_scene_overrides_are_dropped_from_settings_and_patch() -> None:
+    framing = RenderSettings.model_validate(_settings("vertical_crop")).framing
+    assert framing.mode == "vertical_crop"
+    assert not hasattr(framing, "scene_overrides")
+    patch = RenderSettingsPatch.model_validate({"framing": {
+        "mode": "vertical_crop", "scene_overrides": [{"scene_index": 1, "target": "left"}],
+    }})
+    assert patch.framing is not None and not hasattr(patch.framing, "scene_overrides")
 
 
 def test_legacy_render_settings_stay_readable() -> None:

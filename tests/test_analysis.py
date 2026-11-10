@@ -6,17 +6,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from asgi_client import ASGITestClient as TestClient
 
 from cortex.analyze.audio import pause_intervals, read_normalized_wav, waveform_resolutions
 from cortex.analyze.schemas import AnalysisDocument, LoudnessMetrics, VadInterval
 from cortex.analyze.service import AnalysisJobCancelled, AnalysisService
-from cortex.api import create_app
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind, TranscriptArtifact
 from cortex.domain.store import DomainStore
 from cortex.jobs import JobStore
-from cortex.schemas import JobStatus
+from cortex.schemas import JobCreate, JobStatus, JobType
 from cortex.worker import process_next
 
 from conftest import FakeTranscriptionEngine
@@ -165,7 +163,7 @@ def test_analysis_service_persists_schema_reuses_cache_and_cancels(
     assert domain.list_stage_artifacts(other_project.id, "analysis") == []
 
 
-def test_analysis_api_worker_and_artifact_get(
+def test_analysis_worker_job_and_artifact(
     tmp_path: Path, short_wav: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
@@ -173,26 +171,20 @@ def test_analysis_api_worker_and_artifact_get(
     domain = DomainStore(config.paths.database)
     project, _source, transcript = _media_fixture(config, domain, short_wav)
     _fake_engines(monkeypatch)
-    client = TestClient(create_app(config))
-
-    response = client.post(
-        f"/api/v1/projects/{project.id}/analyze",
-        json={"transcript_artifact_id": transcript.id},
-    )
-    assert response.status_code == 201, response.text
-    queued = response.json()
+    jobs = JobStore(config.paths.database)
+    queued = jobs.create(JobCreate(
+        type=JobType.ANALYSIS, project_id=project.id,
+        payload={"transcript_artifact_id": transcript.id},
+    )).model_dump(mode="json")
     assert queued["type"] == "analysis" and queued["status"] == "queued"
 
-    jobs = JobStore(config.paths.database)
     assert process_next(config, jobs, domain, FakeTranscriptionEngine()) is True
     final = jobs.get(queued["id"])
     assert final.status == JobStatus.SUCCEEDED
     assert final.result is not None and final.result["cached"] is False
 
     artifact_id = final.result["analysis_artifact_id"]
-    fetched = client.get(f"/api/v1/projects/{project.id}/analysis/{artifact_id}")
-    assert fetched.status_code == 200, fetched.text
-    payload = fetched.json()
-    assert payload["artifact"]["stage"] == "analysis"
-    assert payload["document"]["schema_version"] == 2
+    artifact = domain.get_stage_artifact(artifact_id)
+    assert artifact.project_id == project.id and artifact.stage == "analysis"
+    assert json.loads(Path(artifact.path).read_text(encoding="utf-8"))["schema_version"] == 2
     assert json.loads(Path(final.result["analysis_path"]).read_text())["input_hash"]

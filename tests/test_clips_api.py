@@ -8,7 +8,7 @@ from asgi_client import ASGITestClient
 from cortex.api import create_app
 from cortex.clips import clip_key, derive_status, js_number
 from cortex.domain.models import (
-    ClipPublication, ExportBatch, ExportItem, ExportItemStatus, SourceAsset, SourceKind,
+    ClipState, ExportBatch, ExportItem, ExportItemStatus, SourceAsset, SourceKind,
     StageArtifact, WorkflowRun,
 )
 from cortex.domain.store import DomainStore
@@ -75,9 +75,8 @@ def _world(tmp_path: Path):
     )]
     with domain.transaction() as connection:
         domain.create_export_batch(batch, connection=connection)
-    domain.upsert_clip_publication(ClipPublication(
-        project_id=project.id, render_artifact_id=export.id, title="T", published=True,
-        platforms=["instagram"],
+    domain.upsert_clip_state(ClipState(
+        project_id=project.id, workflow_run_id=run.id, clip_key=KEYS[0], posted=True,
     ))
     client = ASGITestClient(create_app(config))
     return client, domain, project, run, export, draft, loose
@@ -96,11 +95,16 @@ def test_js_number_and_key_mirror_javascript() -> None:
 
 
 def test_derive_status_precedence() -> None:
-    assert derive_status(None, [], None) == "new"
-    assert derive_status(None, [{"x": 1}], None) == "exported"
+    assert derive_status(None, []) == "new"
+    assert derive_status(None, [{"x": 1}]) == "exported"
+    state = ClipState(project_id="p", workflow_run_id="r", clip_key="k")
+    saved = state.model_copy(update={"saved": True})
+    assert derive_status(saved, [{"x": 1}]) == "saved"
+    discarded = state.model_copy(update={"decision": "discarded", "posted": True})
+    assert derive_status(discarded, []) == "posted"
 
 
-def test_episode_clips_integrates_exports_publication_and_state(tmp_path: Path) -> None:
+def test_episode_clips_integrates_exports_and_state(tmp_path: Path) -> None:
     client, _, project, run, export, draft, loose = _world(tmp_path)
     response = client.get(f"{P}/episodes/local-{project.id}/clips")
     assert response.status_code == 200
@@ -112,7 +116,7 @@ def test_episode_clips_integrates_exports_publication_and_state(tmp_path: Path) 
     assert first["exports"][0]["render_artifact_id"] == export.id
     assert first["exports"][0]["media_url"] == f"{P}/projects/{project.id}/renders/{export.id}/media"
     assert first["exports"][0]["headline"] == "Manchete"
-    assert first["publication"]["published"] is True
+    assert first["state"]["posted"] is True and "publication" not in first
     assert first["source_asset_id"] == run.source_asset_id
     assert body["runs"][0]["source_asset_id"] == run.source_asset_id
     assert body["runs"][0]["clip_count"] == 3 and body["runs"][0]["brief"]["count"] == 3
@@ -194,3 +198,27 @@ def test_unreadable_suggestion_is_a_warning_not_a_500(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["clips"] == [] and body["warnings"]
+
+
+def test_posted_is_a_manual_state(tmp_path: Path) -> None:
+    client, domain, project, run, *_ = _world(tmp_path)
+    key = KEYS[1]
+    posted = _patch(client, project, run, key, posted=True).json()["items"][0]
+    assert posted["posted"] is True and posted["posted_at"]
+    again = _patch(client, project, run, key, posted=True).json()["items"][0]
+    assert again["posted_at"] == posted["posted_at"]
+    listing = client.get(f"{P}/episodes/local-{project.id}/clips").json()
+    assert listing["clips"][1]["status"] == "posted" and listing["counts"]["posted"] == 2
+    cleared = _patch(client, project, run, key, posted=False).json()["items"][0]
+    assert cleared["posted"] is False and cleared["posted_at"] is None
+    listing = client.get(f"{P}/episodes/local-{project.id}/clips").json()
+    assert listing["clips"][1]["status"] == "new"
+
+
+def test_clip_state_rows_from_before_posted_still_parse() -> None:
+    old = {"id": "x", "project_id": "p", "workflow_run_id": "r", "clip_key": "k",
+           "decision": "approved", "discard_reason": None, "saved": True,
+           "saved_at": "2026-10-20T10:00:00Z", "notes": "",
+           "created_at": "2026-10-20T10:00:00Z", "updated_at": "2026-10-20T10:00:00Z"}
+    state = ClipState.model_validate(old)
+    assert state.posted is False and state.posted_at is None

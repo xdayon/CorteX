@@ -8,7 +8,6 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cortex.config import load_config  # noqa: E402
-from cortex.hardware import collect_hardware_snapshot  # noqa: E402
 from cortex.jobs import InvalidJobTransitionError, JobStore  # noqa: E402
 from cortex.schemas import JobCreate, JobStatus, JobType, JobUpdate, PipelineStage  # noqa: E402
 
@@ -59,24 +58,6 @@ class JobStoreTests(unittest.TestCase):
         self.store.update(job.id, JobUpdate(status=JobStatus.RUNNING, progress=50))
         with self.assertRaises(InvalidJobTransitionError):
             self.store.update(job.id, JobUpdate(progress=25))
-
-
-class FakeNvml:
-    @staticmethod
-    def nvmlInit(): pass
-
-    @staticmethod
-    def nvmlShutdown(): pass
-
-    @staticmethod
-    def nvmlDeviceGetCount(): return 0
-
-
-class HardwareTests(unittest.TestCase):
-    def test_no_gpu_is_reported_explicitly(self):
-        snapshot = collect_hardware_snapshot(FakeNvml)
-        self.assertEqual(snapshot.gpus[0].state, "unavailable")
-        self.assertGreaterEqual(snapshot.cpu.logical_cores, 1)
 
 
 if __name__ == "__main__":

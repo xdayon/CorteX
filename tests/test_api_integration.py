@@ -13,7 +13,7 @@ from cortex.api import create_app  # noqa: E402
 from cortex.config import load_config  # noqa: E402
 from cortex.domain.store import DomainStore  # noqa: E402
 from cortex.jobs import JobStore  # noqa: E402
-from cortex.schemas import JobStatus  # noqa: E402
+from cortex.schemas import JobCreate, JobStatus, JobType  # noqa: E402
 from cortex.worker import process_next  # noqa: E402
 
 from conftest import FakeTranscriptionEngine  # noqa: E402
@@ -84,19 +84,17 @@ class UploadIngestTranscribeIntegrationTests(unittest.TestCase):
         stored_abs = self.config.paths.data_dir / asset["stored_path"]
         self.assertTrue(stored_abs.exists())
 
-        transcribe_resp = self.client.post(
-            f"/api/v1/projects/{project['id']}/transcribe",
-            json={"source_asset_id": asset["id"]},
-        )
-        self.assertEqual(transcribe_resp.status_code, 201, transcribe_resp.text)
-        job = transcribe_resp.json()
+        jobs = JobStore(self.config.paths.database)
+        domain = DomainStore(self.config.paths.database)
+        job = jobs.create(JobCreate(
+            type=JobType.TRANSCRIPTION, project_id=project["id"],
+            payload={"source_asset_id": asset["id"], "overrides": {}},
+        )).model_dump(mode="json")
         self.assertEqual(job["status"], "queued")
         self.assertEqual(job["type"], "transcription")
 
         # Simulate the separate worker process: same SQLite database, fake
         # engine so no GPU/model download is needed in tests.
-        jobs = JobStore(self.config.paths.database)
-        domain = DomainStore(self.config.paths.database)
         engine = FakeTranscriptionEngine()
         processed = process_next(self.config, jobs, domain, engine)
         self.assertTrue(processed)
@@ -130,11 +128,10 @@ class UploadIngestTranscribeIntegrationTests(unittest.TestCase):
 
         # Re-running transcribe for the same asset/config must hit the cache
         # instead of invoking the engine again.
-        transcribe_resp_2 = self.client.post(
-            f"/api/v1/projects/{project['id']}/transcribe",
-            json={"source_asset_id": asset["id"]},
-        )
-        job2 = transcribe_resp_2.json()
+        job2 = jobs.create(JobCreate(
+            type=JobType.TRANSCRIPTION, project_id=project["id"],
+            payload={"source_asset_id": asset["id"], "overrides": {}},
+        )).model_dump(mode="json")
         engine2 = FakeTranscriptionEngine()
         process_next(self.config, jobs, domain, engine2)
         final_job2 = self.client.get(f"/api/v1/jobs/{job2['id']}").json()
@@ -162,15 +159,6 @@ class UploadIngestTranscribeIntegrationTests(unittest.TestCase):
             files={"file": ("clip.mp4", b"data", "video/mp4")},
         )
         self.assertEqual(upload_resp.status_code, 404)
-
-    def test_transcribe_unknown_source_asset_returns_404(self):
-        create_resp = self.client.post("/api/v1/projects", json={"name": "Projeto"})
-        project = create_resp.json()
-        resp = self.client.post(
-            f"/api/v1/projects/{project['id']}/transcribe",
-            json={"source_asset_id": "does-not-exist"},
-        )
-        self.assertEqual(resp.status_code, 404)
 
 
 if __name__ == "__main__":

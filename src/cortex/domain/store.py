@@ -7,13 +7,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from cortex.domain.models import (
-    ClipPublication,
     ClipRevision,
     ClipState,
     ExportBatch,
     ExportItem,
     Project,
-    RenderPreset,
     SourceAsset,
     StageArtifact,
     TranscriptArtifact,
@@ -35,18 +33,6 @@ class TranscriptArtifactNotFoundError(LookupError):
 
 
 class StageArtifactNotFoundError(LookupError):
-    pass
-
-
-class RenderPresetNotFoundError(LookupError):
-    pass
-
-
-class RenderPresetNameConflictError(ValueError):
-    pass
-
-
-class ClipPublicationNotFoundError(LookupError):
     pass
 
 
@@ -176,17 +162,6 @@ class DomainStore:
                     (artifact.input_hash, artifact.schema_version, artifact.path, artifact.id),
                 )
             connection.execute(
-                """CREATE TABLE IF NOT EXISTS render_presets (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    data TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(project_id, name)
-                )"""
-            )
-            connection.execute(
                 """CREATE TABLE IF NOT EXISTS workflow_runs (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
@@ -236,16 +211,6 @@ class DomainStore:
                 )"""
             )
             connection.execute(
-                """CREATE TABLE IF NOT EXISTS clip_publications (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    render_artifact_id TEXT NOT NULL UNIQUE,
-                    data TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )"""
-            )
-            connection.execute(
                 """CREATE TABLE IF NOT EXISTS clip_states (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
@@ -263,10 +228,6 @@ class DomainStore:
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_workflow_runs_project_created
                    ON workflow_runs (project_id, created_at DESC)"""
-            )
-            connection.execute(
-                """CREATE INDEX IF NOT EXISTS idx_render_presets_project_created
-                   ON render_presets (project_id, created_at DESC)"""
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_revisions_run_version "
@@ -291,7 +252,6 @@ class DomainStore:
             for migration_id in (
                 "2026-09-13-export-batches-v1",
                 "2026-09-13-indexed-artifact-cache-v1",
-                "2026-10-14-clip-publications-v1",
                 "2026-10-16-clip-states-v1",
             ):
                 connection.execute(
@@ -708,163 +668,6 @@ class DomainStore:
             if Path(artifact.path).exists():
                 return artifact
         return None
-
-    # -- Render presets -------------------------------------------------
-
-    def create_render_preset(self, preset: RenderPreset) -> RenderPreset:
-        payload = json.dumps(preset.model_dump(mode="json"), ensure_ascii=False)
-        try:
-            with self._connect() as connection:
-                connection.execute(
-                    """INSERT INTO render_presets
-                       (id, project_id, name, data, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        preset.id,
-                        preset.project_id,
-                        preset.name,
-                        payload,
-                        preset.created_at.isoformat(),
-                        preset.updated_at.isoformat(),
-                    ),
-                )
-        except sqlite3.IntegrityError as error:
-            if "render_presets.project_id, render_presets.name" in str(error):
-                raise RenderPresetNameConflictError(
-                    f"render preset named {preset.name!r} already exists for project {preset.project_id}"
-                ) from error
-            raise
-        return preset
-
-    def list_render_presets(self, project_id: str) -> list[RenderPreset]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """SELECT data FROM render_presets WHERE project_id = ?
-                   ORDER BY created_at DESC""",
-                (project_id,),
-            ).fetchall()
-        return [RenderPreset.model_validate_json(row["data"]) for row in rows]
-
-    def get_render_preset(self, project_id: str, preset_id: str) -> RenderPreset:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT data FROM render_presets WHERE id = ? AND project_id = ?",
-                (preset_id, project_id),
-            ).fetchone()
-        if row is None:
-            raise RenderPresetNotFoundError(preset_id)
-        return RenderPreset.model_validate_json(row["data"])
-
-    def update_render_preset(
-        self,
-        project_id: str,
-        preset_id: str,
-        *,
-        name: str | None = None,
-        settings: dict | None = None,
-    ) -> RenderPreset:
-        current = self.get_render_preset(project_id, preset_id)
-        changes: dict[str, object] = {"updated_at": utc_now()}
-        if name is not None:
-            changes["name"] = name
-        if settings is not None:
-            changes["settings"] = settings
-        updated = RenderPreset.model_validate({
-            **current.model_dump(),
-            **changes,
-        })
-        payload = json.dumps(updated.model_dump(mode="json"), ensure_ascii=False)
-        try:
-            with self._connect() as connection:
-                cursor = connection.execute(
-                    """UPDATE render_presets
-                       SET name = ?, data = ?, updated_at = ?
-                       WHERE id = ? AND project_id = ?""",
-                    (
-                        updated.name,
-                        payload,
-                        updated.updated_at.isoformat(),
-                        preset_id,
-                        project_id,
-                    ),
-                )
-        except sqlite3.IntegrityError as error:
-            if "render_presets.project_id, render_presets.name" in str(error):
-                raise RenderPresetNameConflictError(
-                    f"render preset named {updated.name!r} already exists for project {project_id}"
-                ) from error
-            raise
-        if cursor.rowcount != 1:
-            raise RenderPresetNotFoundError(preset_id)
-        return updated
-
-    # -- Clip publications ----------------------------------------------
-
-    def upsert_clip_publication(self, publication: ClipPublication) -> ClipPublication:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT id, created_at FROM clip_publications WHERE render_artifact_id = ?",
-                (publication.render_artifact_id,),
-            ).fetchone()
-            if row is None:
-                saved = publication
-                connection.execute(
-                    """INSERT INTO clip_publications
-                       (id, project_id, render_artifact_id, data, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        saved.id, saved.project_id, saved.render_artifact_id,
-                        json.dumps(saved.model_dump(mode="json"), ensure_ascii=False),
-                        saved.created_at.isoformat(), saved.updated_at.isoformat(),
-                    ),
-                )
-                return saved
-            saved = publication.model_copy(update={
-                "id": row["id"],
-                "created_at": datetime.fromisoformat(row["created_at"]),
-                "updated_at": utc_now(),
-            })
-            connection.execute(
-                "UPDATE clip_publications SET data = ?, updated_at = ? WHERE id = ?",
-                (
-                    json.dumps(saved.model_dump(mode="json"), ensure_ascii=False),
-                    saved.updated_at.isoformat(), saved.id,
-                ),
-            )
-            return saved
-
-    def get_clip_publication(self, project_id: str, render_artifact_id: str) -> ClipPublication:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT data FROM clip_publications WHERE project_id = ? AND render_artifact_id = ?",
-                (project_id, render_artifact_id),
-            ).fetchone()
-        if row is None:
-            raise ClipPublicationNotFoundError(render_artifact_id)
-        return ClipPublication.model_validate_json(row["data"])
-
-    def delete_clip_publication(self, project_id: str, render_artifact_id: str) -> None:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                "DELETE FROM clip_publications WHERE project_id = ? AND render_artifact_id = ?",
-                (project_id, render_artifact_id),
-            )
-        if cursor.rowcount != 1:
-            raise ClipPublicationNotFoundError(render_artifact_id)
-
-    def list_clip_publications(
-        self, *, project_id: str | None = None, limit: int = 200,
-    ) -> list[ClipPublication]:
-        query = "SELECT data FROM clip_publications"
-        params: list[object] = []
-        if project_id is not None:
-            query += " WHERE project_id = ?"
-            params.append(project_id)
-        query += " ORDER BY updated_at DESC, id LIMIT ?"
-        params.append(limit)
-        with self._connect() as connection:
-            rows = connection.execute(query, params).fetchall()
-        return [ClipPublication.model_validate_json(row["data"]) for row in rows]
 
     # -- Clip states ----------------------------------------------------
 

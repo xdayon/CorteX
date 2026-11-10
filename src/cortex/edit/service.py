@@ -474,7 +474,7 @@ class EditPlanService:
                 raise EditPlanJobCancelled()
             progress_cb(90.0, "Resolvendo cortes J/L de áudio")
             segments, jl_issues, jl_counts = resolve_jl_cuts(
-                segments, words, analysis.vad_intervals, energy, effective_max_jl_offset,
+                segments, words, energy, effective_max_jl_offset,
             )
             quality = {**quality, "issues": [*quality["issues"], *jl_issues]}
 

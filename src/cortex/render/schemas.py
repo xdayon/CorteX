@@ -36,23 +36,6 @@ class RenderHeadlineAnimationSettings(BaseModel):
     duration_seconds: float = Field(gt=0.0, le=2.0)
 
 
-class RenderColorSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    caption_text: str = Field(default="#FFFFFF")
-    karaoke_highlight: str = Field(default="#2CE4D7")
-    outline: str = Field(default="#071012")
-    shadow: str = Field(default="#000000B8")
-    editorial_quote_burst: str = Field(default="#11B9AD")
-    editorial_quote_strip: str = Field(default="#FFFFFFF5")
-    editorial_quote_headline: str = Field(default="#071012")
-
-    @field_validator("caption_text", "karaoke_highlight", "outline", "shadow", "editorial_quote_burst", "editorial_quote_strip", "editorial_quote_headline")
-    @classmethod
-    def normalize_hex(cls, value: str) -> str:
-        return _hex_color(value)
-
-
 class RenderTemplateSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -103,15 +86,6 @@ class RenderPunchInSettings(BaseModel):
     alternate_on_jump_cuts: bool = True
 
 
-class SceneFramingOverride(BaseModel):
-    """Legacy per-scene choice; still readable from stored revisions."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    scene_index: int = Field(ge=0)
-    target: Literal["left", "right", "full"]
-
-
 class RenderFramingSettings(BaseModel):
     """Defines how a landscape source occupies a portrait render canvas.
 
@@ -133,7 +107,14 @@ class RenderFramingSettings(BaseModel):
     # faces; focus_x then only applies to scenes without a usable face.
     focus_mode: Literal["manual", "faces"] = "manual"
     punch_in: RenderPunchInSettings = Field(default_factory=RenderPunchInSettings)
-    scene_overrides: list[SceneFramingOverride] = Field(default_factory=list, max_length=500)
+
+    # Stored settings written before scene_overrides was retired still parse.
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_scene_overrides(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "scene_overrides" in data:
+            return {key: value for key, value in data.items() if key != "scene_overrides"}
+        return data
 
     @model_validator(mode="after")
     def _validate_punch_in_anchor(self) -> "RenderFramingSettings":
@@ -141,8 +122,6 @@ class RenderFramingSettings(BaseModel):
             raise ValueError(
                 "foco automático nos rostos só vale para o quadro com fundo desfocado ou a tela cheia"
             )
-        if len({item.scene_index for item in self.scene_overrides}) != len(self.scene_overrides):
-            raise ValueError("scene_overrides não aceita cenas duplicadas")
         if self.punch_in.anchor == "face" and self.mode != "face_static_crop":
             raise ValueError(
                 "punch_in.anchor 'face' exige framing.mode 'face_static_crop'"
@@ -407,7 +386,14 @@ class RenderFramingSettingsPatch(BaseModel):
     # already behave in this patch model: no partial-field patch for nested
     # settings, the incoming object fully replaces punch_in when present.
     punch_in: RenderPunchInSettings | None = None
-    scene_overrides: list[SceneFramingOverride] | None = Field(default=None, max_length=500)
+
+    # Clients that still send scene_overrides are ignored, not rejected.
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_scene_overrides(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "scene_overrides" in data:
+            return {key: value for key, value in data.items() if key != "scene_overrides"}
+        return data
 
 
 class RenderTransitionStyleSettingsPatch(BaseModel):

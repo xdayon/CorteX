@@ -106,7 +106,7 @@ def test_one_action_persists_and_advances_to_review(
     assert run.status == "ready_for_review", run.error or run.message
     assert set(run.artifacts) == {"transcript", "analysis", "suggestion"}
     assert client.get(f"/api/v1/projects/{project.id}/runs/{run_id}").status_code == 200
-    assert client.get(f"/api/v1/projects/{project.id}/sources").json()[0]["id"] == source.id
+    assert [asset.id for asset in domain.list_source_assets(project.id)] == [source.id]
 
 
 def test_run_rejects_inverted_duration(tmp_path: Path) -> None:

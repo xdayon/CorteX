@@ -4,10 +4,8 @@ import json
 import tempfile
 from pathlib import Path
 
-from asgi_client import ASGITestClient as TestClient
 from jsonschema import Draft202012Validator
 
-from cortex.api import create_app
 from cortex.config import CortexConfig, load_config
 from cortex.domain.models import StageArtifact, TranscriptArtifact
 from cortex.domain.store import DomainStore
@@ -234,34 +232,6 @@ def test_suggestion_job_runs_through_worker_with_injected_provider():
         assert final.result["selection"]["schema_version"] == "1.0"
 
 
-def test_suggestion_endpoint_checks_transcript_ownership_and_queues_job():
-    with tempfile.TemporaryDirectory() as directory:
-        tmp_dir = Path(directory)
-        config = _config(tmp_dir)
-        config.ensure_runtime_dirs()
-        domain = DomainStore(config.paths.database)
-        transcript = _transcript(domain, tmp_dir)
-        analysis = _analysis(domain, tmp_dir, transcript)
-        client = TestClient(create_app(config))
-
-        response = client.post(
-            f"/api/v1/projects/{transcript.project_id}/suggest",
-            json={
-                "transcript_artifact_id": transcript.id,
-                "analysis_artifact_id": analysis.id,
-                "count": 2,
-                "minimum_seconds": 30,
-                "maximum_seconds": 90,
-                "topic": "ideia do teste",
-            },
-        )
-
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["type"] == "suggestion"
-        assert body["payload"]["brief"]["count"] == 2
-
-
 def test_suggestion_service_rejects_empty_clip_list():
     with tempfile.TemporaryDirectory() as directory:
         tmp_dir = Path(directory)
@@ -386,38 +356,6 @@ def test_clip_selection_v5_schema_direct_validation():
     assert errors, "clip incompleto deveria falhar a validação do schema"
 
 
-def test_suggestion_request_boundary_counts_and_durations():
-    with tempfile.TemporaryDirectory() as directory:
-        tmp_dir = Path(directory)
-        config = _config(tmp_dir)
-        config.ensure_runtime_dirs()
-        domain = DomainStore(config.paths.database)
-        transcript = _transcript(domain, tmp_dir)
-        analysis = _analysis(domain, tmp_dir, transcript)
-        client = TestClient(create_app(config))
-
-        def post(**overrides):
-            payload = {
-                "transcript_artifact_id": transcript.id,
-                "analysis_artifact_id": analysis.id,
-                "count": 2,
-                "minimum_seconds": 15,
-                "maximum_seconds": 60,
-            }
-            payload.update(overrides)
-            return client.post(f"/api/v1/projects/{transcript.project_id}/suggest", json=payload)
-
-        assert post(count=0).status_code == 422
-        assert post(count=1).status_code == 201
-        assert post(count=25).status_code == 201
-        assert post(count=26).status_code == 422
-        assert post(minimum_seconds=14).status_code == 422
-        assert post(minimum_seconds=15).status_code == 201
-        assert post(maximum_seconds=180).status_code == 201
-        assert post(maximum_seconds=181).status_code == 422
-        assert post(minimum_seconds=60, maximum_seconds=30).status_code == 422
-
-
 def test_clip_config_maximum_seconds_boundary():
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "config.yaml"
@@ -433,28 +371,3 @@ def test_clip_config_maximum_seconds_boundary():
             pass
         else:
             raise AssertionError("maximum_seconds 14 deveria ser rejeitado (ge=15)")
-
-
-def test_suggestion_request_rejects_provider_selection():
-    with tempfile.TemporaryDirectory() as directory:
-        tmp_dir = Path(directory)
-        config = _config(tmp_dir)
-        config.ensure_runtime_dirs()
-        domain = DomainStore(config.paths.database)
-        transcript = _transcript(domain, tmp_dir)
-        analysis = _analysis(domain, tmp_dir, transcript)
-        client = TestClient(create_app(config))
-
-        response = client.post(
-            f"/api/v1/projects/{transcript.project_id}/suggest",
-            json={
-                "transcript_artifact_id": transcript.id,
-                "analysis_artifact_id": analysis.id,
-                "count": 1,
-                "minimum_seconds": 15,
-                "maximum_seconds": 60,
-                "provider": "local_heuristic",
-            },
-        )
-
-        assert response.status_code == 422

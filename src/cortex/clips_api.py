@@ -29,6 +29,7 @@ class ClipStatePatch(BaseModel):
         "weak_hook", "off_topic", "repeated", "bad_edit", "technical", "other"
     ] | None = None
     saved: bool | None = None
+    posted: bool | None = None
     notes: str | None = Field(default=None, max_length=300)
 
 
@@ -42,8 +43,6 @@ def _last_activity(clip: dict[str, Any]) -> str:
     stamps = [clip["run_created_at"]]
     if clip["state"]:
         stamps.append(clip["state"]["updated_at"])
-    if clip["publication"]:
-        stamps.append(clip["publication"]["updated_at"])
     stamps.extend(export["exported_at"] for export in clip["exports"])
     return max(stamps)
 
@@ -65,6 +64,9 @@ def _apply_patch(current: ClipState, patch: ClipStatePatch) -> ClipState:
     if "saved" in fields and patch.saved is not None and patch.saved != current.saved:
         changes["saved"] = patch.saved
         changes["saved_at"] = utc_now() if patch.saved else None
+    if "posted" in fields and patch.posted is not None and patch.posted != current.posted:
+        changes["posted"] = patch.posted
+        changes["posted_at"] = utc_now() if patch.posted else None
     if "notes" in fields and patch.notes is not None:
         changes["notes"] = patch.notes
     return current.model_copy(update=changes)

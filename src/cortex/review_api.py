@@ -20,11 +20,10 @@ from cortex.domain.store import (
     ClipRevisionNotFoundError,
     DomainStore,
     ExportBatchNotFoundError,
-    ExportItemNotFoundError,
     StageArtifactNotFoundError,
     WorkflowRunNotFoundError,
 )
-from cortex.export_batches import advance_export_batch, export_plan_payload
+from cortex.export_batches import export_plan_payload
 from cortex.jobs import InvalidJobTransitionError, JobNotFoundError, JobStore
 from cortex.render.schemas import RenderSettings, RenderSettingsPatch
 from cortex.schemas import JobCreate, JobType
@@ -268,28 +267,6 @@ def create_review_router(prefix: str, domain: DomainStore, jobs: JobStore) -> AP
                 status=WorkflowStatus.READY_FOR_REVIEW, stage="review",
                 active_job_id=None, message="Exportação cancelada; revisão preservada",
             )
-        return domain.get_export_batch(batch.id)
-
-    @router.post("/projects/{project_id}/export-batches/{batch_id}/items/{item_id}/cancel")
-    def cancel_export_item(project_id: str, batch_id: str, item_id: str):
-        batch = owned_batch(project_id, batch_id)
-        try:
-            item = domain.get_export_item(item_id)
-        except ExportItemNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="Item não encontrado") from exc
-        if item.batch_id != batch.id:
-            raise HTTPException(status_code=404, detail="Item não encontrado")
-        if item.active_job_id:
-            try:
-                final = jobs.cancel(item.active_job_id)
-            except InvalidJobTransitionError:
-                final = jobs.get(item.active_job_id)
-            advance_export_batch(final, jobs, domain)
-        elif item.status == ExportItemStatus.QUEUED:
-            with domain.transaction() as connection:
-                domain.update_export_item(
-                    item.id, connection=connection, status=ExportItemStatus.CANCELLED,
-                )
         return domain.get_export_batch(batch.id)
 
     @router.post("/projects/{project_id}/export-batches/{batch_id}/retry")

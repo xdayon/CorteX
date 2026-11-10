@@ -165,11 +165,6 @@ def _on_air(camera_map: CameraMapDocument, starts: list[float], time: float) -> 
     return shot.group if shot.start <= time < shot.end else None
 
 
-def _covers(intervals: Sequence[Interval], start: float, end: float) -> bool:
-    index = bisect.bisect_right([a for a, _b in intervals], start) - 1
-    return index >= 0 and intervals[index][1] >= end
-
-
 def _footage_windows(
     camera_map: CameraMapDocument, roles: dict[int, str], allowed: list[Interval],
     plan: EditPlanDocument,
