@@ -94,7 +94,9 @@ def test_parallel_segments_keep_order_and_cache_keys(tmp_path):
     lesson_b, spec_b = _lesson(tmp_path / "b")
     parallel = assemble(parallel_cfg, lesson_b, spec_b, load_timings(lesson_b / "timings.json"))
     assert parallel["shots"] == serial["shots"]
-    keys = lambda lesson: {p.name: p.read_text() for p in (lesson / "build").glob("seg_*.mp4.hash")}
+    def keys(lesson):
+        return {p.name: p.read_text() for p in (lesson / "build").glob("seg_*.mp4.hash")}
+
     assert keys(lesson_b) == keys(lesson_a)
 
 
@@ -109,3 +111,28 @@ def test_ffmpeg_nice_prefixes_the_command(tmp_path, monkeypatch):
     common.ffmpeg(cfg, "-i", "x")
     assert seen[0][0] == str(cfg.render.ffmpeg)
     assert seen[1][:4] == ["nice", "-n", "10", str(cfg.render.ffmpeg)]
+
+
+def test_cut_caps_decoder_threads_per_segment(tmp_path, monkeypatch):
+    """All segment decoders stay open at once: automatic threads ran a 104-shot lesson out of memory."""
+    from types import SimpleNamespace
+
+    from cortex.lessons import assemble as module
+
+    calls: list[tuple] = []
+
+    def fake_ffmpeg(_cfg, *args, **_kwargs):
+        calls.append(args)
+        args[-1].write_bytes(b"cut")
+
+    monkeypatch.setattr(module, "ffmpeg", fake_ffmpeg)
+    cfg = small_config(tmp_path)
+    segs = [(tmp_path / f"seg{i}.mp4", f"key{i}") for i in range(3)]
+    windows = [SimpleNamespace(start=float(i * 2)) for i in range(3)]
+
+    module.make_cut(cfg, segs, windows, tmp_path, force=True)
+
+    args = list(calls[0])
+    inputs = [i for i, a in enumerate(args) if a == "-i"]
+    assert [args[i + 1] for i in inputs] == [p for p, _ in segs]
+    assert all(args[i - 2:i] == ["-threads", 1] for i in inputs)

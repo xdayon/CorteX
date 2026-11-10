@@ -183,7 +183,9 @@ def make_cut(cfg: CortexConfig, segs: list[tuple[Path, str]], windows: list[Shot
         for i, w in enumerate(windows[1:], start=1):
             fc.append(f"[{prev}][{i}:v]xfade=transition=fade:duration={lc.xfade_seconds}:offset={w.start - lc.xfade_seconds / 2:.3f}[x{i}]")
             prev = f"x{i}"
-        inputs = [a for p, _ in segs for a in ("-i", p)]
+        # Every segment's decoder stays open for the whole chain, but only two work at a time. With automatic threads
+        # each one holds about 70 MB (7.4 GB on a 104-shot lesson, which ran the host out of memory); one thread: 34 MB.
+        inputs = [a for p, _ in segs for a in ("-threads", 1, "-i", p)]
         ffmpeg(cfg, *inputs, "-filter_complex", ";".join(fc), "-map", f"[{prev}]", *video_encode(cfg), out)
 
     return out, _stage(out, key, force, build_it)
