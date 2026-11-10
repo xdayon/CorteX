@@ -102,3 +102,9 @@ test("an episode never mapped is null whether the API answers 404 or an empty 20
   expect(await api.episodeCameras("ep")).toBeNull();
   expect((await api.episodeCameras("ep"))?.job?.id).toBe("j");
 });
+
+test("validation errors read as field and message, not raw JSON", async () => {
+  const body = { detail: [{ type: "extra_forbidden", loc: ["body", "workflow_run_id"], msg: "Extra inputs are not permitted", input: "x" }] };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 422, statusText: "Unprocessable Content" })));
+  await expect(api.episode("ep")).rejects.toThrow("Pedido inválido — workflow_run_id: Extra inputs are not permitted");
+});

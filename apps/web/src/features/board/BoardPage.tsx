@@ -2,8 +2,8 @@ import { useCallback, useMemo, useState } from "react";
 import { api, type BoardClip, type ClipStatus } from "../../api";
 import { usePageTitle } from "../../app/usePageTitle";
 import { clipDuration } from "../../editor/clips";
-import { Link } from "../../router";
-import { buttonClass, Chip, EmptyState, Icon, Segmented, Select, Skeleton } from "../../ui";
+import { episodePath, Link } from "../../router";
+import { Button, buttonClass, Chip, EmptyState, Icon, Segmented, Select, Skeleton } from "../../ui";
 import { BulkBar } from "../clips/BulkBar";
 import { PostedToggle } from "../clips/PostedToggle";
 import { SavedToggle } from "../clips/SavedToggle";
@@ -50,8 +50,11 @@ export function BoardPage() {
 
   return <div className="board">
     <header className="board-head">
+      <div className="board-title">
       <h1>Cortes</h1>
-      <span className="lib-sub">{loading ? "Carregando…" : `${count(["exported", "saved"])} prontos para postar · ${count(["saved"])} salvos · ${count(["posted"])} postados`}</span>
+      <span className="lib-sub">Fila de postagem: exporte, salve no Drive e marque como postado</span>
+      </div>
+      <span className="lib-sub board-count">{loading ? "Carregando…" : `${count(["exported", "saved"])} prontos para postar · ${count(["saved"])} salvos · ${count(["posted"])} postados`}</span>
     </header>
     <div className="board-tools">
       <Segmented label="Situação dos cortes" value={tab} onChange={setTab} options={TABS.map(([value, label]) => ({ value, label, count: MATCH[value] ? count(MATCH[value]!) : rows.length }))} />
@@ -63,7 +66,9 @@ export function BoardPage() {
       <input className="input board-search" type="search" aria-label="Buscar corte" placeholder="Buscar manchete ou episódio" value={query} onChange={event => setQuery(event.target.value)} />
     </div>
     {error && <div className="notice bad" role="alert"><p>Não foi possível carregar os cortes: {error}</p></div>}
-    {loading && <div className="clips-loading" role="status" aria-label="Carregando cortes">{[0, 1, 2].map(index => <Skeleton key={index} height={96} />)}</div>}
+    {loading && <div className="clips-loading" role="status" aria-label="Carregando cortes">{[0, 1, 2].map(index => <div key={index} className="brow brow-skel" aria-hidden="true">
+      <Skeleton width={54} height={96} /><div className="brow-main"><Skeleton width="55%" height={16} /><Skeleton width="35%" height={12} /></div>
+    </div>)}</div>}
     {!loading && !error && !visible.length && <EmptyState title="Nenhum corte aqui">{tab === "post" ? "Cortes exportados aparecem aqui até serem postados." : "Mude a aba ou o filtro para ver outros cortes."}</EmptyState>}
     {!loading && <SelectAll ids={visible.map(rowId)} selected={selected} onChange={setSelected} />}
     <ul className="board-rows">
@@ -71,7 +76,7 @@ export function BoardPage() {
         const id = rowId(row);
         const latest = newestExport(row);
         const on = selected.includes(id);
-        const link = `/episodios/${encodeURIComponent(row.episode_id)}?${new URLSearchParams({ clip: id })}`;
+        const link = `${episodePath(row.episode_id)}?${new URLSearchParams({ clip: id })}`;
         return <li key={id} className={`brow${on ? " act" : ""}`}>
           <button type="button" role="checkbox" aria-checked={on} aria-label={`Selecionar ${headlineOf(row)}`} className={`ck${on ? " on" : ""}`} onClick={() => toggle(id)}>
             <span className="ckb"><Icon name="check" small /></span>
@@ -79,15 +84,15 @@ export function BoardPage() {
           <Poster row={row} />
           <div className="brow-main">
             <span className="brow-title">{headlineOf(row)}</span>
-            <span className="brow-ep">{row.episode_title}</span>
+            <Link to={link} className="brow-ep" aria-label="Abrir no episódio" title={row.episode_title}>{row.episode_title}</Link>
             <span className="brow-meta"><span className="mono">{clipDuration(row.duration)}</span> · {latest ? `exportado em ${shortDate(latest.exported_at)}` : `sugerido em ${shortDate(row.run_created_at)}`}</span>
           </div>
           <Chip tone={STATUS_TONES[row.status]}>{STATUS_LABELS[row.status]}</Chip>
           <div className="brow-actions">
-            {latest && <a className={buttonClass("secondary", "sm")} href={latest.media_url} download>Baixar</a>}
+            {latest && <a className={buttonClass("secondary", "sm")} href={latest.media_url} download>Baixar MP4</a>}
             {latest && <SavedToggle saved={!!row.state?.saved} onClick={() => void commands.toggleSaved([row])} />}
             {latest && <PostedToggle posted={!!row.state?.posted} onClick={() => void commands.togglePosted([row])} />}
-            <Link to={link} className={buttonClass("ghost", "sm")}>Abrir no episódio</Link>
+            <Button size="sm" variant="ghost" icon="spark" onClick={() => commands.edit([row])}>Editar</Button>
           </div>
         </li>;
       })}

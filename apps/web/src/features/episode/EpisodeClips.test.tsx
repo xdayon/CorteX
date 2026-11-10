@@ -83,7 +83,7 @@ test("discarding asks for a reason, dims the row in Todos and removes it from ot
   expect(row.className).toContain("dim");
   expect(within(row).getByText("Descartado")).toBeTruthy();
   expect(screen.getByText("Gancho fraco", { selector: ".cd-chips .chip" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("radio", { name: /Novos/ }));
+  fireEvent.change(screen.getByLabelText("Filtrar por situação"), { target: { value: "new" } });
   expect(screen.queryByRole("button", { name: /Manchete 1/ })).toBeNull();
 });
 

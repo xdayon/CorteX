@@ -1,9 +1,10 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Link, useLocation, type Route } from "../router";
-import { Menu, MenuLabel } from "../ui";
+import { IconButton, Menu, MenuLabel } from "../ui";
 import type { ApiJob } from "../api";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { jobLabel } from "./humanize";
+import { ShortcutsProvider, useShortcutsDialog } from "./ShortcutsDialog";
 import { useActivity } from "./useActivity";
 import "./shell.css";
 
@@ -24,10 +25,15 @@ function ActivityPill() {
   </Menu>;
 }
 
+function ShortcutsButton() {
+  const open = useShortcutsDialog();
+  return <IconButton icon="keyboard" aria-label="Atalhos do teclado" title="Atalhos do teclado (?)" onClick={open} />;
+}
+
 export function Shell({ route, children }: { route: Route; children: ReactNode }) {
   const location = useLocation();
   const inEpisodes = route.name === "episodes" || route.name === "episode" || route.name === "editor";
-  return <div className="shell">
+  return <ShortcutsProvider><div className="shell">
     <header className="top">
       <Link to="/" className="brand" aria-label="CorteX, início"><span className="logo">CX</span><span className="brand-name">CorteX</span></Link>
       <nav className="nav" aria-label="Principal">
@@ -35,8 +41,8 @@ export function Shell({ route, children }: { route: Route; children: ReactNode }
         <Link to="/cortes" className={route.name === "cuts" ? "on" : ""} aria-current={route.name === "cuts" ? "page" : undefined}>Cortes</Link>
       </nav>
       <div className="grow" />
-      <ActivityPill />
+      <div className="top-end"><ActivityPill /><ShortcutsButton /></div>
     </header>
     <main className="page"><ErrorBoundary resetKey={location.split("?")[0]}>{children}</ErrorBoundary></main>
-  </div>;
+  </div></ShortcutsProvider>;
 }

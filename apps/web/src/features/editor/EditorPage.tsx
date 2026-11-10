@@ -81,7 +81,7 @@ function Studio({ id, session }: { id: string; session: ReturnType<typeof useEdi
   return <div className="studio">
     <header className="studio-head">
       <Link to={episodePath(id)} className="back"><Icon name="arrowLeft" small />Voltar ao episódio</Link>
-      <h1>Editor · {label}</h1>
+      <h1 title={rows.length === 1 ? headlineOf(row) : undefined}>Editor{rows.length === 1 ? <span className="studio-clip"> · {headlineOf(row)}</span> : ` · ${label}`}</h1>
       <Select className="clip-select" aria-label="Corte em edição" value={key} onChange={event => focus(event.target.value)}>
         {rows.map(item => <option key={rowId(item)} value={rowId(item)}>{headlineOf(item)}</option>)}
       </Select>

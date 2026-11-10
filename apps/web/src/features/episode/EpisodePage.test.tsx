@@ -80,11 +80,11 @@ test("the list sorts by score, shows counts and opens the first clip in the deta
   page(); await settle();
   expect(titles()).toEqual(["Manchete 3", "Manchete 2", "Manchete 1"]);
   expect(screen.getByRole("heading", { level: 2, name: "Manchete 3" })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: /Todos/ }).textContent).toContain("3");
-  expect(screen.getByRole("radio", { name: /Exportados/ }).textContent).toContain("1");
-  expect(screen.getByRole("radio", { name: /Salvos/ }).textContent).toContain("0");
+  expect(screen.getByRole("option", { name: "Todos (3)" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "Exportados (1)" })).toBeTruthy();
+  expect(screen.getByRole("option", { name: "Salvos (0)" })).toBeTruthy();
   expect(screen.getByText("Conta uma virada")).toBeTruthy();
-  fireEvent.click(screen.getByRole("radio", { name: "Ordem no episódio" }));
+  fireEvent.change(screen.getByLabelText("Ordenar cortes"), { target: { value: "order" } });
   expect(titles()).toEqual(["Manchete 1", "Manchete 2", "Manchete 3"]);
   expect(window.location.search).toContain("sort=order");
 });
@@ -93,7 +93,7 @@ test("filters live in the URL: status, run, search over the transcript, and a de
   window.history.replaceState(null, "", `/episodios/ep?status=exported`);
   page(); await settle();
   expect(titles()).toEqual(["Manchete 2"]);
-  fireEvent.click(screen.getByRole("radio", { name: /Todos/ }));
+  fireEvent.change(screen.getByLabelText("Filtrar por situação"), { target: { value: "all" } });
   expect(window.location.search).not.toContain("status");
   expect(titles()).toHaveLength(3);
   fireEvent.change(screen.getByLabelText("Buscar corte"), { target: { value: "segundo 1" } });

@@ -347,7 +347,15 @@ export function isRemoteOrigin(hostname: string): boolean {
 function detailOf(body: unknown, status: string | number): string {
   const detail = (body as { detail?: unknown } | null)?.detail;
   if (!detail) return String(status);
-  return typeof detail === "string" ? detail : JSON.stringify(detail);
+  if (typeof detail === "string") return detail;
+  // FastAPI validation errors: [{loc: [..., "field"], msg}] → "field: msg" instead of raw JSON.
+  if (Array.isArray(detail) && detail.every(item => item && typeof item === "object" && "msg" in item)) {
+    return "Pedido inválido — " + detail.map(item => {
+      const loc = Array.isArray(item.loc) ? item.loc.filter((part: unknown) => part !== "body").join(".") : "";
+      return loc ? `${loc}: ${item.msg}` : String(item.msg);
+    }).join("; ");
+  }
+  return JSON.stringify(detail);
 }
 
 async function failure(response: Response): Promise<Error> {

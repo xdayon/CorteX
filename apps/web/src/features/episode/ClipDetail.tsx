@@ -1,4 +1,5 @@
 import { forwardRef, useState } from "react";
+import { useShortcutsDialog } from "../../app/ShortcutsDialog";
 import { type ClipRow, type DiscardReason } from "../../api";
 import { formatClock, formatSeconds } from "../../app/humanize";
 import { clipDuration } from "../../editor/clips";
@@ -28,6 +29,7 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; discardRef: R
   const saved = !!row.state?.saved;
   const others = (row.headline_options ?? []).filter(option => option !== row.headline);
   const posted = !!row.state?.posted;
+  const showShortcuts = useShortcutsDialog();
 
   return <article className="cd">
     <div className="cd-player">
@@ -81,6 +83,6 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; discardRef: R
         {row.state?.posted && row.state.posted_at && <li>Postado em {shortDate(row.state.posted_at)}</li>}
       </ul></section>
     </div>
-    <p className="cd-hint">↑ ↓ navegar · Espaço reproduzir · X selecionar · A aprovar · D descartar · S salvo · P postado · E editar</p>
+    <p className="cd-hint">↑ ↓ navegar · Espaço reproduzir · X selecionar · A aprovar · D descartar · S salvo · P postado · E editar · <button type="button" onClick={showShortcuts} aria-label="Ver todos os atalhos">?</button></p>
   </article>;
 });

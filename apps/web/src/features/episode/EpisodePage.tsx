@@ -62,7 +62,7 @@ export function EpisodePage({ id }: { id: string }) {
     <header className="ep-head">
       <EpisodeThumb entry={entry} className="ep-thumb" />
       <div className="ep-info">
-        <h1>{entry.title}</h1>
+        <h1 title={entry.title}>{entry.title}</h1>
         <div className="ep-meta">
           {entry.channel_name && <span>{entry.channel_name}</span>}
           <Chip tone={entry.archived ? "neutral" : status.tone}>{entry.archived ? "Arquivado" : status.label}</Chip>

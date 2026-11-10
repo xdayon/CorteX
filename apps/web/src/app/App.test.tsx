@@ -87,3 +87,18 @@ test("a failed poll shows the connection as lost until the next poll succeeds", 
   expect(screen.getByText("Tudo em dia")).toBeTruthy();
   expect(screen.queryByText("Sem conexão com o CorteX")).toBeNull();
 });
+
+test("the keyboard button and the ? key open the shortcuts dialog, but not while typing", async () => {
+  render(<App />); await settle();
+  fireEvent.click(screen.getByRole("button", { name: "Atalhos do teclado" }));
+  const dialog = screen.getByRole("dialog", { name: "Atalhos do teclado" });
+  expect(within(dialog).getByText("Lista de cortes")).toBeTruthy();
+  expect(within(dialog).getByText("Editor")).toBeTruthy();
+  expect(within(dialog).getByText("Global")).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Fechar" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.keyDown(screen.getByLabelText("Buscar episódio"), { key: "?" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.keyDown(window, { key: "?", shiftKey: true });
+  expect(screen.getByRole("dialog", { name: "Atalhos do teclado" })).toBeTruthy();
+});

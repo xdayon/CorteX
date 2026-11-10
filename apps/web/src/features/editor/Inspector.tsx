@@ -63,7 +63,10 @@ export function Inspector(props: InspectorProps) {
   return <section className="insp" aria-label="Ajustes do corte">
     <Tabs<Tab> label="Seções de ajuste" value={tab} onChange={setTab}
       options={TABS.map(item => ({ value: item.value, label: <><Icon name={item.icon} />{item.label}</> }))} />
-    <p className="insp-step">Passo {step + 1} de {TABS.length} · {TABS[step].hint}</p>
+    <div className="insp-step">
+      <span className="step-dots" aria-hidden="true">{TABS.map((item, index) => <i key={item.value} className={index === step ? "on" : index < step ? "done" : ""} />)}</span>
+      <p>Passo {step + 1} de {TABS.length} · {TABS[step].hint}</p>
+    </div>
     <div className="insp-body" role="tabpanel">
       {scoped && <ScopeBar scope={props.scope} onScope={props.onScope} count={rows.length} customized={props.customized} onReset={props.onReset} />}
       {tab === "caption" && <CaptionTab current={{ key, clip: row.clip }} targets={targets} overlay={props.overlay} loading={props.overlayLoading} error={props.overlayError}

@@ -61,5 +61,8 @@ export const headlineOf = (row: ClipRow) => row.headline || row.title;
 /** Which clips earn the accented score badge: a score of 9 or more. */
 export const isTopScore = (row: ClipRow) => row.score != null && row.score >= 9;
 
+/** Badge tone by value: 9+ accent, 7 to 8.9 neutral bright, below 7 (or missing) muted. */
+export const scoreTone = (score: number | null | undefined) => (score == null || score < 7 ? "lo" : score >= 9 ? "hi" : "mid");
+
 /** Scores with one decimal only when they are not whole, pt-BR comma ("9,7"). */
 export const formatScore = (score: number) => (Number.isInteger(score) ? String(score) : score.toFixed(1).replace(".", ","));

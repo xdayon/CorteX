@@ -14,6 +14,7 @@ type Engine = {
   resize: (forceRepaint?: boolean) => Promise<void>; destroy: () => Promise<void>;
 };
 
+const SLOW_QUEUE_MS = 20000;
 const QUEUE_COPY: Record<string, string> = {
   queued: "Na fila para preparar", planning: "Montando o corte", rendering: "Gerando a prévia",
 };
@@ -128,6 +129,14 @@ export function PreviewPlayer({ preview, overlay, muted, zonesOn, onTime, onPlay
   }, [zonesOn, zones]);
 
   const waiting = !hasVideo && preview.phase !== "error";
+  const stuck = waiting && preview.phase === "queued" && preview.progress <= 0;
+  const [slowQueue, setSlowQueue] = useState(false);
+  useEffect(() => {
+    setSlowQueue(false);
+    if (!stuck) return;
+    const timer = window.setTimeout(() => setSlowQueue(true), SLOW_QUEUE_MS);
+    return () => window.clearTimeout(timer);
+  }, [stuck]);
   return <div className="vid">
     <video
       ref={videoRef} playsInline preload="auto" muted={muted} src={preview.videoUrl ?? undefined} aria-label="Prévia do corte"
@@ -148,7 +157,7 @@ export function PreviewPlayer({ preview, overlay, muted, zonesOn, onTime, onPlay
     {waiting && <div className="preview-overlay" role="status">
       <b>{QUEUE_COPY[preview.phase] ?? "Preparando"}</b>
       {preview.phase !== "queued" && <progress max={100} value={preview.progress} aria-label="Progresso da prévia" />}
-      <small>{preview.phase === "queued" ? "Outro corte está sendo preparado antes deste." : `${Math.round(preview.progress)}% · isso leva alguns segundos`}</small>
+      <small>{preview.phase === "queued" ? (slowQueue ? "Na fila — o processador do CorteX ainda não pegou esta prévia." : "Outro corte está sendo preparado antes deste.") : `${Math.round(preview.progress)}% · isso leva alguns segundos`}</small>
     </div>}
     {preview.phase === "error" && <div className="preview-overlay error" role="alert">
       <b>Não foi possível gerar a prévia</b><small>{preview.error}</small>

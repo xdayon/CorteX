@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClipRow, ClipStatus } from "../../api";
-import { EmptyState, Segmented, Select, Skeleton } from "../../ui";
+import { EmptyState, Select, Skeleton } from "../../ui";
 import { BulkBar } from "../clips/BulkBar";
 import { SelectAll } from "../clips/SelectAll";
 import { rowId, shortDate } from "../clips/clipModel";
@@ -20,6 +20,8 @@ type Sort = "score" | "order" | "recent";
 const STATUS_OPTIONS: Array<[StatusFilter, string]> = [
   ["all", "Todos"], ["new", "Novos"], ["approved", "Aprovados"], ["exported", "Exportados"], ["saved", "Salvos"], ["posted", "Postados"], ["discarded", "Descartados"],
 ];
+
+const SORT_OPTIONS: Array<[Sort, string]> = [["score", "Nota"], ["order", "Ordem no episódio"], ["recent", "Mais recentes"]];
 
 const textOf = (row: ClipRow) => `${row.headline} ${row.title} ${(row.clip.pieces ?? []).map(piece => piece.text).join(" ")}`.toLocaleLowerCase("pt-BR");
 
@@ -88,18 +90,20 @@ export function EpisodeClips({ episodeId, refreshKey }: { episodeId: string; ref
     {!rows.length && !(data?.other_exports.length) ? <EmptyState title="Nenhum corte ainda">Gere uma seleção para ver aqui os cortes sugeridos, exportados e postados.</EmptyState> : rows.length > 0 && <section className="ep2" aria-label="Cortes do episódio">
       <div className="ep2-list">
         <div className="ep2-tools">
-          <Segmented label="Filtrar por situação" value={status} onChange={value => setParams({ status: value === "all" ? null : value })}
-            options={STATUS_OPTIONS.map(([value, label]) => ({ value, label, count: counts[value] ?? 0 }))} />
+          <input className="input" type="search" aria-label="Buscar corte" placeholder="Buscar manchete ou texto" value={query} onChange={event => setParams({ q: event.target.value || null }, { replace: true })} />
           <div className="ep2-tools-row">
+            <Select aria-label="Filtrar por situação" value={status} onChange={event => setParams({ status: event.target.value === "all" ? null : event.target.value })}>
+              {STATUS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label} ({counts[value] ?? 0})</option>)}
+            </Select>
             <Select aria-label="Seleção" value={run} onChange={event => setParams({ run: event.target.value || null })}>
               <option value="">Todas as seleções</option>
               {runs.map(item => <option key={item.id} value={item.id}>Seleção de {shortDate(item.created_at)} · {item.clip_count} cortes</option>)}
             </Select>
-            <input className="input" type="search" aria-label="Buscar corte" placeholder="Buscar manchete ou texto" value={query} onChange={event => setParams({ q: event.target.value || null }, { replace: true })} />
+            <Select aria-label="Ordenar cortes" value={sort} onChange={event => setParams({ sort: event.target.value === "score" ? null : event.target.value })}>
+              {SORT_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </Select>
+            <SelectAll ids={visibleIds} selected={selected} onChange={setSelected} />
           </div>
-          <Segmented label="Ordenar cortes" value={sort} onChange={value => setParams({ sort: value === "score" ? null : value })}
-            options={[{ value: "score", label: "Nota" }, { value: "order", label: "Ordem no episódio" }, { value: "recent", label: "Mais recentes" }]} />
-          <SelectAll ids={visibleIds} selected={selected} onChange={setSelected} />
         </div>
         {visible.length
           ? <ClipRowList rows={visible} activeId={activeId} selected={selected} showRunDate={!run && runs.length > 1} dimDiscarded={status === "all"}

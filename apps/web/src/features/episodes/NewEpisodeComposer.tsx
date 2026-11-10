@@ -1,4 +1,5 @@
 import { useRef, useState, type DragEvent } from "react";
+import { plural } from "../../app/humanize";
 import { Button, Icon, IconButton, ProgressBar } from "../../ui";
 import { RunOptionsDialog } from "./RunOptionsDialog";
 import { DEFAULT_INSTRUCTIONS, hotwordCount, useRunOptions } from "./runOptions";
@@ -35,13 +36,10 @@ export function NewEpisodeComposer() {
   }
 
   const terms = hotwordCount(options.hotwordsText);
-  const chips: Array<[string, string]> = [
-    ["Cortes", String(options.count)],
-    ["Duração", `${options.minimum}–${options.maximum} s`],
-    ["Protagonista", options.primarySubject || "não informado"],
-    ["Direção editorial", options.instructions === DEFAULT_INSTRUCTIONS ? "padrão do perfil" : "personalizada"],
-    ["Nomes e termos", terms ? String(terms) : "adicionar"],
-  ];
+  const summary = [
+    "Opções", plural(options.count, "corte", "cortes"), `${options.minimum}–${options.maximum} s`, options.primarySubject || "sem protagonista",
+    options.instructions === DEFAULT_INSTRUCTIONS ? "direção padrão" : "direção personalizada", terms ? plural(terms, "nome", "nomes") : "sem nomes",
+  ].join(" · ");
   const ready = !!file || url.trim().length > 0;
 
   return <section className={`composer card${dragging ? " dragging" : ""}`} aria-label="Novo episódio"
@@ -63,9 +61,7 @@ export function NewEpisodeComposer() {
       </Button>
     </div>
     <div className="cmp-opts">
-      {chips.map(([key, value]) => <button key={key} type="button" className="ochip" disabled={create.busy} onClick={() => setOptionsOpen(true)}>
-        <span className="k">{key}</span>{value}
-      </button>)}
+      <button type="button" className="ochip" disabled={create.busy} aria-label={`${summary}. Nomes e termos: ${terms || "nenhum"}`} onClick={() => setOptionsOpen(true)}>{summary}</button>
       {options.newClipsOnly && <span className="cmp-note">Trechos já sugeridos são evitados.</span>}
     </div>
     {create.busy && <div className="cmp-progress" role="status">

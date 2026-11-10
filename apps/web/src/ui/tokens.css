@@ -1,3 +1,4 @@
+/* breakpoints: 640 phone · 980 tablet · 1180 wide editor */
 :root {
   color-scheme: dark;
   --bg: #0b0c0e;
@@ -9,11 +10,15 @@
   --line2: #30343c;
   --tx: #ececef;
   --tx2: #a8acb5;
-  --tx3: #8a8f99;
+  --tx3: #8f949e;
   --ac: #22d3e6;
   --acs: rgba(34, 211, 230, .14);
+  --ac-hover: color-mix(in srgb, var(--ac) 88%, white);
   --ink: #04191c;
   --hl: #ffd400;
+  --hl-soft: rgba(255, 212, 0, .13);
+  --hl-line: rgba(255, 212, 0, .45);
+  --hl-tx: #ffe680;
   --ok: #5bd38d;
   --oks: rgba(91, 211, 141, .14);
   --warn: #f3b54a;
@@ -22,10 +27,42 @@
   --bads: rgba(240, 114, 122, .14);
   --font: "Geist Variable", Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+  --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 18px; --fs-2xl: 22px; --fs-3xl: 28px;
+  --lh-tight: 1.25; --lh: 1.45; --lh-loose: 1.6;
+
+  --r-xs: 4px;
+  --r-sm: 6px;
   --r-ctl: 8px;
+  --r-md: 10px;
   --r-card: 14px;
+  --r-lg: 18px;
+  --r-pill: 999px;
+
   --h-ctl: 36px;
   --h-sm: 30px;
   --h-lg: 44px;
+
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 10px 30px rgba(0, 0, 0, .28);
   --shadow-pop: 0 16px 48px rgba(0, 0, 0, .55);
+  --scrim: rgba(5, 6, 8, .72);
+  --veil: rgba(11, 12, 14, .86);
+  --on-media: #fff;
+  --media-bg: #000;
+
+  --tl-seg-bg: #173f46;
+  --tl-seg-line: #2b6b75;
+  --tl-seg-tx: #c3f1f6;
+  --tl-zoom-bg: rgba(34, 211, 230, .1);
+  --tl-zoom-line: rgba(34, 211, 230, .5);
+  --tl-join: #fff;
+
+  --zone-ig: rgba(240, 114, 122, .22);
+  --zone-tt: rgba(34, 211, 230, .2);
+  --zone-line: rgba(255, 255, 255, .6);
+
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
 }
