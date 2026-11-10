@@ -30,6 +30,8 @@ EnvironmentFile=-{str(root / '.env').replace('%', '%%')}
 ExecStart=/usr/bin/bash {unit_quote(str(root / 'scripts/studio.sh'))}
 Restart=always
 RestartSec=5
+# studio.sh exits 143 when systemd stops it (closing the app window); that is a clean stop.
+SuccessExitStatus=143
 KillMode=control-group
 TimeoutStopSec=20
 UMask=0077
@@ -94,9 +96,9 @@ StartupWMClass=CorteX
 Terminal=false
 Categories=AudioVideo;Video;
 """)
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=60)
     # The service lives and dies with the app window (open_studio.py), not with the login.
-    subprocess.run(["systemctl", "--user", "disable", "cortex.service"], check=False)
+    subprocess.run(["systemctl", "--user", "disable", "cortex.service"], check=False, timeout=60)
     print(f"Instalado: {unit}\nAtalho: {launcher}")
     print("Abra o app CorteX pelo atalho: ele inicia o serviço e o encerra ao fechar a janela.")
 

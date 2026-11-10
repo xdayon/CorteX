@@ -101,8 +101,8 @@ UMask=0077
 [Install]
 WantedBy=default.target
 """, encoding="utf-8")
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "--now", "cortex-tunnel.service"], check=True)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, timeout=60)
+    subprocess.run(["systemctl", "--user", "enable", "--now", "cortex-tunnel.service"], check=True, timeout=60)
     print("Serviço cortex-tunnel.service ativado.")
 
 

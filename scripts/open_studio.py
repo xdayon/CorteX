@@ -18,7 +18,7 @@ def app_commands(url: str) -> list[tuple[list[str], Path]]:
     # when the user's normal Chrome is open (it would otherwise just get a blank tab).
     app_args = [f"--app={url}", "--class=CorteX", "--no-first-run", "--no-default-browser-check"]
     candidates = []
-    if subprocess.run(["flatpak", "info", "com.google.Chrome"], capture_output=True).returncode == 0:
+    if subprocess.run(["flatpak", "info", "com.google.Chrome"], capture_output=True, timeout=15).returncode == 0:
         profile = Path.home() / ".var/app/com.google.Chrome/cortex-app"
         candidates.append((["flatpak", "run", "com.google.Chrome",
                             f"--user-data-dir={profile}", *app_args], profile))
