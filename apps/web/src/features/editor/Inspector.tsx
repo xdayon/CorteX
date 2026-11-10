@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type CaptionCorrection, type ClipRow, type OverlayPreview, type RenderSettings, type WorkflowRun } from "../../api";
+import { errorText } from "../../app/humanize";
 import { flatWords, type IndexedWord } from "../../editor/captions";
 import { Button, Icon, Tabs, type IconName } from "../../ui";
 import { rowId } from "../clips/clipModel";
@@ -30,7 +31,7 @@ function useTranscriptWords(projectId: string, artifactId: string) {
     setWords(null); setError("");
     void Promise.resolve(api.transcript(projectId, artifactId, controller.signal))
       .then(result => { if (!controller.signal.aborted && result) setWords(flatWords(result.document.segments)); })
-      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)); });
+      .catch(reason => { if (!controller.signal.aborted) setError(errorText(reason)); });
     return () => controller.abort();
   }, [projectId, artifactId]);
   return { words, error };

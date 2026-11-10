@@ -18,7 +18,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.mocked(api.episodes).mockResolvedValue([]);
-  vi.mocked(api.jobs).mockResolvedValue([]);
+  vi.mocked(api.activeJobs).mockResolvedValue([]);
   vi.mocked(api.clips).mockResolvedValue({ clips: [], total: 0 });
   window.history.replaceState(null, "", "/");
 });
@@ -36,14 +36,14 @@ test("the home route is the episodes library inside the shell, with an idle acti
 });
 
 test("the activity pill shows the newest running job, lists active jobs and polls faster while busy", async () => {
-  vi.mocked(api.jobs).mockResolvedValue([
+  vi.mocked(api.activeJobs).mockResolvedValue([
     job("old", "transcription", "running", 10, "2026-01-01T10:00:00Z"),
     job("new", "ingest_youtube", "running", 42.4, "2026-01-01T11:00:00Z"),
     job("queued", "mystery", "queued", 0, "2026-01-01T11:30:00Z"),
     job("done", "render", "succeeded", 100, "2026-01-01T12:00:00Z"),
   ]);
   render(<App />); await settle();
-  expect(api.jobs).toHaveBeenCalledWith(20, expect.anything());
+  expect(api.activeJobs).toHaveBeenCalledWith(expect.anything());
   const pill = screen.getByRole("button", { name: /Baixando · 42%/ });
   fireEvent.click(pill);
   const menu = screen.getByRole("menu", { name: "Tarefas em andamento" });
@@ -51,18 +51,18 @@ test("the activity pill shows the newest running job, lists active jobs and poll
   expect(within(menu).getByText("Transcrevendo")).toBeTruthy();
   expect(within(menu).getByText("Processando")).toBeTruthy();
   expect(within(menu).queryByText("Renderizando")).toBeNull();
-  const calls = vi.mocked(api.jobs).mock.calls.length;
+  const calls = vi.mocked(api.activeJobs).mock.calls.length;
   await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
-  expect(vi.mocked(api.jobs).mock.calls.length).toBe(calls + 1);
+  expect(vi.mocked(api.activeJobs).mock.calls.length).toBe(calls + 1);
 });
 
 test("while idle the job list is polled every 15 seconds", async () => {
   render(<App />); await settle();
-  const calls = vi.mocked(api.jobs).mock.calls.length;
+  const calls = vi.mocked(api.activeJobs).mock.calls.length;
   await act(async () => { await vi.advanceTimersByTimeAsync(14000); });
-  expect(vi.mocked(api.jobs).mock.calls.length).toBe(calls);
+  expect(vi.mocked(api.activeJobs).mock.calls.length).toBe(calls);
   await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-  expect(vi.mocked(api.jobs).mock.calls.length).toBe(calls + 1);
+  expect(vi.mocked(api.activeJobs).mock.calls.length).toBe(calls + 1);
 });
 
 test("navigation links switch pages without reloading and unknown paths return home", async () => {
@@ -76,4 +76,14 @@ test("navigation links switch pages without reloading and unknown paths return h
   await settle();
   expect(window.location.pathname).toBe("/");
   expect(screen.getByRole("heading", { name: "Episódios" })).toBeTruthy();
+});
+
+test("a failed poll shows the connection as lost until the next poll succeeds", async () => {
+  vi.mocked(api.activeJobs).mockRejectedValueOnce(new Error("down")).mockResolvedValue([]);
+  render(<App />); await settle();
+  expect(screen.getByRole("status", { name: "" }).textContent).toBe("Sem conexão com o CorteX");
+  expect(screen.queryByText("Tudo em dia")).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(15500); });
+  expect(screen.getByText("Tudo em dia")).toBeTruthy();
+  expect(screen.queryByText("Sem conexão com o CorteX")).toBeNull();
 });

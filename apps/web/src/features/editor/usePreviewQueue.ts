@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ClipRow, type RefineStatus, type RenderSettings, type WorkflowRun } from "../../api";
+import { errorText } from "../../app/humanize";
 import { rowId } from "../clips/clipModel";
 import {
-  cancelQuietly, EMPTY_PREVIEW, finishJob, needsWork, phaseOf, pickNext, reasonText, targetOf,
+  cancelQuietly, EMPTY_PREVIEW, finishJob, needsWork, phaseOf, pickNext, targetOf,
   type ClipPreview, type PreviewView,
 } from "./previewQueue";
 
@@ -55,7 +56,7 @@ export function usePreviewQueue(inputs: Inputs) {
           transcriptArtifactId: run.artifacts.transcript, analysisArtifactId: run.artifacts.analysis,
           start: row.clip.start_second, end: row.clip.end_second, profile: row.clip.pacing,
           maximumSeconds: run.brief.maximum_seconds, minimumSeconds: run.brief.minimum_seconds,
-          approximateEdl: row.clip.approximate_edl, confirmedVoice: run.brief.confirmed_voice, primarySubject: run.brief.primary_subject,
+          approximateEdl: row.clip.approximate_edl, workflowRunId: row.run_id, primarySubject: run.brief.primary_subject,
           headline: row.clip.headline || null, tighten: true, sceneIndexArtifactId: latest.current.sceneFor(row.run_id),
           ...(teaser ? { teaserStart: teaser.start, teaserEnd: teaser.end } : {}),
           ...(question ? { questionStart: question.start, questionEnd: question.end } : {}),
@@ -79,7 +80,7 @@ export function usePreviewQueue(inputs: Inputs) {
       }
       const renderTarget = targetFor(key) ?? target;
       patch(key, { running: "rendering", progress: 50, error: "" });
-      const started = await api.startRender(row.project_id, statesRef.current[key].planId!, latest.current.settingsFor(key), run.brief.confirmed_voice ?? null, { purpose: "draft" });
+      const started = await api.startRender(row.project_id, statesRef.current[key].planId!, latest.current.settingsFor(key), { purpose: "draft", workflowRunId: row.run_id });
       job.jobId = started.id;
       const done = await finishJob(started, signal, update => patch(key, { progress: 50 + (update.progress || 0) / 2 }));
       if (signal.aborted) return;
@@ -90,7 +91,7 @@ export function usePreviewQueue(inputs: Inputs) {
       patch(key, { videoUrl: api.renderMediaUrl(row.project_id, artifact), renderedKey: renderTarget.renderKey, running: null, progress: 100 });
     } catch (reason) {
       if (signal.aborted) return;
-      patch(key, { running: null, error: reasonText(reason), errorKey: target.errorKey });
+      patch(key, { running: null, error: errorText(reason), errorKey: target.errorKey });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patch]);

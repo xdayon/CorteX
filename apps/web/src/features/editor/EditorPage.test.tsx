@@ -100,8 +100,9 @@ test("the header names the batch, links back to the episode and exports from the
 
 test("the editor plans, renders a draft and shows the real preview player", async () => {
   await openEditor();
-  expect(api.startEditPlan).toHaveBeenCalledWith("project", expect.objectContaining({ tighten: true, headline: "Headline real", profile: "balanced", start: 100, end: 160 }));
-  expect(api.startRender).toHaveBeenCalledWith("project", "edl", expect.anything(), null, { purpose: "draft" });
+  expect(api.startEditPlan).toHaveBeenCalledWith("project", expect.objectContaining({ tighten: true, headline: "Headline real", profile: "balanced", start: 100, end: 160, workflowRunId: "run" }));
+  expect(vi.mocked(api.startEditPlan).mock.calls[0][1]).not.toHaveProperty("confirmedVoice");
+  expect(api.startRender).toHaveBeenCalledWith("project", "edl", expect.anything(), { purpose: "draft", workflowRunId: "run" });
   await act(async () => { await vi.advanceTimersByTimeAsync(250); });
   expect(api.overlayPreview).toHaveBeenCalled();
   expect(screen.getByLabelText("Prévia do corte").getAttribute("src")).toContain("/renders/draft/media");
@@ -228,8 +229,7 @@ test("autosave restores settings, headline and the finished batch after a reload
   await settle();
   expect(JSON.parse(localStorage.getItem("cortex-draft:project:run")!)).toMatchObject({
     schema_version: 1, settings: { captions: { font_size: 72, position_y: .65 } },
-    headlines: { [K1]: "Minha manchete" }, selectedKeys: [K1],
-    rendered: [{ title: "Uma ideia", artifactId: "rendered-run", projectId: "project" }],
+    headlines: { [K1]: "Minha manchete" },
   });
   view.unmount();
   vi.mocked(api.exportBatches).mockResolvedValue([succeededBatch]);

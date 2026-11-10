@@ -5,14 +5,12 @@ export type VisualArtifacts = { scene: string };
 export type EditorDraft = {
   schema_version: 1;
   settings: RenderSettings;
-  selectedKeys: string[];
   captionEdits: Record<string, CaptionCorrection[]>;
   headlines: Record<string, string>;
   emphasisEdits: Record<string, number[]>;
   lineBreakEdits: Record<string, number[]>;
   clipSettings: Record<string, SettingsPatch>;
   focusedKey: string;
-  rendered: Array<{title: string; url: string; subtitles: string; artifactId?: string; projectId?: string; hookText?: string}>;
   visualArtifacts: VisualArtifacts | null;
 };
 
@@ -38,7 +36,7 @@ export type RestoredDraft = EditorDraft & {legacyFraming: boolean};
 
 export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: string[], defaults: RenderSettings, encoder?: RenderSettings['encoder'] | null): RestoredDraft {
   const fallback = normalizeSettings(defaults, defaults, encoder).settings;
-  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, selectedKeys: clipKeys, captionEdits: {}, headlines: {}, emphasisEdits: {}, lineBreakEdits: {}, clipSettings: {}, focusedKey: '', rendered: [], visualArtifacts: null};
+  const empty: RestoredDraft = {schema_version: 1, settings: fallback, legacyFraming: false, captionEdits: {}, headlines: {}, emphasisEdits: {}, lineBreakEdits: {}, clipSettings: {}, focusedKey: '', visualArtifacts: null};
   try {
     const saved: unknown = JSON.parse(storage.getItem(`cortex-draft:${runKey}`) || 'null');
     if (saved !== null && (!object(saved) || (saved.schema_version !== undefined && saved.schema_version !== 1))) return empty;
@@ -69,18 +67,15 @@ export function restoreEditorDraft(storage: Storage, runKey: string, clipKeys: s
       if (object(patch) && Object.keys(patch).length) clipSettings[key] = patch as SettingsPatch;
     }
     const visual = draft.visualArtifacts;
-    const selected = draft.selectedKeys;
     return {...empty,
       settings: validDraft ? normalized.settings : fallback,
       legacyFraming: validDraft && normalized.legacyFraming,
       emphasisEdits,
       lineBreakEdits,
       clipSettings,
-      selectedKeys: Array.isArray(selected) ? clipKeys.filter(key => selected.includes(key)) : clipKeys,
       captionEdits,
       headlines: object(draft.headlines) ? Object.fromEntries(Object.entries(draft.headlines).filter(([key, value]) => clipKeys.includes(key) && typeof value === 'string')) as Record<string, string> : {},
       focusedKey: typeof draft.focusedKey === 'string' && clipKeys.includes(draft.focusedKey) ? draft.focusedKey : '',
-      rendered: Array.isArray(draft.rendered) ? draft.rendered.filter(item => object(item) && ['title', 'url', 'subtitles'].every(key => typeof item[key] === 'string')) : [],
       visualArtifacts: object(visual) && typeof visual.scene === 'string' && !!visual.scene ? {scene: visual.scene} : null,
     };
   } catch { return empty; }

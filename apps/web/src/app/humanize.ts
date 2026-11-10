@@ -67,3 +67,11 @@ export function formatClock(seconds: number) {
   const rest = String(value % 60).padStart(2, "0");
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
 }
+
+/** "x,x s": one decimal with a pt-BR comma. */
+export const formatSeconds = (seconds: number) => `${seconds.toFixed(1).replace(".", ",")} s`;
+
+const STAGE_LABELS: Record<string, string> = {
+  ingest: "Baixar", transcribe: "Transcrever", analyze: "Analisar", suggest: "Escolher cortes", edit: "Preparar corte", render: "Renderizar", quality: "Conferir", complete: "Concluído",
+};
+export const stageLabel = (stage?: string) => (stage && STAGE_LABELS[stage]) || "Processando";

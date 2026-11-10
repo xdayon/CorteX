@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type EpisodeEntry, type RenderInsert, type RenderSettings, type SceneCandidate, type SceneDecision, type SceneSuggestion } from "../../api";
-import { errorText, formatClock } from "../../app/humanize";
+import { api, type ApiJob, type EpisodeEntry, type RenderInsert, type RenderSettings, type SceneCandidate, type SceneDecision, type SceneSuggestion } from "../../api";
+import { errorText, formatClock, formatSeconds } from "../../app/humanize";
 import { Button, Chip, Icon, ProgressBar, Skeleton, Switch, useToast } from "../../ui";
 import { CamerasDialog } from "../episodes/CamerasDialog";
 import { VoiceDialog } from "../episodes/VoiceDialog";
@@ -9,10 +9,7 @@ import type { SettingsUpdate } from "./StyleTab";
 import type { SceneData } from "./useSceneSuggestions";
 
 const KIND_LABEL = { reaction: "Reação", wide: "Plano aberto" } as const;
-const POLL_MS = 2000;
-const FINISHED = ["succeeded", "failed", "cancelled", "canceled"];
 
-export const seconds = (value: number) => `${value.toFixed(1).replace(".", ",")} s`;
 const byAnchor = (inserts: RenderInsert[]) => [...inserts].sort((a, b) => a.anchor - b.anchor);
 export const insertOf = (item: Pick<SceneSuggestion, "id" | "kind" | "anchor" | "duration" | "source_start" | "group">): RenderInsert =>
   ({ kind: item.kind, anchor: item.anchor, duration: item.duration, source_start: item.source_start, group: item.group, suggestion_id: item.id });
@@ -92,8 +89,7 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
 
   async function openDialog(kind: "cameras" | "voice") {
     try {
-      const entry = (await api.episodes(true))?.find(item => item.id === entryId);
-      if (!entry) throw new Error("Episódio não encontrado.");
+      const entry = await api.episode(entryId);
       setDialog({ kind, entry });
     } catch (reason) { toast(errorText(reason), "bad"); }
   }
@@ -120,7 +116,7 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
       <span className="lbl">Abertura</span>
       {question ? <>
         <Switch checked={!!settings.transitions.question} onChange={setQuestion} label="Abrir com a pergunta do entrevistador" />
-        <p className="scn-quote">«{question.text}» <span className="mono">{seconds(question.end - question.start)}</span></p>
+        <p className="scn-quote">«{question.text}» <span className="mono">{formatSeconds(question.end - question.start)}</span></p>
         <Button size="sm" variant="ghost" icon="play" className="reset" onClick={() => startWatch({ key: "question", label: "Pergunta do entrevistador", start: question.start, end: question.end })}>Ouvir</Button>
       </> : <p className="field-help">Nenhuma pergunta logo antes deste corte</p>}
     </section>
@@ -147,7 +143,7 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
           return <li key={item.id} className={`scn-row${isAccepted ? " on" : ""}${isRejected ? " off" : ""}`} aria-label={`${label} em ${formatClock(item.output_start)}`}>
             <img className="scn-thumb" loading="lazy" alt="" src={api.sourcePreviewUrl(data.project_id, data.source_asset_id, item.source_start + item.duration / 2)} />
             <div className="scn-main">
-              <div className="scn-title"><b>{label}</b><span className="mono">{formatClock(item.output_start)} · {seconds(item.duration)}</span></div>
+              <div className="scn-title"><b>{label}</b><span className="mono">{formatClock(item.output_start)} · {formatSeconds(item.duration)}</span></div>
               <p className="field-help">{item.reason}</p>
               {/* Pressed buttons stay "secondary": the pressed style paints the text with the accent colour. */}
               <div className="scn-actions">
@@ -167,7 +163,7 @@ export function ScenesTab({ scenes, planId, entryId, settings, update, onSeek, d
         <span className="lbl">Fora do corte atual</span>
         <p className="field-help">Aceitas antes de o corte mudar; não aparecem na prévia nova.</p>
         <ul className="scn-list">{orphans.map((item, index) => <li key={`${item.suggestion_id ?? "x"}-${index}`} className="scn-row">
-          <div className="scn-main"><div className="scn-title"><b>{KIND_LABEL[item.kind]}</b><span className="mono">{seconds(item.duration)}</span></div>
+          <div className="scn-main"><div className="scn-title"><b>{KIND_LABEL[item.kind]}</b><span className="mono">{formatSeconds(item.duration)}</span></div>
             <div className="scn-actions"><Button size="sm" variant="ghost" onClick={() => removeOrphan(item)}>Remover</Button></div></div>
         </li>)}</ul>
       </section>}
@@ -188,23 +184,22 @@ function CameraMapCard({ entryId, onDone }: { entryId: string; onDone: () => voi
 
   // Starts by itself: the server returns the job already queued (the episode maps its cameras after the selection).
   useEffect(() => {
-    let stopped = false;
+    const controller = new AbortController();
+    const { signal } = controller;
+    const show = (job: ApiJob) => setProgress({ value: job.progress || 0, message: job.message || "Mapeando câmeras…" });
     void (async () => {
       setError(""); setProgress({ value: 0, message: "Enviando para a fila…" });
       try {
-        let job = await api.mapEpisodeCameras(entryId);
-        while (!stopped && !FINISHED.includes(job.status)) {
-          setProgress({ value: job.progress || 0, message: job.message || "Mapeando câmeras…" });
-          await new Promise(resolve => setTimeout(resolve, POLL_MS));
-          if (stopped) return;
-          job = await api.job(job.id);
-        }
-        if (stopped) return;
+        const started = await api.mapEpisodeCameras(entryId);
+        if (signal.aborted) return;
+        show(started);
+        const job = await api.watchJob(started.id, update => { if (!signal.aborted) show(update); }, signal);
+        if (signal.aborted) return;
         if (job.status !== "succeeded") throw new Error(job.error || job.message || "O mapa de câmeras não terminou.");
         setProgress(null); onDone();
-      } catch (reason) { if (!stopped) { setError(errorText(reason)); setProgress(null); } }
+      } catch (reason) { if (!signal.aborted) { setError(errorText(reason)); setProgress(null); } }
     })();
-    return () => { stopped = true; };
+    return () => controller.abort();
   }, [entryId, round, onDone]);
 
   return <div className="scn-card">

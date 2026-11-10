@@ -67,5 +67,3 @@ export function cancelQuietly(jobId: string | null) {
   if (!jobId) return;
   try { void Promise.resolve(api.cancelJob(jobId)).catch(() => undefined); } catch { /* best effort */ }
 }
-
-export const reasonText = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));

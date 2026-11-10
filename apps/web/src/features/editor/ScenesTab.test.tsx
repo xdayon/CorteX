@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { api, type EpisodeEntry, type RenderSettings, type SceneSuggestion, type SceneSuggestions } from "../../api";
+import { api, type ApiJob, type EpisodeEntry, type RenderSettings, type SceneSuggestion, type SceneSuggestions } from "../../api";
 import { defaultRenderSettings } from "../../editor/settings";
 import { ToastProvider } from "../../ui";
 import { ScenesTab } from "./ScenesTab";
@@ -58,19 +58,21 @@ test("without a plan the tab shows a skeleton, and a failed load offers to retry
 test("needs_camera_map starts mapping by itself, polls the job and refreshes when it finishes", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.mocked(api.mapEpisodeCameras).mockResolvedValue({ id: "j1", status: "running", progress: 10, message: "Mapeando" } as never);
-  vi.mocked(api.job).mockResolvedValueOnce({ id: "j1", status: "running", progress: 60 } as never).mockResolvedValueOnce({ id: "j1", status: "succeeded", progress: 100 } as never);
+  let finish: (job: ApiJob) => void = () => undefined;
+  vi.mocked(api.watchJob).mockImplementation((_id, onUpdate) => new Promise<ApiJob>(resolve => { onUpdate?.({ id: "j1", status: "running", progress: 60, message: "Metade" }); finish = resolve; }));
   render(<Harness initial={sceneData({ status: "needs_camera_map", suggestions: [] })} />);
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(api.mapEpisodeCameras).toHaveBeenCalledWith("ep");
   expect(screen.getByRole("progressbar", { name: "Mapeando câmeras" })).toBeTruthy();
-  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-  expect(api.job).toHaveBeenCalledTimes(2);
+  expect(api.watchJob).toHaveBeenCalledWith("j1", expect.any(Function), expect.anything());
+  expect(screen.getByText("Metade")).toBeTruthy();
+  await act(async () => { finish({ id: "j1", status: "succeeded", progress: 100 }); });
   expect(refresh).toHaveBeenCalledTimes(1);
 });
 
 test("a failed mapping offers to try again", async () => {
-  vi.mocked(api.mapEpisodeCameras).mockRejectedValueOnce(new Error("sem vídeo")).mockResolvedValue({ id: "j1", status: "succeeded" } as never);
+  vi.mocked(api.mapEpisodeCameras).mockRejectedValueOnce(new Error("sem vídeo")).mockResolvedValue({ id: "j1", status: "running" } as never);
+  vi.mocked(api.watchJob).mockResolvedValue({ id: "j1", status: "succeeded" } as never);
   render(<Harness initial={sceneData({ status: "needs_camera_map", suggestions: [] })} />);
   await act(async () => {});
   expect(screen.getByRole("alert").textContent).toContain("sem vídeo");
@@ -81,7 +83,7 @@ test("a failed mapping offers to try again", async () => {
 });
 
 test("roles suggested by the voice can be checked, and needs_voice opens the voice dialog", async () => {
-  vi.mocked(api.episodes).mockResolvedValue([{ id: "ep", title: "Ep" } as EpisodeEntry]);
+  vi.mocked(api.episode).mockResolvedValue({ id: "ep", title: "Ep" } as EpisodeEntry);
   render(<Harness initial={sceneData({ roles_source: "suggested" })} />);
   expect(screen.getByText(/Câmeras identificadas pela voz/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Conferir câmeras" }));

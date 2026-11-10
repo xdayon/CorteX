@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type EpisodeEntry } from "./api";
+import { errorText } from "./app/humanize";
 
 type Turn = {start:number;end:number;speaker:string};
 export function VoiceSelector({entry, disabled, autoOpen=false}: {entry:EpisodeEntry;disabled:boolean;autoOpen?:boolean}) {
@@ -18,7 +19,7 @@ export function VoiceSelector({entry, disabled, autoOpen=false}: {entry:EpisodeE
   const artifact = createdArtifact ? {id:createdArtifact} : entry.diarizations?.[0];
   async function check() {
     checked.current=true;setChecking(true);setStatus(null);setError("");
-    try {setStatus(await api.diarizationStatus());} catch(reason) {setError(String(reason));}
+    try {setStatus(await api.diarizationStatus());} catch(reason) {setError(errorText(reason));}
     finally {setChecking(false);}
   }
   async function analyze() {
@@ -32,16 +33,16 @@ export function VoiceSelector({entry, disabled, autoOpen=false}: {entry:EpisodeE
       if(typeof id!=="string") throw new Error("Resultado de voz indisponível; reabra o episódio.");
       setCreatedArtifact(id);setTurns((await api.episodeVoices(entry.id,id)).turns);
       setMessage("✓ Vozes separadas. Ouça as amostras e confirme a sua voz.");
-    } catch(reason) {if(!controller.signal.aborted) {setMessage("Separação de vozes não concluída.");setError(String(reason));}}
+    } catch(reason) {if(!controller.signal.aborted) {setMessage("Separação de vozes não concluída.");setError(errorText(reason));}}
     finally {if(!controller.signal.aborted) setWorking(false);}
   }
   async function load() {
     try { setError(""); setTurns((await api.episodeVoices(entry.id,artifact.id)).turns); }
-    catch(reason) { setError(String(reason)); }
+    catch(reason) { setError(errorText(reason)); }
   }
   async function choose(speaker:string) {
     try { await api.selectEpisodeVoice(entry.id,artifact.id,speaker); setSelected(speaker); }
-    catch(reason) { setError(String(reason)); }
+    catch(reason) { setError(errorText(reason)); }
   }
   const samples = [...new Set(turns.map(t => t.speaker))].map(speaker => turns.filter(t => t.speaker===speaker && !turns.some(other => other.speaker!==speaker && Math.min(other.end,t.end)>Math.max(other.start,t.start))).sort((a,b)=>(b.end-b.start)-(a.end-a.start))[0]).filter((t):t is Turn=>!!t);
   return <details className="voice" open={autoOpen||undefined} onToggle={event=>{if(event.currentTarget.open&&!artifact&&!checked.current) void check();}}><summary>Identificar a voz do Dayon{selected ? " · confirmada" : ""}</summary>

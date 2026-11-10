@@ -12,10 +12,10 @@ vi.mock("../../api", async (original) => {
   ])) };
 });
 
-const posted = { ...withExport(clipRow(1), "posted"), publication: { published: true } as never };
+const posted = withExport(clipRow(1, { state: { decision: null, discard_reason: null, saved: false, saved_at: null, posted: true, posted_at: "2026-10-16T12:00:00Z", notes: "", updated_at: "x" } }), "posted");
 const rows = [
   boardRow(withExport(clipRow(2), "exported")),
-  boardRow(withExport(clipRow(3, { state: { decision: null, discard_reason: null, saved: true, saved_at: "x", notes: "", updated_at: "x" } }), "saved"), "ep", "Episódio um"),
+  boardRow(withExport(clipRow(3, { state: { decision: null, discard_reason: null, saved: true, saved_at: "x", posted: false, posted_at: null, notes: "", updated_at: "x" } }), "saved"), "ep", "Episódio um"),
   boardRow(posted, "ep2", "Episódio dois"),
   boardRow(clipRow(4, { status: "approved" }), "ep2", "Episódio dois"),
   boardRow(clipRow(5, { status: "discarded" })),
@@ -28,7 +28,6 @@ beforeEach(() => {
   vi.resetAllMocks();
   window.history.replaceState(null, "", "/cortes");
   vi.mocked(api.clips).mockResolvedValue({ clips: rows, total: rows.length });
-  vi.mocked(api.publications).mockResolvedValue([]);
   vi.mocked(api.patchClipStates).mockResolvedValue({ items: [] });
   render(<ToastProvider><BoardPage /></ToastProvider>);
 });

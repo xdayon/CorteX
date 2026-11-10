@@ -25,7 +25,7 @@ const entry = (runs: WorkflowRun[], extra: Partial<EpisodeEntry> = {}): EpisodeE
 });
 
 const rows = [
-  clipRow(1, { state: { decision: "approved", discard_reason: null, saved: false, saved_at: null, notes: "", updated_at: "x" }, status: "approved" }),
+  clipRow(1, { state: { decision: "approved", discard_reason: null, saved: false, saved_at: null, posted: false, posted_at: null, notes: "", updated_at: "x" }, status: "approved" }),
   clipRow(3, { score: 9.5 }, { reasoning: "Conta uma virada" }),
   withExport(clipRow(2), "exported"),
 ];
@@ -40,15 +40,14 @@ beforeEach(() => {
   resetTasks();
   window.history.replaceState(null, "", "/episodios/ep");
   localStorage.clear();
-  vi.mocked(api.episodes).mockResolvedValue([entry([run()])]);
+  vi.mocked(api.episode).mockResolvedValue(entry([run()]));
   vi.mocked(api.episodeClips).mockResolvedValue(episodeClips(rows));
-  vi.mocked(api.publications).mockResolvedValue([]);
   vi.mocked(api.warmQuickPreview).mockResolvedValue(undefined);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 test("an active run shows the stages, progress and a cancel button", async () => {
-  vi.mocked(api.episodes).mockResolvedValue([entry([run({ status: "running", stage: "analyze", progress: 63, active_job_id: "job1", message: "Lendo o bloco 3" })])]);
+  vi.mocked(api.episode).mockResolvedValue(entry([run({ status: "running", stage: "analyze", progress: 63, active_job_id: "job1", message: "Lendo o bloco 3" })]));
   vi.mocked(api.job).mockResolvedValue({ id: "job1", type: "analysis", status: "running", progress: 40, message: "Lendo o bloco 3", updated_at: new Date().toISOString() } as ApiJob);
   vi.mocked(api.cancelJob).mockResolvedValue({ id: "job1", status: "cancelled" } as ApiJob);
   page(); await settle();
@@ -65,7 +64,7 @@ test("an active run shows the stages, progress and a cancel button", async () =>
 });
 
 test("a background task shows the download before any run exists", async () => {
-  vi.mocked(api.episodes).mockResolvedValue([entry([])]);
+  vi.mocked(api.episode).mockResolvedValue(entry([]));
   vi.mocked(api.episodeClips).mockResolvedValue(episodeClips([]));
   upsertTask({ id: "t1", episodeId: "ep", status: "running", progress: 42, message: "Baixando o vídeo 42%" });
   page(); await settle();
@@ -137,11 +136,11 @@ test("generating a new selection prefills the options from the last run and reus
 });
 
 test("a failed run explains itself and an unknown episode says so", async () => {
-  vi.mocked(api.episodes).mockResolvedValue([entry([run({ status: "failed", error: "Claude indisponível" })])]);
+  vi.mocked(api.episode).mockResolvedValue(entry([run({ status: "failed", error: "Claude indisponível" })]));
   page(); await settle();
   expect(screen.getAllByRole("alert").map(node => node.textContent).join(" ")).toContain("Claude indisponível");
   cleanup();
-  vi.mocked(api.episodes).mockResolvedValue([]);
+  vi.mocked(api.episode).mockRejectedValue(new Error("Episódio não encontrado"));
   page(); await settle();
   expect(screen.getByText("Episódio não encontrado")).toBeTruthy();
 });

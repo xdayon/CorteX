@@ -3,12 +3,12 @@ import { api, type ClipRow, type ExportItem } from "../../api";
 import { clipDuration } from "../../editor/clips";
 import { episodePath, Link } from "../../router";
 import { buttonClass, Chip, Icon, Kbd, type ChipTone } from "../../ui";
-import { headlineOf, newestExport, rowId } from "../clips/clipModel";
+import { headlineOf, newestExport, rowId, STATUS_LABELS } from "../clips/clipModel";
 import type { PreviewView } from "./previewQueue";
 
 const EXPORT_LABELS: Record<ExportItem["status"], [string, ChipTone]> = {
   queued: ["Exportando", "ac"], planning: ["Exportando", "ac"], camera_planning: ["Exportando", "ac"], rendering: ["Exportando", "ac"],
-  succeeded: ["Exportado", "ok"], failed: ["Falhou", "bad"], cancelled: ["Cancelado", "neutral"],
+  succeeded: [STATUS_LABELS.exported, "ok"], failed: ["Falhou", "bad"], cancelled: ["Cancelado", "neutral"],
 };
 
 /** The rail chip: the export status of the clip when it has one, else how far its draft preview is. */

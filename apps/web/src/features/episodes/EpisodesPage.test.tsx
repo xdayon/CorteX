@@ -40,7 +40,6 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/");
   localStorage.clear();
   vi.mocked(api.episodes).mockResolvedValue([episode]);
-  vi.mocked(api.jobs).mockResolvedValue([]);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 

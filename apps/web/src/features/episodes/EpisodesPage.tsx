@@ -7,7 +7,7 @@ import { NewEpisodeComposer } from "./NewEpisodeComposer";
 import { CamerasDialog } from "./CamerasDialog";
 import { VoiceDialog } from "./VoiceDialog";
 import { episodeStatus, exportedCount } from "./episodeStatus";
-import { defaultRunOptions } from "./runOptions";
+import { defaultRunOptions, loadClipDefaults } from "./runOptions";
 import { useCreateEpisodeRun } from "./useCreateEpisodeRun";
 import { useEpisodeActions } from "./useEpisodeActions";
 import { useEpisodeCatalog } from "./useEpisodeCatalog";
@@ -24,6 +24,7 @@ export function EpisodesPage() {
   const catalog = useEpisodeCatalog(filter === "archived");
   const actions = useEpisodeActions(catalog.refresh, catalog.invalidate);
   const create = useCreateEpisodeRun();
+  useEffect(() => { void loadClipDefaults(); }, []);
   const [summary, setSummary] = useState<Record<string, ClipCounts>>({});
   const signature = catalog.entries.map(entry => `${entry.id}:${entry.runs.map(run => run.status).join("")}:${entry.renders.length}`).join("|");
   useEffect(() => {

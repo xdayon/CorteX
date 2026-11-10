@@ -9,22 +9,23 @@ import { RunOptionsDialog } from "../episodes/RunOptionsDialog";
 import { CamerasDialog } from "../episodes/CamerasDialog";
 import { VoiceDialog } from "../episodes/VoiceDialog";
 import { episodeStatus } from "../episodes/episodeStatus";
-import { defaultRunOptions, optionsFromRun, type RunOptions } from "../episodes/runOptions";
+import { defaultRunOptions, loadClipDefaults, optionsFromRun, type RunOptions } from "../episodes/runOptions";
 import { useCreateEpisodeRun } from "../episodes/useCreateEpisodeRun";
 import { useEpisodeActions } from "../episodes/useEpisodeActions";
-import { useEpisodeCatalog } from "../episodes/useEpisodeCatalog";
 import { EpisodeClips } from "./EpisodeClips";
 import { EpisodeSteps } from "./EpisodeSteps";
+import { useEpisode } from "./useEpisode";
 import { ProcessingPanel } from "./ProcessingPanel";
 import "./episode.css";
 
 export function EpisodePage({ id }: { id: string }) {
   const toast = useToast();
-  const catalog = useEpisodeCatalog(true, 3000);
+  const catalog = useEpisode(id);
   const actions = useEpisodeActions(catalog.refresh, catalog.invalidate);
   const create = useCreateEpisodeRun();
+  useEffect(() => { void loadClipDefaults(); }, []);
   const task = useEpisodeTask(id);
-  const entry = catalog.entries.find(item => item.id === id);
+  const entry = catalog.entry;
   const run = entry?.runs[0];
   const [dialog, setDialog] = useState<RunOptions | null>(null);
   usePageTitle(entry ? `${entry.title} · CorteX` : "Episódio · CorteX");

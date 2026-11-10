@@ -111,7 +111,7 @@ function Studio({ id, session }: { id: string; session: ReturnType<typeof useEdi
         lineBreaks={lineBreaks} onLineBreaks={session.setLineBreaksFor} disabled={busy} />
     </div>
     {showBatch && batchList.length > 0 && <Dialog title="Exportação" wide onClose={() => setShowBatch(false)}>
-      <ExportBatchPanel batches={batchList} rows={rows} busy={busy} progress={session.exportProgress} onCancel={session.cancelBatches} onRetry={session.retryBatches} />
+      <ExportBatchPanel batches={batchList} busy={busy} progress={session.exportProgress} onCancel={session.cancelBatches} onRetry={session.retryBatches} />
     </Dialog>}
   </div>;
 }

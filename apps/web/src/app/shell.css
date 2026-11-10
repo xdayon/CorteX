@@ -17,4 +17,4 @@
   .brand-name { display: none; }
   .top { gap: 8px; padding: 0 12px; }
 }
-.stub { max-width: 720px; margin: 64px auto; padding: 0 16px; }
+.activity-idle.bad { color: var(--bad); }

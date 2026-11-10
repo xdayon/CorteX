@@ -44,13 +44,47 @@ test("already cancelled work never opens a subscription", async () => {
 test("draft renders never send camera plan or identity fields", async () => {
   const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "job" })));
   vi.stubGlobal("fetch", fetchMock);
-  await api.startRender("project", "edl", defaultRenderSettings, { speaker: "A" }, { purpose: "draft" });
+  await api.startRender("project", "edl", defaultRenderSettings, { purpose: "draft", workflowRunId: "run" });
   const [url, options] = fetchMock.mock.calls[0];
   expect(url).toBe("/api/v1/projects/project/renders");
   expect(JSON.parse(options.body)).toEqual({
     edit_plan_artifact_id: "edl", render_settings: defaultRenderSettings,
-    confirmed_voice: { speaker: "A" }, purpose: "draft",
+    workflow_run_id: "run", purpose: "draft",
   });
+});
+
+test("an event stream error falls back to polling and resolves with the final job", async () => {
+  vi.useFakeTimers();
+  try {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "job", status: "running" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "job", status: "succeeded" })));
+    vi.stubGlobal("fetch", fetchMock);
+    const update = vi.fn();
+    const watched = api.watchJob("job", update);
+    Events.instances[0].dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(watched).resolves.toMatchObject({ status: "succeeded" });
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/jobs/job");
+  } finally { vi.useRealTimers(); }
+});
+
+test("a failing poll after an event stream error rejects", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "fora do ar" }), { status: 503 })));
+  const watched = api.watchJob("job");
+  Events.instances[0].dispatchEvent(new Event("error"));
+  await expect(watched).rejects.toThrow("fora do ar");
+});
+
+test("requests send a JSON content type only with a body and encode ids", async () => {
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response("{}")));
+  vi.stubGlobal("fetch", fetchMock);
+  await api.episode("a/b");
+  await api.createVoiceProfile("ep");
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/episodes/a%2Fb");
+  expect(fetchMock.mock.calls[0][1].headers).toEqual({});
+  expect(fetchMock.mock.calls[1][1].headers).toEqual({ "Content-Type": "application/json" });
 });
 
 test("only loopback hosts skip the remote upload limit", () => {

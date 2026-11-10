@@ -1,7 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
-import { Link, type Route } from "../router";
+import { Link, useLocation, type Route } from "../router";
 import { Menu, MenuLabel } from "../ui";
 import type { ApiJob } from "../api";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { jobLabel } from "./humanize";
 import { useActivity } from "./useActivity";
 import "./shell.css";
@@ -9,7 +10,8 @@ import "./shell.css";
 const percent = (job: ApiJob) => Math.round(job.progress ?? 0);
 
 function ActivityPill() {
-  const { active, lead } = useActivity();
+  const { active, lead, offline } = useActivity();
+  if (offline) return <span className="activity-idle bad" role="status">Sem conexão com o CorteX</span>;
   if (!lead) return <span className="activity-idle">Tudo em dia</span>;
   const label = lead.status === "running" ? `${jobLabel(lead.type)} · ${percent(lead)}%` : "Na fila";
   return <Menu label="Tarefas em andamento" trigger={props => <button type="button" className="activity" {...props}>
@@ -23,6 +25,7 @@ function ActivityPill() {
 }
 
 export function Shell({ route, children }: { route: Route; children: ReactNode }) {
+  const location = useLocation();
   const inEpisodes = route.name === "episodes" || route.name === "episode" || route.name === "editor";
   return <div className="shell">
     <header className="top">
@@ -34,6 +37,6 @@ export function Shell({ route, children }: { route: Route; children: ReactNode }
       <div className="grow" />
       <ActivityPill />
     </header>
-    <main className="page">{children}</main>
+    <main className="page"><ErrorBoundary resetKey={location.split("?")[0]}>{children}</ErrorBoundary></main>
   </div>;
 }

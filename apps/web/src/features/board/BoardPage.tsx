@@ -3,9 +3,9 @@ import { api, type BoardClip, type ClipStatus } from "../../api";
 import { usePageTitle } from "../../app/usePageTitle";
 import { clipDuration } from "../../editor/clips";
 import { Link } from "../../router";
-import { Button, buttonClass, Chip, EmptyState, Icon, Segmented, Select, Skeleton } from "../../ui";
+import { buttonClass, Chip, EmptyState, Icon, Segmented, Select, Skeleton } from "../../ui";
 import { BulkBar } from "../clips/BulkBar";
-import { PublicationDialog } from "../clips/PublicationDialog";
+import { PostedToggle } from "../clips/PostedToggle";
 import { SavedToggle } from "../clips/SavedToggle";
 import { SelectAll } from "../clips/SelectAll";
 import { headlineOf, newestExport, rowId, shortDate, STATUS_LABELS, STATUS_TONES } from "../clips/clipModel";
@@ -35,7 +35,6 @@ export function BoardPage() {
   const [episode, setEpisode] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const [publishing, setPublishing] = useState<string | null>(null);
 
   const count = (statuses: ClipStatus[]) => rows.filter(row => statuses.includes(row.status)).length;
   const episodes = useMemo(() => [...new Map(rows.map(row => [row.episode_id, row.episode_title])).entries()], [rows]);
@@ -48,7 +47,6 @@ export function BoardPage() {
   }, [rows, tab, episode, query]);
   const chosen = rows.filter(row => selected.includes(rowId(row)));
   const toggle = (id: string) => setSelected(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
-  const publishRow = rows.find(row => rowId(row) === publishing);
 
   return <div className="board">
     <header className="board-head">
@@ -88,14 +86,13 @@ export function BoardPage() {
           <div className="brow-actions">
             {latest && <a className={buttonClass("secondary", "sm")} href={latest.media_url} download>Baixar</a>}
             {latest && <SavedToggle saved={!!row.state?.saved} onClick={() => void commands.toggleSaved([row])} />}
-            {latest && <Button size="sm" onClick={() => setPublishing(id)}>{row.publication ? "Editar publicação" : "Registrar publicação"}</Button>}
+            {latest && <PostedToggle posted={!!row.state?.posted} onClick={() => void commands.togglePosted([row])} />}
             <Link to={link} className={buttonClass("ghost", "sm")}>Abrir no episódio</Link>
           </div>
         </li>;
       })}
     </ul>
     <BulkBar rows={chosen} onClear={() => setSelected([])} onApprove={() => void commands.approve(chosen)} onDiscard={reason => void commands.discard(chosen, reason)}
-      onSave={() => void commands.toggleSaved(chosen)} onDownload={() => void commands.download(chosen)} onEdit={() => commands.edit(chosen)} />
-    {publishRow && <PublicationDialog row={publishRow} onClose={() => setPublishing(null)} onSaved={commands.published} onDeleted={commands.unpublished} />}
+      onSave={() => void commands.toggleSaved(chosen)} onPosted={() => void commands.togglePosted(chosen)} onDownload={() => void commands.download(chosen)} onEdit={() => commands.edit(chosen)} />
   </div>;
 }

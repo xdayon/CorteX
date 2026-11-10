@@ -11,21 +11,10 @@ export function batchProgress(batches: ExportBatch[]) {
   return (items.filter(item => FINISHED.includes(item.status)).length / Math.max(1, items.length)) * 100;
 }
 
-function waitForPoll(signal: AbortSignal) {
-  signal.throwIfAborted();
-  return new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, 1200);
-    function abort() { window.clearTimeout(timer); reject(signal.reason); }
-    signal.addEventListener("abort", abort, { once: true });
-  });
-}
-
-type Revision = Parameters<typeof api.saveRevision>[2];
-
-/** Saves one revision per run and runs one durable export batch per run, tracking them together. */
-export function useExportBatches({ runs, runIds, ready, initial, revisionBody, signal }: {
+/** Runs one durable export batch per run, tracking them together; the revisions come from the editor's own save. */
+export function useExportBatches({ runs, runIds, ready, initial, flushSave, signal }: {
   runs: Record<string, WorkflowRun>; runIds: string[]; ready: boolean; initial: Record<string, ExportBatch>;
-  revisionBody: (runId: string) => Revision; signal: () => AbortSignal | undefined;
+  flushSave: () => Promise<Record<string, ClipRevision>>; signal: () => AbortSignal | undefined;
 }) {
   const [batches, setBatches] = useState<Record<string, ExportBatch>>({});
   const [busy, setBusy] = useState(false);
@@ -41,7 +30,7 @@ export function useExportBatches({ runs, runIds, ready, initial, revisionBody, s
 
   useEffect(() => {
     const open = Object.entries(batches).filter(([, batch]) => isOpen(batch));
-    if (busy || !ready || !open.length) return;
+    if (!ready || !open.length) return;
     const timer = window.setTimeout(() => {
       void Promise.all(open.map(([runId, batch]) => api.exportBatch(batch.project_id, batch.id).then(next => [runId, next] as const))).then(updated => {
         setBatches(current => ({ ...current, ...Object.fromEntries(updated) }));
@@ -49,41 +38,43 @@ export function useExportBatches({ runs, runIds, ready, initial, revisionBody, s
       }).catch(reason => setWarnings(items => [...items, `Não foi possível atualizar o lote: ${errorText(reason)}`]));
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [busy, ready, batches]);
+  }, [ready, batches]);
 
+  const [finalizing, setFinalizing] = useState<string[] | null>(null);
   const exportSelected = useCallback(async () => {
     const lifetime = signal();
     if (!ready || busy || !runIds.length || !lifetime) return;
     setBusy(true); setExportError(""); setExportProgress(0);
     try {
-      const current: Record<string, ExportBatch> = {};
+      const revisions = await flushSave();
+      if (lifetime.aborted) return;
+      const created: Record<string, ExportBatch> = {};
       for (const runId of runIds) {
-        const run = runs[runId];
-        const revision: ClipRevision | undefined = await api.saveRevision(run.project_id, runId, revisionBody(runId));
+        const revision = revisions[runId];
         if (!revision) throw new Error("Não foi possível salvar a revisão antes de exportar.");
-        current[runId] = await api.createExportBatch(run.project_id, runId, revision.id, `${runId}:${crypto.randomUUID()}`);
-        setBatches(previous => ({ ...previous, [runId]: current[runId] }));
+        created[runId] = await api.createExportBatch(runs[runId].project_id, runId, revision.id, `${runId}:${crypto.randomUUID()}`);
+        setBatches(previous => ({ ...previous, [runId]: created[runId] }));
       }
-      while (Object.values(current).some(isOpen)) {
-        setExportProgress(batchProgress(Object.values(current)));
-        await waitForPoll(lifetime);
-        for (const [runId, batch] of Object.entries(current)) {
-          if (!isOpen(batch)) continue;
-          current[runId] = await api.exportBatch(batch.project_id, batch.id, lifetime);
-        }
-        setBatches(previous => ({ ...previous, ...current }));
-      }
-      const items = Object.values(current).flatMap(batch => batch.items);
-      const failures = items.filter(item => item.status === "failed");
-      if (failures.length) setWarnings(list => [...list, ...failures.map(item => `“${item.title}”: ${item.error || "falha na exportação"}`)]);
-      if (!items.some(item => item.status === "succeeded" && item.render_artifact_id)) {
-        throw new Error(Object.values(current).find(batch => batch.error)?.error || "Nenhum corte foi exportado.");
-      }
-      setExportProgress(100);
+      setFinalizing(runIds);
     } catch (reason) {
-      if (!lifetime.aborted) setExportError(errorText(reason));
-    } finally { if (!lifetime.aborted) setBusy(false); }
-  }, [ready, busy, runIds, runs, revisionBody, signal]);
+      if (!lifetime.aborted) { setExportError(errorText(reason)); setBusy(false); }
+    }
+  }, [ready, busy, runIds, runs, flushSave, signal]);
+
+  useEffect(() => {
+    const own = finalizing;
+    if (!busy || !own) return;
+    const mine = own.flatMap(runId => batches[runId] ? [batches[runId]] : []);
+    if (mine.length < own.length || mine.some(isOpen)) return;
+    setFinalizing(null);
+    const items = mine.flatMap(batch => batch.items);
+    const failures = items.filter(item => item.status === "failed");
+    if (failures.length) setWarnings(list => [...list, ...failures.map(item => `“${item.title}”: ${item.error || "falha na exportação"}`)]);
+    if (!items.some(item => item.status === "succeeded" && item.render_artifact_id)) {
+      setExportError(mine.find(batch => batch.error)?.error || "Nenhum corte foi exportado.");
+    } else setExportProgress(100);
+    setBusy(false);
+  }, [busy, batches, finalizing]);
 
   const patchBatches = useCallback((eligible: (batch: ExportBatch) => boolean, action: (projectId: string, batchId: string) => Promise<ExportBatch>) => {
     for (const [runId, batch] of Object.entries(batches)) {

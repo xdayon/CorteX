@@ -39,7 +39,6 @@
 .cd { display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
 .cd-player { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .cd-view { align-self: flex-start; }
-.exp-video { display: block; width: auto; max-width: 100%; max-height: min(560px, 62vh); aspect-ratio: 9 / 16; border-radius: 12px; background: #000; box-shadow: 0 0 0 1px var(--line2); }
 .spp { width: 100%; max-width: 640px; }
 .spp-stage { position: relative; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 0 0 1px var(--line2); cursor: pointer; }
 .spp-stage video { width: 100%; height: 100%; object-fit: contain; display: block; }

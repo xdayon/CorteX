@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type CaptionCorrection, type OverlayPreview, type RenderSettings } from "../api";
+import { errorText } from "../app/humanize";
 
 const DEBOUNCE_MS = 200;
 const NO_BREAKS: number[] = [];
@@ -40,7 +41,7 @@ export function useOverlayPreview({ projectId, editPlanArtifactId, settings, cor
         setOverlay(result); setError("");
       }).catch(reason => {
         if (controller.signal.aborted) return;
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setError(errorText(reason));
       }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, DEBOUNCE_MS);
     return () => { window.clearTimeout(timer); controller.abort(); };
