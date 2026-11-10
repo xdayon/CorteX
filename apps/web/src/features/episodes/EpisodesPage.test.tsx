@@ -1,13 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { api, REMOTE_UPLOAD_MESSAGE, type ApiJob, type EpisodeEntry, type WorkflowRun } from "../../api";
+import { api, type ApiJob, type EpisodeEntry, type WorkflowRun } from "../../api";
 import { getTasks, resetTasks } from "../../app/tasks";
 import { ToastProvider } from "../../ui";
 import { EpisodesPage } from "./EpisodesPage";
 
 vi.mock("../../api", async (original) => {
   const actual = await original<typeof import("../../api")>();
-  return { ...actual, isRemoteOrigin: () => true, api: Object.fromEntries(Object.entries(actual.api).map(([name, fn]) => [
+  return { ...actual, api: Object.fromEntries(Object.entries(actual.api).map(([name, fn]) => [
     name, vi.fn(name.endsWith("Url") ? fn : undefined),
   ])) };
 });
@@ -85,19 +85,6 @@ test("options set in the dialog reach the run, including episode terms as hotwor
   expect(vi.mocked(api.createWorkflowRun).mock.lastCall![2]).toMatchObject({ hotwords: ["Ana Souza", "Quântica"], instructions: "Só histórias pessoais" });
 });
 
-test("a large local file is refused with the remote limit message before any upload", async () => {
-  page(); await settle();
-  const big = new File(["x"], "episodio.mp4", { type: "video/mp4" });
-  Object.defineProperty(big, "size", { value: 100 * 1024 * 1024 });
-  fireEvent.change(screen.getByTestId("episode-file"), { target: { files: [big] } });
-  expect(screen.getByText("episodio.mp4")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Processar episódio" }));
-  await settle();
-  expect(screen.getByRole("alert").textContent).toBe(REMOTE_UPLOAD_MESSAGE);
-  expect(api.createProject).not.toHaveBeenCalled();
-  expect(api.uploadSource).not.toHaveBeenCalled();
-});
-
 test("a local file is uploaded, reconciled in the catalogue and opened as a local episode", async () => {
   vi.mocked(api.createProject).mockResolvedValue({ id: "proj9", name: "aula" });
   vi.mocked(api.uploadSource).mockResolvedValue({ ...source, id: "up1", project_id: "proj9" });
@@ -150,7 +137,6 @@ test("the card menu archives, refreshes metadata and downloads, then reloads the
 
 test("the menu closes on Escape and opens the voice dialog for a downloaded episode", async () => {
   vi.mocked(api.episodes).mockResolvedValue([withCuts]);
-  vi.mocked(api.diarizationStatus).mockResolvedValue({ ready: true, runtime_installed: true, token_configured: true, device: "cpu", missing: [], model_url: "" });
   page(); await settle();
   const trigger = screen.getByRole("button", { name: "Mais ações: Episódio com cortes" });
   fireEvent.click(trigger);
@@ -159,9 +145,8 @@ test("the menu closes on Escape and opens the voice dialog for a downloaded epis
   expect(screen.queryByRole("menu")).toBeNull();
   fireEvent.click(trigger);
   expect(screen.queryByRole("menuitem", { name: "Baixar e guardar vídeo" })).toBeNull();
-  fireEvent.click(screen.getByRole("menuitem", { name: "Separar vozes (lento, ~1× a duração)" })); await settle();
-  expect(within(screen.getByRole("dialog")).getByText(/Separe as vozes em CPU/)).toBeTruthy();
-  expect(api.diarizationStatus).toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("menuitem", { name: "Identificar voz" })); await settle();
+  expect(within(screen.getByRole("dialog")).getByText(/Ouça as amostras das vozes detectadas/)).toBeTruthy();
   fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.queryByRole("dialog")).toBeNull();
 });

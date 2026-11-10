@@ -10,7 +10,6 @@ if [[ ! -f apps/web/dist/index.html || ! -x .venv/bin/cortex-api ]]; then
   exit 1
 fi
 
-# The origin stays local. A future authenticated tunnel can reach this port.
 export CORTEX__APP__HOST=127.0.0.1
 export CORTEX__APP__STUDIO_DIR="$CORTEX_STUDIO_ROOT/apps/web/dist"
 

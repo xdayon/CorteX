@@ -334,16 +334,6 @@ export type RefineStatus = {status: "accepted" | "skipped" | "rejected"; reason?
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 
-// Cloudflare's Free plan rejects request bodies above 100 MB (HTTP 413) on the
-// remote (tunnel) address; on the PC itself there is no such limit.
-export const REMOTE_UPLOAD_LIMIT_BYTES = 95 * 1024 * 1024;
-export const REMOTE_UPLOAD_MESSAGE =
-  "Fora de casa, o acesso remoto aceita arquivos de até 100 MB. Use o link do YouTube do episódio ou envie o arquivo pelo próprio PC.";
-
-export function isRemoteOrigin(hostname: string): boolean {
-  return !["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname);
-}
-
 function detailOf(body: unknown, status: string | number): string {
   const detail = (body as { detail?: unknown } | null)?.detail;
   if (!detail) return String(status);
@@ -393,8 +383,6 @@ export const api = {
   mapEpisodeCameras: (id: string) => request<ApiJob>(`/api/v1/episodes/${enc(id)}/cameras`, {method:"POST"}),
   saveCameraRoles: (id: string, artifact_id: string, roles: Record<string, CameraRole>) =>
     request<EpisodeEntry>(`/api/v1/episodes/${enc(id)}/cameras/roles`, {method:"PUT", body: JSON.stringify({artifact_id, roles})}),
-  diarizationStatus: () => request<{ready:boolean;runtime_installed:boolean;token_configured:boolean;device:string;missing:string[];model_url:string}>("/api/v1/diarization-status"),
-  diarizeEpisode: (id:string) => request<ApiJob>(`/api/v1/episodes/${enc(id)}/diarization`, {method:"POST"}),
   episodeVoices: (id:string, artifact:string) => request<{turns:Array<{start:number;end:number;speaker:string}>}>(`/api/v1/episodes/${enc(id)}/diarization/${enc(artifact)}`),
   selectEpisodeVoice: (id:string, artifact_id:string, speaker:string) => request<EpisodeEntry>(`/api/v1/episodes/${enc(id)}/voice`,{method:"PUT",body:JSON.stringify({artifact_id,speaker})}),
   episodes: (includeArchived = false) => request<EpisodeEntry[]>(`/api/v1/episodes${includeArchived ? '?include_archived=true' : ''}`),
@@ -519,10 +507,6 @@ export const api = {
   // Upload via XHR para ter progresso real de envio (fetch não expõe upload progress).
   uploadSource: (projectId: string, file: File, onProgress?: (fraction: number) => void) =>
     new Promise<SourceAsset>((resolve, reject) => {
-      if (isRemoteOrigin(window.location.hostname) && file.size > REMOTE_UPLOAD_LIMIT_BYTES) {
-        reject(new Error(REMOTE_UPLOAD_MESSAGE));
-        return;
-      }
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `/api/v1/projects/${enc(projectId)}/sources/upload`);
       xhr.upload.onprogress = (event) => {
@@ -531,8 +515,6 @@ export const api = {
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(JSON.parse(xhr.responseText) as SourceAsset);
-        } else if (xhr.status === 413) {
-          reject(new Error(REMOTE_UPLOAD_MESSAGE));
         } else {
           let body: unknown = null;
           try { body = JSON.parse(xhr.responseText); } catch { /* mantém status */ }
