@@ -1,14 +1,20 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "cortex/clip_tighten/v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["keep_ids", "notes"],
+  "required": [
+    "keep_ids",
+    "notes"
+  ],
   "properties": {
     "keep_ids": {
       "type": "array",
-      "items": { "type": "integer" }
+      "items": {
+        "type": "integer"
+      }
     },
-    "notes": { "type": "string" }
+    "notes": {
+      "type": "string"
+    }
   }
 }

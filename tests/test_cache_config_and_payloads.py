@@ -268,7 +268,9 @@ def test_prompt_schemas_are_versioned_and_valid(name: str, schema_id: str) -> No
     from jsonschema import Draft202012Validator
     schema = json.loads((ROOT / "prompts" / name).read_text(encoding="utf-8"))
     assert schema["$id"] == schema_id
-    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    # The Claude CLI validates --json-schema with a draft-07 validator that rejects a 2020-12
+    # "$schema" ("no schema with key or ref"), which failed every refine call; never declare it.
+    assert "$schema" not in schema
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(schema)
 
