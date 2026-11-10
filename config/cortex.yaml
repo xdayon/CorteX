@@ -134,3 +134,13 @@ sound:
   max_download_mb: 60.0
   candidates_per_query: 12
   reel_lufs: -16.0
+
+# Cada corte exportado vai sozinho para o Google Drive (python -m cortex.drive --testar confere o login):
+# <folder>/<episódio>/<AAAA-MM-DD>/<NN - manchete>.mp4. O login fica no rclone
+# (`rclone config create gdrive drive scope=drive.file`), nunca no repositório.
+drive:
+  enabled: true
+  rclone: /home/linuxbrew/.linuxbrew/bin/rclone
+  remote: gdrive
+  folder: CorteX
+  timeout_seconds: 900

@@ -18,6 +18,12 @@ from cortex.transcribe.schemas import EngineInfo, TranscriptSegment, TranscriptW
 
 
 
+@pytest.fixture(autouse=True)
+def _drive_upload_off(monkeypatch):
+    """The real config sends exports to Google Drive; tests never call the real rclone."""
+    monkeypatch.setenv("CORTEX__DRIVE__ENABLED", "false")
+
+
 class FakeTranscriptionEngine:
     """In-memory stand-in for FasterWhisperEngine, injectable into
     TranscribeService/worker so tests never need a GPU or the real model.

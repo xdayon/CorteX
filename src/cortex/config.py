@@ -202,6 +202,18 @@ class LessonsConfig(BaseModel):
     encoder: Literal["libx264", "h264_nvenc"] = "h264_nvenc"
 
 
+class DriveConfig(BaseModel):
+    """Exported clips copied to Google Drive with rclone (`cortex.drive`); the login lives in rclone's config."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    rclone: str = "rclone"
+    remote: str = Field(default="gdrive", pattern=r"^[A-Za-z0-9_-]+$")
+    folder: str = Field(default="CorteX", min_length=1)
+    timeout_seconds: float = Field(default=900.0, gt=0)
+
+
 class SoundConfig(BaseModel):
     """Sound library (`python -m cortex.sound`): Soundza + SFXMint searches, downloaded files, curated kits."""
 
@@ -232,6 +244,7 @@ class CortexConfig(BaseModel):
     remote_access: RemoteAccessConfig = RemoteAccessConfig()
     lessons: LessonsConfig = LessonsConfig()
     sound: SoundConfig = SoundConfig()
+    drive: DriveConfig = DriveConfig()
 
     def ensure_runtime_dirs(self) -> None:
         for path in (

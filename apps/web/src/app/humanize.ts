@@ -7,6 +7,7 @@ const JOB_LABELS: Record<string, string> = {
   suggestion: "Escolhendo cortes",
   edit_plan: "Preparando corte",
   render: "Renderizando",
+  drive_upload: "Enviando ao Drive",
 };
 
 export const jobLabel = (type?: string) => (type && JOB_LABELS[type]) || "Processando";

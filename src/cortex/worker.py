@@ -31,6 +31,7 @@ from cortex.config import CortexConfig, load_config
 from cortex.domain.models import SourceAsset, SourceKind, WorkflowStatus
 from cortex.domain.store import DomainStore
 from cortex.edit.service import EditPlanJobCancelled, EditPlanService
+from cortex.drive import run_drive_upload_job
 from cortex.export_batches import advance_export_batch, reconcile_export_batches
 from cortex.ingest.ffprobe import FFprobeError, probe_media
 from cortex.ingest.youtube import YoutubeDownloadError, download_youtube_source
@@ -699,6 +700,7 @@ _HANDLERS: dict[JobType, Any] = {
     JobType.SUGGESTION: run_suggestion_job,
     JobType.EDIT_PLAN: run_edit_plan_job,
     JobType.RENDER: run_render_job,
+    JobType.DRIVE_UPLOAD: run_drive_upload_job,
 }
 
 
@@ -880,10 +882,22 @@ def process_next(
             ))
         except InvalidJobTransitionError:
             pass
-    if not advance_export_batch(job, jobs, domain):
+    if advance_export_batch(job, jobs, domain):
+        _queue_drive_upload_after_export(job, config, jobs, domain)
+    else:
         _advance_workflow(job, jobs, domain)
         _queue_camera_map_after_selection(job, config, jobs, domain)
     return True
+
+
+def _queue_drive_upload_after_export(job: Job, config: CortexConfig, jobs: JobStore, domain: DomainStore) -> None:
+    """Each exported clip goes to Google Drive as its own job; the export never waits on it."""
+    from cortex.drive import queue_after_export_render
+
+    try:
+        queue_after_export_render(job, config, jobs, domain)
+    except (OSError, ValueError, LookupError) as exc:  # the export itself already succeeded
+        print(f"envio ao Drive não enfileirado: {exc}", file=sys.stderr, flush=True)
 
 
 def _queue_camera_map_after_selection(job: Job, config: CortexConfig, jobs: JobStore, domain: DomainStore) -> None:

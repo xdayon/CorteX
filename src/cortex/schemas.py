@@ -33,6 +33,7 @@ class JobType(StrEnum):
     RENDER = "render"
     LEGACY_PIPELINE = "pipeline"
     INGEST_YOUTUBE = "ingest_youtube"
+    DRIVE_UPLOAD = "drive_upload"
 
 
 class JobStatus(StrEnum):
