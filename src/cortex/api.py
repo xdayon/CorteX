@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import subprocess
 from collections.abc import AsyncIterator
@@ -32,9 +33,17 @@ from cortex.domain.store import (
 from cortex.ingest.ffprobe import FFprobeError, duration_seconds, probe_media
 from cortex.ingest.upload import UploadValidationError, store_upload_stream
 from cortex.jobs import InvalidJobTransitionError, JobNotFoundError, JobStore
+from cortex.library import public_run
 from cortex.paths import renders_dir, source_dir
 from cortex.render.schemas import RenderDocument, RenderSettings, RenderSettingsPatch
 from cortex.schemas import JobCreate, JobStatus, JobType
+
+logger = logging.getLogger(__name__)
+
+_JOB_SUMMARY_FIELDS = {
+    "id", "type", "status", "stage", "progress", "message", "project_id",
+    "created_at", "updated_at", "error",
+}
 
 
 class ProjectCreate(BaseModel):
@@ -88,9 +97,9 @@ class WorkflowRunCreate(BaseModel):
     source_asset_id: str
     primary_subject: str = Field(default="Dayon", min_length=1, max_length=100)
     new_clips_only: bool = False
-    count: int = Field(default=10, ge=1, le=25)
-    minimum_seconds: float = Field(default=40, ge=15, le=180)
-    maximum_seconds: float = Field(default=120, ge=15, le=180)
+    count: int | None = Field(default=None, ge=1, le=25)
+    minimum_seconds: float | None = Field(default=None, ge=15, le=180)
+    maximum_seconds: float | None = Field(default=None, ge=15, le=180)
     topic: str | None = Field(default=None, max_length=500)
     instructions: str | None = Field(default=None, max_length=2000)
     # Names/terms of this episode (guest, places) that the transcription should
@@ -105,8 +114,9 @@ class WorkflowRunCreate(BaseModel):
 
     @model_validator(mode="after")
     def duration_order(self) -> "WorkflowRunCreate":
-        if self.maximum_seconds < self.minimum_seconds:
-            raise ValueError("maximum_seconds deve ser maior ou igual a minimum_seconds")
+        if self.minimum_seconds is not None and self.maximum_seconds is not None:
+            if self.maximum_seconds < self.minimum_seconds:
+                raise ValueError("maximum_seconds deve ser maior ou igual a minimum_seconds")
         return self
 
 
@@ -127,6 +137,8 @@ class EditPlanRequest(BaseModel):
     max_jl_offset_seconds: float | None = Field(default=None, ge=0.0)
     approximate_edl: list[dict[str, Any]] | None = Field(default=None, min_length=1, max_length=100)
     confirmed_voice: dict[str, Any] | None = None
+    # Server-side alternative to sending confirmed_voice: read it from this run's brief.
+    workflow_run_id: str | None = None
     # Export editor previews of a selected clip use the same refine pass and
     # duration rules as its export, so the cached result is shared.
     tighten: bool = False
@@ -171,6 +183,7 @@ class RenderRequest(BaseModel):
     render_settings_override: RenderSettingsPatch | None = None
     export_directory: str | None = Field(default=None, max_length=4096)
     confirmed_voice: dict[str, Any] | None = None
+    workflow_run_id: str | None = None
     purpose: Literal["export", "draft"] = "export"
 
     @model_validator(mode="after")
@@ -331,6 +344,7 @@ def create_app(config: CortexConfig | None = None):
             try:
                 _, _, document = episode_camera_map(episode_id, artifact.id)
             except (ValueError, LookupError, OSError):
+                logger.warning("skipping unreadable camera map %s", artifact.id, exc_info=True)
                 continue
             base = f"{router_prefix}/episodes/{episode_id}/cameras/{artifact.id}/groups"
             summary = {
@@ -605,6 +619,26 @@ def create_app(config: CortexConfig | None = None):
         _asset, source_path = _preview_source(project_id, source_asset_id)
         return FileResponse(source_path, filename=source_path.name)
 
+    def request_confirmed_voice(project_id: str, request) -> dict[str, Any] | None:
+        if request.confirmed_voice is not None or request.workflow_run_id is None:
+            return request.confirmed_voice
+        try:
+            run = domain.get_workflow_run(request.workflow_run_id)
+        except WorkflowRunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Processamento não encontrado") from exc
+        if run.project_id != project_id:
+            raise HTTPException(status_code=400, detail="Processamento não pertence a este projeto")
+        return (run.brief or {}).get("confirmed_voice")
+
+    @app.get(f"{router_prefix}/settings/clip-defaults")
+    def get_clip_defaults():
+        clips = settings.clips
+        return {
+            "count": clips.count,
+            "minimum_seconds": clips.minimum_seconds,
+            "maximum_seconds": clips.maximum_seconds,
+        }
+
     @app.post(f"{router_prefix}/projects/{{project_id}}/runs", status_code=201)
     def create_workflow_run(project_id: str, request: WorkflowRunCreate):
         try:
@@ -618,7 +652,22 @@ def create_app(config: CortexConfig | None = None):
         if asset.project_id != project_id:
             raise HTTPException(status_code=400, detail="Fonte não pertence a este projeto")
 
+        clip_defaults = settings.clips
         brief = request.model_dump(exclude={"source_asset_id"}, exclude_none=True)
+        brief["count"] = request.count if request.count is not None else clip_defaults.count
+        brief["minimum_seconds"] = (
+            request.minimum_seconds if request.minimum_seconds is not None
+            else float(clip_defaults.minimum_seconds)
+        )
+        brief["maximum_seconds"] = (
+            request.maximum_seconds if request.maximum_seconds is not None
+            else float(clip_defaults.maximum_seconds)
+        )
+        if brief["maximum_seconds"] < brief["minimum_seconds"]:
+            raise HTTPException(
+                status_code=422,
+                detail="maximum_seconds deve ser maior ou igual a minimum_seconds",
+            )
         if asset.source_url:
             from cortex.library import youtube_id
             try:
@@ -674,7 +723,7 @@ def create_app(config: CortexConfig | None = None):
             run = domain.update_workflow_run(
                 run.id, connection=connection, active_job_id=job.id,
             )
-        return run
+        return public_run(run)
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/runs/{{run_id}}")
     def get_workflow_run(project_id: str, run_id: str):
@@ -684,7 +733,7 @@ def create_app(config: CortexConfig | None = None):
             raise HTTPException(status_code=404, detail="Processamento não encontrado") from exc
         if run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Processamento não encontrado")
-        return run
+        return public_run(run)
 
     @app.get(f"{router_prefix}/projects/{{project_id}}/transcripts/{{artifact_id}}")
     def get_transcript(project_id: str, artifact_id: str):
@@ -765,7 +814,7 @@ def create_app(config: CortexConfig | None = None):
                 "jl_cut": request.jl_cut,
                 "max_jl_offset_seconds": request.max_jl_offset_seconds,
                 "approximate_edl": request.approximate_edl,
-                "confirmed_voice": request.confirmed_voice,
+                "confirmed_voice": request_confirmed_voice(project_id, request),
                 "tighten": request.tighten,
                 "minimum_seconds": request.minimum_seconds,
                 "headline": request.headline,
@@ -821,7 +870,7 @@ def create_app(config: CortexConfig | None = None):
                     if request.render_settings_override is not None else None
                 ),
                 "export_directory": request.export_directory,
-                "confirmed_voice": request.confirmed_voice,
+                "confirmed_voice": request_confirmed_voice(project_id, request),
                 "purpose": request.purpose,
             },
         ))
@@ -939,8 +988,15 @@ def create_app(config: CortexConfig | None = None):
         return {"artifact": artifact, "document": json.loads(path.read_text(encoding="utf-8"))}
 
     @app.get(f"{router_prefix}/jobs")
-    def list_jobs(limit: int = Query(default=50, ge=1, le=200)):
-        return jobs.list(limit)
+    def list_jobs(
+        limit: int = Query(default=50, ge=1, le=200),
+        active: bool = False,
+        view: Literal["full", "summary"] = "full",
+    ):
+        listed = jobs.list(limit, active=active)
+        if view == "summary":
+            return [job.model_dump(mode="json", include=_JOB_SUMMARY_FIELDS) for job in listed]
+        return listed
 
     @app.get(f"{router_prefix}/jobs/{{job_id}}")
     def get_job(job_id: str):

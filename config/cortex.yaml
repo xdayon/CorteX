@@ -37,7 +37,6 @@ render:
   # Cortes do podcast na GPU (02/nov): ~4x mais rápido que libx264 veryfast, mesma qualidade.
   # Vale depois de reiniciar o cortex.service. A prévia rápida do editor fica na CPU (medido: sem ganho).
   encoder: h264_nvenc
-  allow_cpu_fallback: false
   width: 1080
   height: 1920
   fps: 30
@@ -56,13 +55,11 @@ render:
   black_threshold_seconds: 0.5
   freeze_threshold_seconds: 1.5
   freeze_block_threshold_seconds: 5.0
-  safe_zone_sample_fps: 4.0
 
 clips:
   minimum_seconds: 40
   maximum_seconds: 120
   count: 10
-  pacing_profile: auto
 
 # Índice de cenas (cortes de câmera) via filtro scdet do FFmpeg.
 # scene_threshold: sensibilidade do scdet (0-100, escala nativa do filtro).

@@ -600,7 +600,13 @@ class DomainStore:
         language: str | None,
         vad: bool,
         schema_version: int,
+        hotwords: list[str] | None = None,
     ) -> TranscriptArtifact | None:
+        # Normalize per-run hotwords for comparison: strip, collapse spaces, casefold.
+        def _normalize(words: list[str]) -> set[str]:
+            return {" ".join(w.split()).casefold() for w in words if w.strip()}
+
+        requested = _normalize(hotwords or [])
         for artifact in self.list_transcript_artifacts(source_asset_id):
             if (
                 artifact.audio_sha256 == audio_sha256
@@ -611,6 +617,7 @@ class DomainStore:
                 and artifact.vad == vad
                 and artifact.schema_version == schema_version
                 and Path(artifact.path).exists()
+                and requested <= _normalize(artifact.hotwords)
             ):
                 return artifact
         return None

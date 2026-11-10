@@ -56,6 +56,9 @@ class TranscriptArtifact(BaseModel):
     vad: bool
     batch_size: int
     duration_seconds: float
+    # Per-run hotwords supplied for this transcription (not config ones).
+    # Old artifacts without the field parse as [].
+    hotwords: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 

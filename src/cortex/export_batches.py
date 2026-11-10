@@ -7,6 +7,8 @@ SQLite transaction, so a process restart cannot leave a batch half-advanced.
 
 from __future__ import annotations
 
+import logging
+
 from cortex.domain.models import (
     ExportBatch,
     ExportItem,
@@ -17,6 +19,8 @@ from cortex.domain.models import (
 from cortex.domain.store import DomainStore
 from cortex.jobs import JobStore
 from cortex.schemas import Job, JobCreate, JobStatus, JobType
+
+logger = logging.getLogger(__name__)
 
 
 def export_plan_payload(batch: ExportBatch, item: ExportItem, revision, run) -> dict:
@@ -203,6 +207,7 @@ def reconcile_export_batches(jobs: JobStore, domain: DomainStore) -> None:
         try:
             job = jobs.get(batch.active_job_id)
         except Exception:
+            logger.warning("export batch %s: cannot read job %s", batch.id, batch.active_job_id, exc_info=True)
             continue
         if job.status in {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}:
             advance_export_batch(job, jobs, domain)

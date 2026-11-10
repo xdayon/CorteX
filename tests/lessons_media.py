@@ -13,6 +13,6 @@ def ff(*args) -> None:
 
 def small_config(tmp_path: Path, **overrides) -> CortexConfig:
     lessons = dict(dir=tmp_path, ingest_dir=tmp_path / "ingest", width=320, height=180, fps=15,
-                   flow_durations=[4, 6, 8, 10], xfade_seconds=0.4)
+                   flow_durations=[4, 6, 8, 10], xfade_seconds=0.4, encoder="libx264")
     lessons.update(overrides)
     return CortexConfig(lessons=LessonsConfig(**lessons))

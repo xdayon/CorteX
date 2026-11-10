@@ -15,6 +15,10 @@ CLIP_STATUSES: tuple[str, ...] = ("new", "approved", "exported", "saved", "poste
 
 _SUGGESTION_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
 _CACHE_LIMIT = 64
+_V1_SCORE_KEYS = frozenset({
+    "spoken_hook", "standalone_clarity", "emotion", "quotability",
+    "payoff", "compression_safety", "audience_relevance",
+})
 
 
 def js_number(value: float | int | str) -> str:
@@ -181,6 +185,8 @@ def _clip_row(
 ) -> dict[str, Any]:
     scores = clip.get("scores") if isinstance(clip.get("scores"), dict) else {}
     score = scores.get("total", clip.get("score"))
+    if isinstance(score, (int, float)) and _V1_SCORE_KEYS <= scores.keys():
+        score = round(score / 3.5, 1)
     return {
         "project_id": run.project_id, "run_id": run.id,
         "source_asset_id": run.source_asset_id,

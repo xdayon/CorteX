@@ -105,7 +105,7 @@ def test_ffmpeg_nice_prefixes_the_command(tmp_path, monkeypatch):
 
     seen = []
     monkeypatch.setattr(common, "run", lambda cmd, **kw: seen.append([str(c) for c in cmd]))
-    cfg = small_config(tmp_path)
+    cfg = small_config(tmp_path, ffmpeg_nice=0)
     common.ffmpeg(cfg, "-i", "x")
     cfg.lessons.ffmpeg_nice = 10
     common.ffmpeg(cfg, "-i", "x")

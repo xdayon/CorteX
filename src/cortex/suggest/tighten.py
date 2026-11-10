@@ -258,6 +258,8 @@ class TightenService:
                 "artifact_schema_version": TIGHTEN_ARTIFACT_VERSION,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "input_hash": input_hash,
+                "prompt_sha256": prompt_sha256,
+                "schema_id": schema.get("$id"),
                 "transcript_artifact_id": transcript_artifact.id,
                 "start": start,
                 "end": end,

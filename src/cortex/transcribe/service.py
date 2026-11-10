@@ -84,6 +84,7 @@ class TranscribeService:
             language=language,
             vad=vad,
             schema_version=TRANSCRIPT_SCHEMA_VERSION,
+            hotwords=overrides.get("hotwords") or [],
         )
         if cached is not None:
             progress_cb(100.0, "Transcript em cache reutilizado")
@@ -147,6 +148,7 @@ class TranscribeService:
             vad=vad,
             batch_size=batch_size,
             duration_seconds=result.duration_seconds,
+            hotwords=overrides.get("hotwords") or [],
         )
         self._domain.create_transcript_artifact(artifact)
 

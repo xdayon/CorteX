@@ -1,4 +1,6 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cortex/clip_selection/v5",
   "type": "object",
   "additionalProperties": false,
   "required": [

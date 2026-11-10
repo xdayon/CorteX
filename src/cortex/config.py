@@ -41,7 +41,7 @@ class TranscriptionConfig(BaseModel):
     allow_cpu_fallback: bool = False
     # Names/terms the decoder should prefer (e.g. "Dayon"). Applies to new
     # transcriptions; cached transcripts are not redone when this changes.
-    hotwords: list[str] = Field(default_factory=list, max_length=50)
+    hotwords: list[str] = Field(default_factory=lambda: ["Dayon"], max_length=50)
 
 
 class RenderConfig(BaseModel):
@@ -51,7 +51,6 @@ class RenderConfig(BaseModel):
     ffprobe: Path = Path("/usr/bin/ffprobe")
     fonts_dir: str = "assets/fonts"
     encoder: str = "h264_nvenc"
-    allow_cpu_fallback: bool = False
     width: int = Field(default=1080, ge=320)
     height: int = Field(default=1920, ge=320)
     fps: int = Field(default=30, ge=15, le=120)
@@ -60,17 +59,16 @@ class RenderConfig(BaseModel):
     true_peak_limit_dbfs: float = Field(default=-1.0, ge=-9.0, le=0.0)
     captions_enabled: bool = True
     caption_font: str = "Montserrat"
-    caption_font_size: int = Field(default=32, ge=12, le=120)
+    caption_font_size: int = Field(default=56, ge=12, le=120)
     caption_max_words: int = Field(default=5, ge=1, le=12)
     headline_enabled: bool = True
     headline_font: str = "Montserrat"
-    headline_font_size: int = Field(default=42, ge=12, le=160)
-    headline_duration_seconds: float = Field(default=3.4, gt=0.0, le=15.0)
+    headline_font_size: int = Field(default=48, ge=12, le=160)
+    headline_duration_seconds: float = Field(default=4.0, gt=0.0, le=15.0)
     visual_quality_enabled: bool = True
     black_threshold_seconds: float = Field(default=0.5, gt=0.0, le=10.0)
     freeze_threshold_seconds: float = Field(default=1.5, gt=0.0, le=30.0)
     freeze_block_threshold_seconds: float = Field(default=5.0, gt=0.0, le=60.0)
-    safe_zone_sample_fps: float = Field(default=4.0, gt=0.0, le=60.0)
 
 
 class AnalysisConfig(BaseModel):
@@ -98,19 +96,23 @@ class IngestConfig(BaseModel):
     allowed_extensions: list[str] = Field(
         default_factory=lambda: ["mp4", "mov", "mkv", "webm", "mp3", "wav", "m4a", "aac", "flac"]
     )
-    youtube_format: str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+    youtube_format: str = (
+        "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio"
+        "/best[height<=1440]/best"
+    )
     # yt-dlp `--cookies-from-browser` value ("browser" or "browser:profile_path", `~`
     # expanded) for videos where YouTube asks to "confirm you're not a bot".
-    youtube_cookies_from_browser: str | None = None
+    youtube_cookies_from_browser: str | None = (
+        "chrome:~/.var/app/com.google.Chrome/config/google-chrome"
+    )
 
 
 class ClipConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    minimum_seconds: int = Field(default=50, ge=15, le=180)
+    minimum_seconds: int = Field(default=40, ge=15, le=180)
     maximum_seconds: int = Field(default=120, ge=15, le=180)
     count: int = Field(default=10, ge=1, le=25)
-    pacing_profile: str = "auto"
 
     @model_validator(mode="after")
     def duration_order(self) -> "ClipConfig":
@@ -124,15 +126,15 @@ class AiConfig(BaseModel):
 
     provider: Literal["claude_code_cli", "codex_cli"] = "claude_code_cli"
     claude_binary: str = "claude"
-    claude_model: str = "sonnet"
-    claude_effort: str | None = "low"
+    claude_model: str = "claude-sonnet-5-5"
+    claude_effort: str | None = "medium"
     # Effort of the per-clip refine pass (one small call per exported clip).
     refine_effort: str | None = "medium"
     tighten_enabled: bool = True
     codex_binary: str = "codex"
     codex_model: str = "gpt-5.5"
     codex_reasoning_effort: str = "medium"
-    timeout_seconds: int = Field(default=300, ge=10, le=3600)
+    timeout_seconds: int = Field(default=900, ge=10, le=3600)
     max_input_chars: int = Field(default=800_000, ge=10_000, le=5_000_000)
     selection_max_envelope_seconds: float = Field(default=240.0, gt=0)
 
@@ -192,12 +194,12 @@ class LessonsConfig(BaseModel):
     manim_workers: int = Field(default=4, ge=1, le=16)
     # Shot segments built at once by `assemble`. Each Flow plate runs minterpolate, which is close to single-thread;
     # a 1080p one holds ~600 MB of RAM, so a few workers fill the idle cores without swapping.
-    assemble_workers: int = Field(default=1, ge=1, le=16)
+    assemble_workers: int = Field(default=3, ge=1, le=16)
     # Niceness of every lesson FFmpeg run (0 = inherit), so the desktop stays usable during a long render.
-    ffmpeg_nice: int = Field(default=0, ge=0, le=19)
+    ffmpeg_nice: int = Field(default=10, ge=0, le=19)
     # Video encoder for every lesson stage (pieces and final). h264_nvenc must open on render.ffmpeg, or the
     # render stops with the reason: never a silent switch to the CPU.
-    encoder: Literal["libx264", "h264_nvenc"] = "libx264"
+    encoder: Literal["libx264", "h264_nvenc"] = "h264_nvenc"
 
 
 class SoundConfig(BaseModel):

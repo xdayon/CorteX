@@ -121,10 +121,14 @@ class JobStore:
             raise JobNotFoundError(job_id)
         return Job.model_validate_json(row["data"])
 
-    def list(self, limit: int = 50) -> list[Job]:
+    def list(self, limit: int = 50, *, active: bool = False) -> list[Job]:
+        where = (
+            f"WHERE json_extract(data, '$.status') IN ('{JobStatus.QUEUED.value}', "
+            f"'{JobStatus.RUNNING.value}') " if active else ""
+        )
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT data FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+                f"SELECT data FROM jobs {where}ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [Job.model_validate_json(row["data"]) for row in rows]
 

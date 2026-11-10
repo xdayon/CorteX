@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 from functools import wraps
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -17,6 +18,18 @@ from cortex.ingest.youtube_metadata import (
     YoutubeMetadata, YoutubeMetadataError, fetch_youtube_metadata,
 )
 from cortex.schemas import JobCreate, JobType, utc_now
+
+logger = logging.getLogger(__name__)
+
+
+def public_run(run) -> dict:
+    """Run as sent to the browser: the large confirmed voice stays server-side."""
+    data = run.model_dump(mode="json")
+    brief = dict(data.get("brief") or {})
+    voice = brief.pop("confirmed_voice", None)
+    brief["has_confirmed_voice"] = bool(voice)
+    data["brief"] = brief
+    return data
 
 
 class Episode(BaseModel):
@@ -209,22 +222,20 @@ class EpisodeLibrary:
         )]
 
     def detail(self, episode: Episode):
-        sources, runs, renders, suggestions = [], [], [], []
+        sources, runs, renders = [], [], []
         for project_id in episode.project_ids:
             sources.extend(self.domain.list_source_assets(project_id))
             runs.extend(self.domain.list_workflow_runs(project_id))
             for artifact in self.domain.list_stage_artifacts(project_id):
-                if artifact.stage not in {"render", "suggestion"} or not Path(artifact.path).is_file():
+                if artifact.stage != "render" or not Path(artifact.path).is_file():
                     continue
                 try:
                     doc = json.loads(Path(artifact.path).read_text())
-                    if artifact.stage == "render":
-                        if not Path(doc["output_path"]).is_file():
-                            continue
-                        renders.append({"id":artifact.id,"project_id":project_id,"created_at":artifact.created_at,"duration":doc.get("timeline_duration_seconds"),"title":(doc.get("effective_settings") or {}).get("headline",{}).get("text") or "Corte exportado","publish_ready":(doc.get("publication") or {}).get("publish_ready",False)})
-                    else:
-                        suggestions.append({"id":artifact.id,"project_id":project_id,"clips":doc.get("selection",{}).get("clips",[])})
+                    if not Path(doc["output_path"]).is_file():
+                        continue
+                    renders.append({"id":artifact.id,"project_id":project_id,"created_at":artifact.created_at,"duration":doc.get("timeline_duration_seconds"),"title":(doc.get("effective_settings") or {}).get("headline",{}).get("text") or "Corte exportado","publish_ready":(doc.get("publication") or {}).get("publish_ready",False)})
                 except (ValueError, KeyError, OSError):
+                    logger.warning("skipping unreadable artifact %s", artifact.id, exc_info=True)
                     continue
         available = [s for s in sources if (self.config.paths.data_dir/s.stored_path).is_file()]
         available.sort(key=lambda s: s.created_at)
@@ -234,7 +245,7 @@ class EpisodeLibrary:
         title = (episode.title if episode.metadata_updated_at is not None else
                  next((s.original_filename for s in available if s.original_filename), episode.title))
         return {**episode.model_dump(),"title":title,"source":available[0].model_dump(mode="json") if available else None,
-                "source_bytes":sum({s.stored_path:s.size_bytes for s in available}.values()),"runs":[r.model_dump(mode="json") for r in sorted(runs,key=lambda r:r.created_at,reverse=True)],"renders":renders,"suggestions":suggestions,
+                "source_bytes":sum({s.stored_path:s.size_bytes for s in available}.values()),"runs":[public_run(r) for r in sorted(runs,key=lambda r:r.created_at,reverse=True)],"renders":renders,
                 "diarizations":[{"id": a.id, "project_id":p} for p in episode.project_ids for a in self.domain.list_stage_artifacts(p,stage="diarization") if Path(a.path).is_file()],
                 "jobs":[{k:j.get(k) for k in ("id","type","status","progress","message","error")} for j in jobs[:30]]}
 

@@ -10,7 +10,7 @@ from cortex.config import LessonsConfig
 from cortex.lessons.common import LessonError, video_encode
 
 
-def test_default_is_cpu_x264_with_grain_tuned_final(tmp_path):
+def test_cpu_x264_is_grain_tuned_for_the_final(tmp_path):
     cfg = small_config(tmp_path)
     assert cfg.lessons.encoder == "libx264"
     piece, final = video_encode(cfg), video_encode(cfg, final=True)

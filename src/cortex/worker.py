@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import signal
 import sys
@@ -51,6 +52,8 @@ from cortex.transcribe.service import TranscribeJobCancelled, TranscribeService
 _MAX_ERROR_LENGTH = 4000
 _STALLED_JOB_SECONDS = 300
 _WATCHDOG_INTERVAL_SECONDS = 5
+
+logger = logging.getLogger(__name__)
 
 
 _CUDA_RECOVERY_EXIT_CODE = 75
@@ -96,6 +99,7 @@ def _job_is_cancelled(jobs: JobStore, job_id: str) -> bool:
     try:
         return jobs.get(job_id).status == JobStatus.CANCELLED
     except Exception:
+        logger.warning("could not read status of job %s", job_id, exc_info=True)
         return False
 
 
