@@ -12,55 +12,25 @@ fronteira proposta pela LLM nunca deve ir diretamente ao FFmpeg.
 Cada fonte e identificada por hash e analisada uma unica vez. Os resultados sao
 cacheados no mesmo sistema de coordenadas da fonte:
 
-- transcricao com timestamps por palavra e confianca;
-- alinhamento forcado para regioes de baixa confianca;
-- VAD com intervalos de fala;
-- waveform com RMS, pico, zero crossing e spectral flux;
-- loudness, true peak e amostras limpas de room tone;
-- diarizacao e identidade editorial dos speakers;
-- shot boundaries, layout, face tracks, embeddings e mouth motion;
+- transcricao com timestamps por palavra e confianca (`transcribe/`);
+- VAD com intervalos de fala e energia/waveform (`analyze/audio.py`);
+- loudness e true peak;
+- voz do protagonista: rotulos D/O por frase a partir do perfil de voz
+  (`diarize/voice_match.py`); diarizacao pyannote so manual;
+- cortes de cena (scdet), rostos em poucas amostras por cena (YuNet) e mapa de
+  cameras por keyframes (`analyze/`);
 - FPS, timebase, duracao e keyframes da midia.
 
-Todos os tempos internos usam microssegundos inteiros. Segundos decimais sao
-aceitos apenas nas APIs de entrada e saida.
+Os tempos internos sao segundos (`float`) no relogio absoluto do master; o render
+converte para quadros exatos por segmento.
 
-## EDL resolvida
+## Plano de edição (EDL resolvida)
 
-A EDL real separa video e audio. Isso permite J-cuts, L-cuts e reaction shots sem
-forjar sincronismo:
-
-```json
-{
-  "schema_version": "1.0",
-  "timeline": { "timebase": "1/1000000", "width": 1080, "height": 1920 },
-  "events": [
-    {
-      "id": "evt-002",
-      "timeline_in_us": 8400000,
-      "timeline_out_us": 14300000,
-      "video": {
-        "source_id": "episode",
-        "source_in_us": 721800000,
-        "source_out_us": 727700000,
-        "visual_role": "interviewer_reaction",
-        "crop_track_id": "face-host-1"
-      },
-      "audio": {
-        "source_id": "episode",
-        "source_in_us": 694200000,
-        "source_out_us": 700100000,
-        "gain_db": 0,
-        "continuity_group": "primary-speech"
-      },
-      "transition_in": {
-        "video": "hard_cut",
-        "audio": "equal_power_crossfade",
-        "audio_duration_us": 60000
-      }
-    }
-  ]
-}
-```
+O contrato real é `EditPlanDocument` em `src/cortex/edit/schemas.py`: segmentos com tempos
+da fonte em segundos (`float`, relógio absoluto do master), `audio_start`/`audio_end` separados
+do vídeo para J/L-cuts, `piece_index` da peça escolhida pela IA e as inserções de cena da
+triangulação (que trocam só a imagem). O render (`render/service.py`) converte para quadros
+exatos por segmento.
 
 Invariantes:
 
@@ -92,8 +62,8 @@ recebem tratamento privilegiado.
 
 **J-cut:** o audio do proximo evento inicia antes da troca visual. E apropriado
 para introduzir uma resposta enquanto ainda vemos a escuta/reacao do
-entrevistador. O lead padrao e 180 ms e deve permanecer abaixo de 450 ms para
-fala rapida.
+entrevistador. O teto do deslocamento vem do perfil de ritmo (`max_jl_offset` em
+`edit/profiles.py`); J/L-cut e opcional por plano.
 
 **L-cut:** o audio atual continua apos a troca visual. Serve para sustentar uma
 frase enquanto a imagem revela o interlocutor ou um plano aberto. A cauda deve
@@ -105,34 +75,15 @@ Saltos fortes da mesma camera devem ser mascarados por punch-in alternado, plano
 aberto ou reaction shot. Dissolve fica reservado a mudanca perceptivel de tempo,
 local ou atmosfera, pois em rostos ele cria ghosting.
 
-## Reaction shots
+## Reacoes e planos abertos (triangulacao)
 
-Um reaction shot nunca e B-roll arbitrario. O candidato deve satisfazer todos os
-gates obrigatorios:
-
-- identidade confirmada como entrevistador/interlocutor, nao o speaker principal;
-- face visivel, track estavel e enquadramento utilizavel em 9:16;
-- diarizacao indica que o interlocutor nao esta falando;
-- mouth motion abaixo do limiar de fala visivel;
-- ausencia de troca de layout, frame congelado ou oclusao relevante;
-- preferencia por proximidade temporal ao trecho principal;
-- audio do reaction shot mutado; permanece o audio continuo da fala principal.
-
-O score combina listening posture, expressao, estabilidade, nitidez, proximidade
-temporal e seguranca labial. Se qualquer gate obrigatorio falhar, usar o speaker
-principal, plano aberto ou punch-in. Nao inserir labios pronunciando outra fala.
-
-## Planejamento de camera
-
-O planner recebe a EDL resolvida, diarizacao e indice visual. Ele deve:
-
-- manter o primary subject como ancora narrativa;
-- evitar permanecer mais que 12 a 18 segundos no mesmo enquadramento quando
-  houver alternativa segura;
-- inserir ao menos uma reacao curta por corte quando existir candidato valido;
-- trocar enquadramento em mudancas de beat, nao no meio de uma palavra;
-- limitar pans digitais e preferir composicoes estaveis;
-- respeitar safe zones de headline, legenda e interfaces de Reels/TikTok.
+A antiga analise de camera/identidade/falante e o planejador de camera foram removidos.
+Hoje a imagem de outra camera entra como inserção que troca só o vídeo, mantendo o áudio
+contínuo da fala principal: plano aberto e entrevistador vindos do mapa de câmeras do
+episódio, com a imagem emprestada conferida por quadros. Detalhes em
+[TRIANGULATION.md](TRIANGULATION.md); código em `analyze/scene_suggestions.py`,
+`analyze/footage_check.py`, `analyze/triangulation.py` e inserções em `render/service.py`.
+O enquadramento por rostos fica em `render/face_focus.py`.
 
 ## Pipeline de render
 
@@ -143,10 +94,10 @@ Pipeline alvo:
 
 1. Gerar proxy apenas para preview, sem afetar o master.
 2. Resolver EDL e crop tracks antes do render.
-4. Compor headline e captions na mesma passagem grafica.
-5. Aplicar loudness e encode no composite final, evitando reencodes sucessivos.
-6. Usar NVDEC/NVENC somente apos probe funcional; fallback de CPU deve ser
-   explicito no job e na telemetria.
+3. Compor headline e captions na mesma passagem grafica.
+4. Aplicar loudness e encode no composite final, evitando reencodes sucessivos.
+5. Usar NVENC somente apos probe funcional (`render.encoder`); sem fallback silencioso
+   para CPU, e o encoder pedido e o efetivo ficam no manifesto.
 
 ## Quality gates
 
@@ -156,7 +107,7 @@ Pipeline alvo:
 - nenhuma fronteira dentro de palavra ou VAD protegido;
 - soma da EDL dentro dos limites de duracao;
 - score e soma editorial validos;
-- reaction shots aprovados pelos gates de identidade e mouth motion;
+- inserções de cena com a câmera conferida por quadros;
 - headline dentro de limite e sem divergencia factual;
 - densidade de cortes compativel com o perfil.
 

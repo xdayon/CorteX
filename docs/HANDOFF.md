@@ -1,6 +1,6 @@
 # CorteX — estado atual para agentes
 
-Atualizado em 2026-11-01. Histórico anterior em
+Atualizado em 2026-11-10. Histórico anterior em
 [history](history/HANDOFF_FABLE_5-before-2026-09-10.md) — não é fila de instruções.
 
 ## Produto e restrições
@@ -28,25 +28,28 @@ YouTube/upload → normaliza → transcreve (faster-whisper CUDA int8, hotwords)
 Depois da seleção, o worker enfileira sozinho o mapa de câmeras do episódio (com perfil
 de voz).
 
-## Entregue em 01/nov (no ar: `feat/lessons`, serviço reiniciado às 05:54)
+## Entregue em 10/nov (auditoria; branch `audit/2026-11` → `main`)
 
-Triangulação automática por padrão ([plano](TRIANGULATION.md),
-[evidência](evidence/2026-11-01-auto-triangulation.md)):
+Backup antes de tudo: tag `pre-audit-2026-11-10`. Evidência e medidas em
+[auditoria](evidence/2026-11-10-auditoria.md).
 
-- todo corte sem escolha própria ganha plano aberto + entrevistador, resolvidos pelo
-  worker de render (prévia = export);
-- imagem emprestada conferida por quadros, porque o mapa por keyframes perde cortes;
-- papéis de câmera vindos da voz até alguém confirmar;
-- aba Cenas com "Automáticas" e "Voltar ao automático".
+- Removidos: registro de publicação + "Aprendizado do perfil" (0 registros), presets de
+  render, 16 rotas sem chamador, código morto. "Postado" é estado manual do corte.
+- Corrigidos: nomes próprios por episódio agora retranscrevem; refino da IA (o `$schema`
+  2020-12 quebrava o CLI); `watchJob` sem fallback; serviço `failed` a cada parada;
+  `update_and_verify.sh` (FFmpeg certo, UI trocada só sem job, `try-restart`); notas v1
+  na escala 1–10; padrões de duração vindos de `clips.*`.
+- Mais leve: tarefas ativas 1,15 MB → 295 B por consulta; episódios 1,29 MB → 140 KB;
+  o perfil de voz (~190 KB) não vai mais ao navegador.
+- Studio: tokens de design, atalhos (`?`), estado sem conexão, ErrorBoundary, detalhe do
+  corte em 2 colunas, miniaturas enquadradas, fila "Para postar".
+- Regras que não podem quebrar viraram hooks (`.claude/settings.json`, `scripts/hooks/`).
 
 ## Entregas anteriores
 
-- 23/out: triangulação B–E manual ([evidência](evidence/2026-10-23-scene-suggestions.md)) e
-  prévias com fade corrigidas.
-- 19/out: legenda com linhas equilibradas e quebra manual; downloads com o nome da manchete.
-- 16/out: cortes integrados ao episódio, Studio novo, voz do protagonista
-  ([voice-match](evidence/2026-10-16-voice-match.md)), deriva A/V corrigida
-  ([av-sync](evidence/2026-10-16-av-sync-drift.md)).
+- 01/nov: triangulação automática por padrão ([evidência](evidence/2026-11-01-auto-triangulation.md)).
+- 23/out: triangulação B–E manual ([evidência](evidence/2026-10-23-scene-suggestions.md)).
+- 16–19/out: cortes integrados, Studio novo, voz do protagonista, deriva A/V corrigida.
 
 ## Próximo gate
 
@@ -64,9 +67,9 @@ Diarização pyannote completa: só manual, para confirmar a voz de um episódio
 
 ## Operação
 
-- `systemctl --user restart cortex.service` só sem job ativo; agentes pedem ao
-  usuário. `./scripts/update_and_verify.sh` faz deps, Claude CLI, testes, build e
-  reinício seguro.
+- O `cortex.service` vive com a janela do app (`open_studio.py`); não sobe no login.
+  Atualizar: o usuário roda `./scripts/update_and_verify.sh` (recusa com job ativo, troca a
+  UI e só reinicia se o serviço estiver ligado). Agentes nunca ligam/desligam o serviço.
 - Validação real sem tocar os dados: clone CoW `cp -a --reflink=always data <dir>/data`
   (btrfs, instantâneo) e API/worker com `CORTEX__PATHS__*` apontando para o clone,
   `CORTEX_CONFIG=<repo>/config/cortex.yaml` (sem isso valem os padrões do código, com
@@ -78,7 +81,7 @@ Diarização pyannote completa: só manual, para confirmar a voz de um episódio
 ```bash
 .venv/bin/pytest -q
 .venv/bin/ruff check src/cortex scripts tests
-(cd apps/web && npm test && npm run build)
+(cd apps/web && npx tsc --noEmit && npm test && npx vite build --outDir /tmp/cortex-web --emptyOutDir)
 git diff --check
 ```
 

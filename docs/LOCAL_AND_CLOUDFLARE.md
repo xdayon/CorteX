@@ -51,8 +51,10 @@ Pré-requisito: o domínio `synapses.academy` está na sua conta Cloudflare. O
 3. **Rota** — no túnel, aba **Routes → Add route → Published application**:
    subdomínio `cortex`, domínio `synapses.academy`, Service URL
    `http://localhost:8787`.
-4. Reinicie o CorteX sem job rodando (`systemctl --user restart cortex.service`) e,
-   para tudo subir no boot mesmo sem login, `loginctl enable-linger $USER`.
+4. Feche e abra o app CorteX (sem job rodando) para o serviço ler o `.env` novo. O
+   túnel fica ligado, mas o Studio só responde com o app aberto no PC; para acesso
+   remoto com o PC sem a janela aberta seria preciso voltar a habilitar o
+   `cortex.service` no login (decisão do usuário).
 
 ## Conferir
 

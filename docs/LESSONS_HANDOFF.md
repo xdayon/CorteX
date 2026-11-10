@@ -16,16 +16,16 @@ usuário. Também promos 9:16 (Dayon News). A referência de qualidade é `data/
 - Ciclo: Etapa 1 (narração, um parágrafo por beat, vai direto para `init --script`) → `init` + `align` + `check`
   (a tabela de tempos volta para o Gabriel) → Etapa 2 (pacote visual) → importação.
 
-## Estado (2026-10-28, branch `feat/lessons`, commitado e enviado em 4 commits por assunto)
+## Estado (2026-10-28; tudo no `main` desde então)
 - A fase 1 está pronta: `lessons/` com spec, align, timeline, ingest, flow_pack, manim (podman) e assemble
   (cache por hash de conteúdo). A aula de referência reproduz o piloto bit a bit (PSNR inf nas 17 tomadas).
 - Outra sessão acrescentou no mesmo branch: promos, `sound/` (Soundza/SFXMint), `lessons/sound.py`,
   `titles.py`, `cutout.py`, tomadas `image`, `aspect` 9:16, fontes IBM Plex Mono e STUDIO_AI.md. Preserve tudo.
-- Testes: `.venv/bin/pytest -q tests/test_lessons_*.py tests/test_sound_*.py` passa (39).
+- Testes: `.venv/bin/pytest -q tests/test_lessons_*.py tests/test_sound_*.py` passa (49 em 10/nov).
 - `i-quarter-turn` tem `music.gain_db: -6`: o Robert quer a música bem baixa (padrão das aulas dele).
 - Aulas em produção: o curso Polymath Academy. O handoff da produção está em `data/lessons/_polymath/HANDOFF.md`, fora do Git.
   A Intro está montada (v1, sem avatar). Lições para o código: o plano precisa definir `flow.out`, senão o assemble acelera o
-  clipe; o número do clipe aceita 2 ou 3 dígitos; o `ingest` exige todos os clipes.
+  clipe; o número do clipe aceita qualquer quantidade de dígitos (4 desde 04/nov); o `ingest` exige todos os clipes.
 
 ## Regras que valem para toda a fase 2
 - **Narração primeiro.** Alinhar e só então escrever os prompts do Flow com a duração exata. O Flow (Omni 1.1
@@ -49,52 +49,10 @@ usuário. Também promos 9:16 (Dayon News). A referência de qualidade é `data/
 - **Cache:** mudar a chave de um estágio em `assemble.py` invalida tudo. As placas com `minterpolate` levam
   cerca de 30 min para refazer, então só mude chaves quando a saída de fato mudar.
 
-## Fase 2: itens em ordem
-1. **Alinhamento com dica do roteiro.** `lessons/align.py:transcribe_words` chama `FasterWhisperEngine` sem
-   `initial_prompt`, e o erro chega a 0,28 s (o piloto, com dica, errou menos). Adicione `initial_prompt: str | None = None`
-   em `transcribe/engine.py`, opcional e sem mudar quem já chama (o pipeline de episódios usa o mesmo motor).
-   Aceite: `align i-quarter-turn` em `timings_aligned.json` com max |Δ| ≤ 0,15 s contra `timings.json`.
-2. **Divisão de falas longas sem GPU.** Um beat pode ser quebrado em sub-beats em fronteira de frase, e os tempos
-   são recalculados a partir do `alignment.json` salvo (`align.timings_from_words`), sem retranscrever. Esse é o
-   mecanismo que o plano usa para respeitar o limite de 10 s do Flow.
-3. **Importar o pacote do Gabriel (`lessons/package.py`, CLI `import <slug> <pacote.md>`).** É um parser
-   determinístico do formato de `docs/chatgpt-gabriel/3-formatos-de-entrega.md` e não usa IA.
-   - Cabeçalhos `## Sxx · TIPO · beats … · pedir D s · xN · vN`, blocos `text` (prompt) e `yaml` (brief).
-   - A seção "Divisões" vira sub-beats (item 2).
-   - Valida: cobertura e ordem dos beats; a duração pedida contra `timeline.flow_request`; o número do prompt
-     igual ao da tomada; o fechamento "No text…"; o modelo Manim conhecido. Reporta cada erro com o id da tomada.
-   - Escreve um `lesson.json` proposto, com os briefs guardados para o Manim.
-   - O teste usa o exemplo do arquivo 3 como fixture.
-   - Isso substitui o antigo `plan.py`: o plano com LLM próprio fica só para as aulas do usuário, mais tarde.
-4. **Tomada `avatar` (HeyGen).** `kind: "avatar"` + `AvatarRef` na spec.
-   - Exporta o trecho da narração mestre de cada tomada (com folga do dissolve) para upload no HeyGen.
-   - Ingest pelo número no título; montagem sem retime (o lábio quebra), com o áudio do clipe mudo.
-   - Painel Manim opcional (`layout: lado`).
-   - Bloqueado até o usuário mandar o print do painel do HeyGen (upload de áudio, fundo, resolução).
-5. **Biblioteca de componentes Manim.** Extrair das cenas do piloto (`data/lessons/i-quarter-turn/scenes/`)
-   componentes que recebem parâmetros (o brief YAML) e usam o `brand.py`. Os ids já estão no contrato do Gabriel
-   (`2-guia-visual.md`):
-
-   | id | Vem de |
-   |---|---|
-   | `rotating_plane` | s03 |
-   | `matrix_product` | s04 |
-   | `glass_equations` (overlay) | s05, s14 |
-   | `reciprocal_lines` | s06 |
-   | `function_graph` (overlay) | s07 |
-   | `complex_map` | s08 |
-   | `angle_ladder` | s10 |
-   | `log_scale` | s13 |
-   | `check_counter` (overlay) | s15 |
-   | `end_card` | s18 |
-
-   Aceite: recriar s03, s04 e s15 só por spec, com a mesma duração e comparação visual lado a lado com os renders
-   do piloto. Cena nova só quando nenhum componente serve, e ela vira componente.
-6. **Provider Gemini: baixa prioridade.** O plano criativo agora é feito no ChatGPT do Gabriel. Só vale se o usuário
-   quiser fazer as próprias aulas sem gastar tokens do Claude. `GeminiCliProvider` ficaria no
-   `build_suggestion_provider`, sem API e sem fallback, e o CLI ainda não está instalado.
-7. **Fase 3, depois:** a aba "Aulas" na UI, com upload, prompts com botão de copiar, arrastar clipes, folha de QC,
-   prévia e export. Ela segue as regras de prévia e verificação visual do AGENTS.md.
+## Próximos itens
+A fila da fase 2 (alinhamento com dica do roteiro, divisão de falas, importação do pacote do
+Gabriel, tomada `avatar`, biblioteca de componentes Manim, provider Gemini e a aba "Aulas") está no
+[ROADMAP](ROADMAP.md#estúdio-ia--fase-2-aulas-e-promos), com os critérios de aceite.
 
 ## Decisões pendentes (perguntar ao usuário)
 - Opções do HeyGen (item 4): o usuário manda o print do painel.

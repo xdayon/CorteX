@@ -1,0 +1,60 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(./.env)",
+      "Edit(./data/**)",
+      "Edit(./entrada/**)",
+      "Edit(./apps/web/dist/**)",
+      "Bash(rm -rf data*)",
+      "Bash(rm -rf ./data*)",
+      "Bash(rm -rf entrada*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(systemctl --user restart cortex*)",
+      "Bash(systemctl --user stop cortex*)",
+      "Bash(systemctl --user start cortex*)",
+      "Bash(npm run build*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/hooks/secret_scan.sh",
+            "timeout": 20,
+            "onFailure": "block",
+            "statusMessage": "Procurando segredos"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/hooks/guard_bash.sh",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/hooks/tests_before_done.sh",
+            "timeout": 600,
+            "statusMessage": "Rodando as verificações antes de encerrar"
+          }
+        ]
+      }
+    ]
+  }
+}

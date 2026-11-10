@@ -13,14 +13,14 @@ Não há runtime PodCLI, multicam ISO, servidor editorial alternativo ou cloud G
 | --- | --- | --- |
 | Configuração e caminhos | `config.py`, `paths.py`, `config/cortex.yaml` | configuração |
 | Catálogo/estado | `library.py`, `domain/models.py`, `domain/store.py` | episode_library, workflow_runs |
-| Jobs e orquestração | `jobs.py`, `worker.py`, `export_batches.py` | jobs, workflow_runs, export_batches |
-| API | `api.py`, `review_api.py` (revisão/lote, `clip_settings` por corte), `overlay_api.py` (prévia), `publication_api.py` | studio, export_batches, visual_engine, render_media_api |
+| Jobs e orquestração | `jobs.py`, `worker.py`, `export_batches.py` | workflow_runs, export_batches, transcribe_worker |
+| API | `api.py`, `review_api.py` (revisão/lote, `clip_settings` por corte), `overlay_api.py` (prévia), `clips_api.py` (estado dos cortes) | studio, export_batches, visual_engine, render_media_api, cache_config_and_payloads |
 | YouTube/upload | `ingest/` | ingest |
 | Transcrição | `transcribe/` (hotwords, modo batched registrado) | transcribe_worker, cuda_recovery |
 | Seleção e refino (IA) | `suggest/` (`provider.py`, `service.py`, `tighten.py`), `prompts/` | suggestion_cli, composed_selection, tighten, claude_provider |
 | Plano de edição | `edit/` (corte seco, muletas, peças, J/L) | edit_plan, dynamic_editing, audio_editing |
 | Render e QA | `render/service.py` (quadros exatos por segmento, `timings`), `render/ass_overlay.py`, `render/safe_zones.py` | render*, render_av_sync, render_draft_speed, ass_overlay, visual_engine |
-| UI | `apps/web/src/`: `ui/` (design system), `router.tsx`, `app/` (shell, tarefas em segundo plano), `features/episodes`, `features/episode` (cortes integrados, player de trechos), `features/editor` (estúdio, fila de prévias, ajustes por corte), `features/cuts` | `*.test.tsx` ao lado de cada módulo |
+| UI | `apps/web/src/`: `ui/` (design system), `router.tsx`, `app/` (shell, conexão, atalhos, ErrorBoundary, tarefas em segundo plano), `features/episodes`, `features/episode` (cortes integrados, player de trechos), `features/editor` (estúdio, fila de prévias, ajustes por corte), `features/clips` (estado: aprovado/salvo/postado), `features/board` (quadro Cortes), `editor/` (legenda e ajustes compartilhados) | `*.test.tsx` ao lado de cada módulo |
 | Avaliação | `eval/`, `scripts/eval_selection.py` | eval_runner |
 | Operação local | `scripts/studio.sh`, `install_local_service.py`, `update_and_verify.sh` | — |
 | Estado dos cortes | `clips.py`, `clips_api.py` | test_clips_api |
@@ -56,16 +56,20 @@ fontes servidas por `/overlay-fonts`. Nunca reimplementar layout de legenda em C
 
 ## Hardware
 
-GTX 1060 6 GB (driver 580, último para Pascal): faster-whisper `large-v3-turbo` CUDA
-`int8`, batch 8. Encode em `h264_nvenc` (cortes e aulas) pelo FFmpeg 8.1.3 portátil do Jellyfin em
+GTX 1060 6 GB (driver 580, último para Pascal): faster-whisper em CUDA (`transcription.*`).
+Encode em NVENC (`render.encoder`, `lessons.encoder`) pelo FFmpeg portátil do Jellyfin em
 `render.ffmpeg`; o do host não abre o NVENC no driver 580. Pré-checagem explícita, sem fallback. Decodificação e
 prévia rápida do editor ficam na CPU (medido, ver evidência nvenc-jellyfin). Visão, voz do protagonista e diarização em CPU. Nunca trocar engine em silêncio.
 
 ## Operação
 
 API-only é o default de `create_app`; `app.studio_dir` serve o build estático.
-`studio.sh` força loopback e supervisiona API + worker; o serviço systemd de usuário
-sobe no login. Acesso remoto (Tailscale ou Cloudflare Tunnel + Access) é Fase 3.
+`studio.sh` força loopback e supervisiona API + worker. O `cortex.service` (systemd de
+usuário) vive com a janela do app: `open_studio.py` o inicia e o para ao fechar a janela
+(espera jobs na fila terminarem); não sobe no login. Acesso remoto (Cloudflare Tunnel +
+Access) só funciona com o app aberto. Regras que não podem quebrar viram código em
+`.claude/settings.json` + `scripts/hooks/` (segredos, dados, git destrutivo, serviço,
+`dist`, verificações antes de encerrar).
 
 ## Evolução sem reescrita
 

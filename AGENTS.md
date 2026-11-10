@@ -61,7 +61,8 @@
   `ai.*` in config. One configured provider (`ai.provider`: `claude_code_cli`
   active, `codex_cli` kept as an explicit alternative); no fallback between
   providers; surface failures (including subscription usage limits) explicitly.
-- Keep editorial token use small: one selection call per episode, with the
+- Keep editorial token use small: one selection call per episode (a second,
+  smaller call only when fewer than 60% of the requested clips come back), with the
   editorial template + transcript in the cacheable system prompt file and only
   the brief in the message; slim output schema; cache keys contain only what
   changes the output (provider/model/effort, prompt, schema, inputs).
@@ -69,8 +70,10 @@
   batch, or the export editor previewing a selected clip — same cached result);
   never for the episode-level suggestion list. It is skipped near the minimum
   duration and never bridges selection pieces.
-- Validate every model response against a versioned JSON Schema. Record provider,
-  model, command/version, prompt hash, input hash, timestamps, and effective mode.
+- Validate every model response against a versioned JSON Schema (`$id` in
+  `prompts/*.schema.json`; never declare `$schema`: the Claude CLI rejects draft
+  2020-12). Record provider, model, command/version, prompt hash, input hash,
+  timestamps, and effective mode.
 - Never silently fall back between LLM, heuristic, GPU/CPU, decoder, or encoder.
   Expose requested and effective engines in artifacts and UI.
 - Run untrusted model output as data only. Never execute shell text produced by a
@@ -88,22 +91,29 @@
 
 ## Operating The Local Service
 
-- `cortex.service` (systemd user unit) runs API + worker; the worker reads
-  `prompts/*.md` on every job, so prompt changes apply immediately while code
-  and config changes need a restart. Restart only when no job is queued or
-  running; `scripts/update_and_verify.sh` checks that and refuses otherwise.
-- Agents must not restart the service themselves; ask the user.
-- The service serves `apps/web/dist` live: agents never run `npm run build` into it
-  (an open Studio breaks on missing chunks). Verify builds with
-  `npx vite build --outDir <scratch> --emptyOutDir`; `update_and_verify.sh` rebuilds dist.
+- `cortex.service` (systemd user unit) runs API + worker and lives with the app
+  window: `scripts/open_studio.py` starts it and stops it when the window closes
+  (after queued jobs finish); it does not start at login. The worker reads
+  `prompts/*` on every job, so prompt changes apply immediately while code and
+  config changes need a restart.
+- Agents never start, stop or restart the service and never write `apps/web/dist`
+  (served live; an open Studio breaks on missing chunks). The user runs
+  `./scripts/update_and_verify.sh`, which refuses while a job is queued or running,
+  swaps the UI build and restarts only a running service.
+- Never-break rules are code, not prose: `.claude/settings.json` deny rules and the
+  hooks in `scripts/hooks/` (secret scan on every write; guard on shell commands for
+  `.env`, `data/`, `entrada/`, destructive git, the service and `dist`; checks that
+  must pass before an agent stops). Their cases live in `tests/test_project_hooks.py`.
 
 ## Verification
 
-- Backend: `.venv/bin/pytest -q`
-- Frontend: `cd apps/web && npm run build`
+- Backend: `.venv/bin/pytest -q` and `.venv/bin/ruff check src/cortex scripts tests`
+- Frontend: `cd apps/web && npx tsc --noEmit && npm test && npx vite build --outDir <scratch> --emptyOutDir`
 - Formatting/sanity: `git diff --check`
-- Full local update (deps, Claude CLI, tests, UI build, safe restart):
-  `./scripts/update_and_verify.sh`
+- Full local update (deps, Claude CLI, tests, UI swap, safe restart) is run by the
+  user: `./scripts/update_and_verify.sh`
+- Real behaviour without touching user data: reflink clone of `data/` plus API and
+  worker on another port (see `docs/HANDOFF.md`, Operação).
 - Visual changes: inspect real FFmpeg frames (PNG) of the affected styles, and
   the Studio at 390 px and desktop width, before calling them done:
   `.venv/bin/python scripts/studio_visual_check.py --url <studio url>` (real Google

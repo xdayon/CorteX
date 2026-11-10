@@ -32,9 +32,9 @@ processado no seu computador. [Roadmap](docs/ROADMAP.md) ·
 ## Instalação
 
 Python 3.12, Node, FFmpeg/ffprobe com libass e Claude Code CLI logado na assinatura.
-Máquina atual: GTX 1060 (transcrição CUDA `int8`); encode em `libx264` porque o FFmpeg
-do sistema não abre NVENC com o driver da placa
-([detalhes](docs/evidence/2026-10-14-host-nvenc.md)).
+Máquina atual: GTX 1060 (transcrição em CUDA); encode em NVENC pelo FFmpeg portátil do
+Jellyfin configurado em `render.ffmpeg`, porque o do sistema não abre o NVENC com o driver
+da placa ([detalhes](docs/evidence/2026-11-02-nvenc-jellyfin.md)).
 
 ```bash
 python3.12 -m venv .venv
@@ -53,9 +53,10 @@ durações e caminhos), com overrides `CORTEX__SECAO__CHAVE`. O processo não ca
 ```
 
 O atalho **CorteX** no menu inicia o serviço e abre o
-[Studio local](http://127.0.0.1:8787); o serviço também sobe no login. Para atualizar
-dependências, rodar testes, recompilar e reiniciar com segurança (recusa se houver
-job em andamento):
+[Studio local](http://127.0.0.1:8787) numa janela própria; ao fechar a janela o serviço
+para (se houver job na fila, espera terminar). Para atualizar dependências, rodar testes e
+trocar a interface com segurança (recusa se houver job em andamento; com o app fechado, a
+versão nova vale na próxima abertura):
 
 ```bash
 ./scripts/update_and_verify.sh
@@ -76,9 +77,19 @@ Pare o serviço antes de iniciar outro worker (`systemctl --user stop cortex.ser
 ```bash
 .venv/bin/pytest -q
 .venv/bin/ruff check src/cortex scripts tests
-(cd apps/web && npm test && npm run build)
+(cd apps/web && npx tsc --noEmit && npm test && npx vite build --outDir /tmp/cortex-web --emptyOutDir)
 git diff --check
 ```
+
+`apps/web/dist` é servida ao vivo: compile em outra pasta (como acima); só o
+`update_and_verify.sh` troca a `dist` servida, e só sem job em andamento.
+
+## Estúdio IA (aulas e promos)
+
+`python -m cortex.lessons` monta aulas 16:9 e promos 9:16 a partir de narração
+(ElevenLabs), clipes do Flow, cenas Manim e música; `python -m cortex.sound` cuida da
+biblioteca de som. Fluxo em [STUDIO_AI](docs/STUDIO_AI.md) e estado em
+[LESSONS_HANDOFF](docs/LESSONS_HANDOFF.md).
 
 ## Para agentes
 

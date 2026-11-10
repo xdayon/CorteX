@@ -65,7 +65,7 @@ Regras das sugestões (determinísticas):
   - ≤ 12 % → entrevistadores (desde 01/nov: plano aberto);
   - entre os dois → a pessoa decide.
   O papel é recalculado na leitura, sem refazer mapas.
-- Branch `feat/triangulation-scenes`
+- Entregue em 23/out
   ([evidência](evidence/2026-10-23-scene-suggestions.md)):
   - **B**: `analyze/scene_suggestions.py` + `GET /episodes/{id}/scenes`. As decisões
     ficam em `PUT /episodes/{id}/scene-reviews`, que mede a aprovação.
@@ -82,7 +82,7 @@ Regras das sugestões (determinísticas):
 ## Estado (2026-11-01): automático por padrão
 
 Pedido do Dayon: todo corte com as falas dele, o cenário e pelo menos uma cena do
-entrevistador. Branch `feat/triangulation-auto`
+entrevistador. Entregue em 01/nov
 ([evidência](evidence/2026-11-01-auto-triangulation.md)):
 
 - composição v2 em `scene_suggestions.py` (regras acima) e plano aberto ao vivo;
@@ -108,7 +108,8 @@ da IA preferir cortes com pergunta (prompt avaliado em worktree).
   áudio e legenda contínuos, sem deriva A/V.
 - **D — Pergunta.** Seleção e refino podem abrir com o fim da pergunta (rótulo O).
   Mudar `prompts/` afeta a produção na hora: avaliar no worktree e só depois fazer o merge.
-- **E — Automático.** "Aplicar triangulação" aceita as melhores sugestões. Fica ligado
-  por padrão só depois de B–D aprovados.
+- **E — Automático.** "Aplicar triangulação" aceita as melhores sugestões. Ligado por
+  padrão desde 01/nov, a pedido do Dayon, antes da aprovação medida de B (gate aberto no
+  ROADMAP).
 
 Fora do escopo: reconhecimento facial, leitura labial, câmeras ISO e inserção sem revisão.

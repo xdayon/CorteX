@@ -1,6 +1,6 @@
 # CorteX — contrato de entrega
 
-Atualizado em 2026-10-23 (triangulação). Objetivo: o melhor editor pessoal de
+Atualizado em 2026-11-10 (auditoria). Objetivo: o melhor editor pessoal de
 cortes virais para @dayon.news — master único, processamento local, revisão humana
 e publicação manual. Itens entregues antes de 14/out estão em
 [history](history/ROADMAP-before-2026-09-10.md) e no git log.
@@ -9,7 +9,7 @@ e publicação manual. Itens entregues antes de 14/out estão em
 
 - [x] Provider Claude robusto: binário resolvido em ordem fixa, cache só com o que
   muda o resultado, Codex mantido como alternativa explícita.
-- [x] Seleção v4: transcrição no system prompt cacheável, 3 manchetes, destaques,
+- [x] Seleção v4 (hoje schema v5): transcrição no system prompt cacheável, 3 manchetes, destaques,
   muletas iniciais removidas, `piece` na EDL; medido em episódio real.
 - [x] Refino v2 para todos os cortes exportados (inclusive compostos), com piso de
   duração; primeiro item do lote voltou a ser refinado (payload único).
@@ -49,9 +49,8 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
 
 ## Fase 3 — aprendizado e acesso
 
-- [x] Registrar cortes publicados e métricas (painel "Publicação" na exportação e na
-  Biblioteca) e usar o "Aprendizado do perfil" no prompt de seleção: só nota explícita
-  ou engajamento claramente acima/abaixo da mediana; ~450 tokens no contexto em cache.
+- [x] ~~Registro de publicação e métricas + "Aprendizado do perfil"~~: removido em 10/nov
+  (0 registros desde 14/out). "Postado" virou estado manual do corte (botão, lote e atalho P).
 - [ ] Imagens ilustrativas opcionais: IA sugere momentos e termos; imagem enviada
   pelo usuário ou de acervo livre (ex.: Wikimedia), com licença registrada.
 - [x] Acesso remoto por Cloudflare Tunnel + Access no código: JWT validado na origem,
@@ -81,7 +80,7 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
   medida ([evidência](evidence/2026-10-23-scene-suggestions.md)).
 - [x] C: inserções que trocam só a imagem, com prévia igual ao export (pixel + áudio).
 - [x] D: abertura com o fim da pergunta (determinística, por corte).
-- [x] E: "Aplicar triangulação" no editor (desligado por padrão).
+- [x] E: "Aplicar triangulação" no editor (hoje ligado por padrão, ver abaixo).
 - [x] Studio: etapas do episódio e aba Cenas no editor (essencial × opcional).
 - [x] Triangulação automática por padrão (pedido do Dayon em 01/nov): todo corte sem
   escolha própria ganha plano aberto + entrevistador; mapa de câmeras roda sozinho após a
@@ -90,6 +89,56 @@ corte real exportado pelo lote com refino, destaques e manchete editada.
 - [ ] Dayon revisa cortes automáticos de 2–3 episódios (meta: ≥ 80 % das cenas mantidas,
   `GET /episodes/{id}/scenes` → `review`).
 - [ ] Seleção da IA preferir cortes com pergunta (prompt avaliado em worktree antes do merge).
+
+## Estúdio IA — fase 2 (aulas e promos)
+
+Fluxo e regras em [LESSONS_HANDOFF](LESSONS_HANDOFF.md) e [STUDIO_AI](STUDIO_AI.md); itens em ordem:
+
+- [ ] 1. **Alinhamento com dica do roteiro.** `lessons/align.py:transcribe_words` chama `FasterWhisperEngine` sem
+   `initial_prompt`, e o erro chega a 0,28 s (o piloto, com dica, errou menos). Adicione `initial_prompt: str | None = None`
+   em `transcribe/engine.py`, opcional e sem mudar quem já chama (o pipeline de episódios usa o mesmo motor).
+   Aceite: `align i-quarter-turn` em `timings_aligned.json` com max |Δ| ≤ 0,15 s contra `timings.json`.
+- [ ] 2. **Divisão de falas longas sem GPU.** Um beat pode ser quebrado em sub-beats em fronteira de frase, e os tempos
+   são recalculados a partir do `alignment.json` salvo (`align.timings_from_words`), sem retranscrever. Esse é o
+   mecanismo que o plano usa para respeitar o limite de 10 s do Flow.
+- [ ] 3. **Importar o pacote do Gabriel (`lessons/package.py`, CLI `import <slug> <pacote.md>`).** É um parser
+   determinístico do formato de `docs/chatgpt-gabriel/3-formatos-de-entrega.md` e não usa IA.
+   - Cabeçalhos `## Sxx · TIPO · beats … · pedir D s · xN · vN`, blocos `text` (prompt) e `yaml` (brief).
+   - A seção "Divisões" vira sub-beats (item 2).
+   - Valida: cobertura e ordem dos beats; a duração pedida contra `timeline.flow_request`; o número do prompt
+     igual ao da tomada; o fechamento "No text…"; o modelo Manim conhecido. Reporta cada erro com o id da tomada.
+   - Escreve um `lesson.json` proposto, com os briefs guardados para o Manim.
+   - O teste usa o exemplo do arquivo 3 como fixture.
+   - Isso substitui o antigo `plan.py`: o plano com LLM próprio fica só para as aulas do usuário, mais tarde.
+- [ ] 4. **Tomada `avatar` (HeyGen).** `kind: "avatar"` + `AvatarRef` na spec.
+   - Exporta o trecho da narração mestre de cada tomada (com folga do dissolve) para upload no HeyGen.
+   - Ingest pelo número no título; montagem sem retime (o lábio quebra), com o áudio do clipe mudo.
+   - Painel Manim opcional (`layout: lado`).
+   - Bloqueado até o usuário mandar o print do painel do HeyGen (upload de áudio, fundo, resolução).
+- [ ] 5. **Biblioteca de componentes Manim.** Extrair das cenas do piloto (`data/lessons/i-quarter-turn/scenes/`)
+   componentes que recebem parâmetros (o brief YAML) e usam o `brand.py`. Os ids já estão no contrato do Gabriel
+   (`2-guia-visual.md`):
+
+   | id | Vem de |
+   |---|---|
+   | `rotating_plane` | s03 |
+   | `matrix_product` | s04 |
+   | `glass_equations` (overlay) | s05, s14 |
+   | `reciprocal_lines` | s06 |
+   | `function_graph` (overlay) | s07 |
+   | `complex_map` | s08 |
+   | `angle_ladder` | s10 |
+   | `log_scale` | s13 |
+   | `check_counter` (overlay) | s15 |
+   | `end_card` | s18 |
+
+   Aceite: recriar s03, s04 e s15 só por spec, com a mesma duração e comparação visual lado a lado com os renders
+   do piloto. Cena nova só quando nenhum componente serve, e ela vira componente.
+- [ ] 6. **Provider Gemini: baixa prioridade.** O plano criativo agora é feito no ChatGPT do Gabriel. Só vale se o usuário
+   quiser fazer as próprias aulas sem gastar tokens do Claude. `GeminiCliProvider` ficaria no
+   `build_suggestion_provider`, sem API e sem fallback, e o CLI ainda não está instalado.
+- [ ] 7. **Fase 3, depois:** a aba "Aulas" na UI, com upload, prompts com botão de copiar, arrastar clipes, folha de QC,
+   prévia e export. Ela segue as regras de prévia e verificação visual do AGENTS.md.
 
 ## Regras de aceite
 
