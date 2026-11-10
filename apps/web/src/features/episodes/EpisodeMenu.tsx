@@ -10,7 +10,7 @@ export function EpisodeMenu({ entry, pending, onAction, onVoice, onCameras }: {
       {entry.metadata_updated_at ? "Atualizar dados do YouTube" : "Buscar dados do YouTube"}
     </MenuItem>}
     {entry.url && !entry.source && <MenuItem icon="download" disabled={pending || !!entry.archived} onSelect={() => onAction("download")}>Baixar e guardar vídeo</MenuItem>}
-    {entry.source && <MenuItem icon="mic" disabled={pending || !!entry.archived} onSelect={onVoice}>Separar vozes (lento, ~1× a duração)</MenuItem>}
+    {entry.source && <MenuItem icon="mic" disabled={pending || !!entry.archived} onSelect={onVoice}>Identificar voz</MenuItem>}
     {entry.source && <MenuItem icon="film" disabled={pending || !!entry.archived} onSelect={onCameras}>Câmeras do episódio</MenuItem>}
     <MenuSeparator />
     <MenuItem icon="archive" disabled={pending} onSelect={() => onAction("archive")}>{entry.archived ? "Desarquivar" : "Arquivar"}</MenuItem>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, isRemoteOrigin, REMOTE_UPLOAD_LIMIT_BYTES, REMOTE_UPLOAD_MESSAGE, type ApiJob, type EpisodeEntry } from "../../api";
+import { api, type ApiJob, type EpisodeEntry } from "../../api";
 import { errorText } from "../../app/humanize";
 import { patchTask, upsertTask } from "../../app/tasks";
 import { episodePath, navigate } from "../../router";
@@ -54,7 +54,6 @@ export function useCreateEpisodeRun() {
     const report = (message: string, progress = 0) => { if (mounted.current) setState({ busy: true, message, progress }); };
     try {
       if (source.kind === "youtube" && !/^https?:\/\//.test(source.url.trim())) throw new Error("Cole um link válido do YouTube.");
-      if (source.kind === "file" && isRemoteOrigin(window.location.hostname) && source.file.size > REMOTE_UPLOAD_LIMIT_BYTES) throw new Error(REMOTE_UPLOAD_MESSAGE);
       report("Preparando o episódio…");
       let episodeId: string;
       let entry: EpisodeEntry | null = null;

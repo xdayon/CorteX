@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { api, isRemoteOrigin } from "./api";
+import { api } from "./api";
 import { defaultRenderSettings } from "./editor/settings";
 
 class Events extends EventTarget {
@@ -85,12 +85,6 @@ test("requests send a JSON content type only with a body and encode ids", async 
   expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/episodes/a%2Fb");
   expect(fetchMock.mock.calls[0][1].headers).toEqual({});
   expect(fetchMock.mock.calls[1][1].headers).toEqual({ "Content-Type": "application/json" });
-});
-
-test("only loopback hosts skip the remote upload limit", () => {
-  expect(isRemoteOrigin("127.0.0.1")).toBe(false);
-  expect(isRemoteOrigin("localhost")).toBe(false);
-  expect(isRemoteOrigin("cortex.synapses.academy")).toBe(true);
 });
 
 test("an episode never mapped is null whether the API answers 404 or an empty 200", async () => {

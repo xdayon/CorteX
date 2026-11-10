@@ -148,27 +148,6 @@ class VoiceConfig(BaseModel):
     timeout_seconds: int = Field(default=1800, ge=30, le=86400)
 
 
-class RemoteAccessConfig(BaseModel):
-    """Remote use through Cloudflare Tunnel + Access. Identifiers live in the
-    untracked .env (CORTEX__REMOTE_ACCESS__*), never in the public repo."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    public_hostname: str = ""
-    team_domain: str = ""  # e.g. "seutime.cloudflareaccess.com"
-    audience: str = ""  # Access application AUD tag
-    allowed_emails: list[str] = Field(default_factory=list, max_length=20)
-
-    @model_validator(mode="after")
-    def _complete_when_enabled(self) -> "RemoteAccessConfig":
-        if self.enabled and not (self.public_hostname and self.team_domain and self.audience):
-            raise ValueError(
-                "remote_access habilitado exige public_hostname, team_domain e audience"
-            )
-        return self
-
-
 class LessonsConfig(BaseModel):
     """Math lesson videos (`python -m cortex.lessons`): Flow clips + Manim + narration."""
 
@@ -241,7 +220,6 @@ class CortexConfig(BaseModel):
     analysis: AnalysisConfig = AnalysisConfig()
     edit: EditConfig = EditConfig()
     voice: VoiceConfig = VoiceConfig()
-    remote_access: RemoteAccessConfig = RemoteAccessConfig()
     lessons: LessonsConfig = LessonsConfig()
     sound: SoundConfig = SoundConfig()
     drive: DriveConfig = DriveConfig()

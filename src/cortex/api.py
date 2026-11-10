@@ -228,9 +228,6 @@ def create_app(config: CortexConfig | None = None):
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    from cortex.remote_access import install_remote_access
-    # Outermost layer: tunnel requests are checked before anything else runs.
-    install_remote_access(app, settings.remote_access)
     router_prefix = settings.app.api_prefix.rstrip("/")
 
     @app.get(f"{router_prefix}/episodes")
@@ -265,30 +262,6 @@ def create_app(config: CortexConfig | None = None):
             return library.detail(library.set_archived(episode_id, request.archived))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    @app.get(f"{router_prefix}/diarization-status")
-    def diarization_status():
-        from cortex.diarize.service import readiness
-        return readiness()
-
-    @app.post(f"{router_prefix}/episodes/{{episode_id}}/diarization")
-    def start_episode_diarization(episode_id: str):
-        try:
-            entry = library.get(episode_id)
-            detail = library.detail(entry)
-            source = detail["source"]
-            if not source:
-                raise ValueError("Baixe o episódio primeiro")
-            from cortex.diarize.service import readiness
-            state = readiness()
-            if not state["ready"]:
-                raise ValueError(" ".join(state.get("missing", [])) or "Diarização indisponível; confira a configuração de vozes.")
-            active = next((j for j in detail["jobs"] if j["type"] == "diarization" and j["status"] in {"running", "queued"}), None)
-            if active:
-                return jobs.get(active["id"])
-            return jobs.create(JobCreate(type=JobType.DIARIZATION, project_id=source["project_id"], payload={"source_asset_id":source["id"], "speakers":entry.participant_count}))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def episode_diarization(episode_id, artifact_id):
         from cortex.diarize.service import DiarizationDocument

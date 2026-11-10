@@ -1,17 +1,10 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-import subprocess
-import time
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from cortex.domain.models import StageArtifact
-from cortex.ingest.normalize import extract_normalized_audio
-from cortex.paths import cache_dir
 
 
 class VoiceTurn(BaseModel):
@@ -42,106 +35,3 @@ def runtime_path():
     # A venv's Python is normally a symlink. Resolving its target bypasses
     # pyvenv.cfg and runs the base interpreter without the venv's packages.
     return Path(os.environ.get("CORTEX_DIARIZATION_PYTHON", ".venv-diarization/bin/python")).expanduser().absolute()
-
-
-def runtime_versions(runtime: Path) -> str:
-    try:
-        return subprocess.run([
-            str(runtime), "-c",
-            "from importlib.metadata import version; print(version('pyannote.audio'), version('torch'))",
-        ], capture_output=True, text=True, timeout=10, check=True).stdout.strip()
-    except subprocess.TimeoutExpired as exc:
-        raise ValueError("A verificação do ambiente de voz excedeu 10s. Confira o Python configurado e tente novamente.") from exc
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise ValueError(
-            "O Python configurado não consegue carregar as dependências de voz. "
-            "Use .venv-diarization/bin/python em CORTEX_DIARIZATION_PYTHON "
-            "ou repare o ambiente com scripts/setup_diarization.sh."
-        ) from exc
-
-
-def readiness():
-    # Standard Hugging Face login is also usable by the isolated runner.
-    home = Path(os.environ.get("HF_HOME", str(Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))) + "/huggingface"))
-    token_file = Path(os.environ.get("HF_TOKEN_PATH", str(home / "token")))
-    try:
-        saved_token = token_file.is_file() and bool(token_file.read_text().strip())
-    except OSError:
-        saved_token = False
-    path = runtime_path()
-    runtime = path.is_file()
-    token = bool(os.environ.get("HF_TOKEN")) or saved_token
-    missing = []
-    if not runtime:
-        missing.append("Instale o ambiente de vozes em CPU com scripts/setup_diarization.sh.")
-    else:
-        try:
-            runtime_versions(path)
-        except ValueError as exc:
-            missing.append(str(exc))
-    if not token:
-        missing.append("Falta o acesso Hugging Face: aceite as condições do modelo community-1 e configure HF_TOKEN no .env local; depois reinicie o serviço CorteX.")
-    return {"runtime_installed":runtime, "token_configured":token, "device":"cpu",
-            "ready":not missing, "missing":missing,
-            "model_url":"https://huggingface.co/pyannote/speaker-diarization-community-1"}
-
-
-
-def run_diarization(config, domain, source, speakers, progress_cb, should_cancel):
-    runtime = runtime_path()
-    if not runtime.is_file():
-        raise ValueError("Instale o ambiente CPU: scripts/setup_diarization.sh")
-    # Include the isolated runtime installation and runner bytes in the deterministic cache key.
-    runner = Path(__file__).with_name("runner.py")
-    versions = runtime_versions(runtime)
-    key = hashlib.sha256(json.dumps({"source":source.sha256,"speakers":speakers,"device":"cpu","versions":versions,"runner":hashlib.sha256(runner.read_bytes()).hexdigest()},sort_keys=True).encode()).hexdigest()
-    cached = domain.find_cached_stage_artifact(project_id=source.project_id, stage="diarization", input_hash=key, schema_version=1)
-    if cached:
-        DiarizationDocument.model_validate_json(Path(cached.path).read_text())
-        return {"diarization_artifact_id":cached.id,"cached":True}
-    if not readiness()["token_configured"]:
-        raise ValueError("Configure HF_TOKEN localmente e aceite o acesso ao modelo pyannote community-1 no Hugging Face.")
-    if should_cancel():
-        return None
-    progress_cb(1, "Preparando áudio para separar vozes em CPU")
-    audio = extract_normalized_audio(config.render.ffmpeg, config.render.ffprobe, config.paths.data_dir/source.stored_path, source_sha256=source.sha256, cache_dir=cache_dir(config, source.project_id))
-    directory = cache_dir(config, source.project_id) / "diarization"
-    directory.mkdir(parents=True, exist_ok=True)
-    output = directory/f"{key}.json"
-    progress = directory/f"{key}.progress.json"
-    command = [str(runtime),str(runner),str(audio.path),str(output),str(progress)]
-    if speakers:
-        command += ["--speakers",str(speakers)]
-    progress_cb(5, "Carregando pyannote em CPU; primeira execução baixa o modelo")
-    started = time.monotonic()
-    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        while process.poll() is None:
-            if should_cancel():
-                return None
-            if time.monotonic()-started > 8*3600:
-                raise TimeoutError("Diarização excedeu 8 horas; nenhum resultado parcial foi usado")
-            try:
-                state = json.loads(progress.read_text())
-                done, total = state.get("completed"), state.get("total")
-                # Stage-relative counts, not an invented whole-episode percentage.
-                progress_cb(5, f"CPU · {state['step']} · {done or 0}/{total or '?'} etapas · {int(time.monotonic()-started)}s")
-            except (OSError, ValueError, KeyError):
-                pass
-            time.sleep(1)
-        if process.returncode:
-            raise RuntimeError("Pyannote CPU falhou. Verifique instalação, memória e acesso do HF_TOKEN ao modelo community-1; não houve fallback visual.")
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-    document = DiarizationDocument.model_validate_json(output.read_text())
-    if document.effective_device != "cpu" or not document.turns:
-        raise ValueError("Diarização sem vozes válidas em CPU")
-    artifact = domain.create_stage_artifact(StageArtifact(project_id=source.project_id,stage="diarization",schema_version=1,path=str(output),input_hash=key,metadata={"source_asset_id":source.id,"source_sha256":source.sha256,"device":"cpu","speakers":speakers,"versions":versions}))
-    progress_cb(100, "Vozes separadas e salvas; confirme qual é a do Dayon")
-    return {"diarization_artifact_id":artifact.id,"cached":False}
