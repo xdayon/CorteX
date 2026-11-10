@@ -5,8 +5,8 @@ import { Button } from "../../ui";
 import { DiscardMenu } from "./DiscardMenu";
 
 /** Floating bar for the selected clips; shared by the episode page and the board. */
-export function BulkBar({ rows, onApprove, onDiscard, onSave, onDownload, onEdit, onClear }: {
-  rows: ClipRow[]; onApprove: () => void; onDiscard: (reason: DiscardReason) => void; onSave: () => void;
+export function BulkBar({ rows, onApprove, onDiscard, onSave, onPosted, onDownload, onEdit, onClear }: {
+  rows: ClipRow[]; onApprove: () => void; onDiscard: (reason: DiscardReason) => void; onSave: () => void; onPosted: () => void;
   onDownload: () => void; onEdit: () => void; onClear: () => void;
 }) {
   if (!rows.length) return null;
@@ -18,6 +18,7 @@ export function BulkBar({ rows, onApprove, onDiscard, onSave, onDownload, onEdit
     <Button size="sm" onClick={onApprove}>Aprovar</Button>
     <DiscardMenu up onPick={onDiscard} trigger={({ ref, ...props }) => <button ref={ref} type="button" className="btn sm" {...props}>Descartar</button>} />
     <Button size="sm" disabled={!exported.length} onClick={onSave}>Marcar salvos</Button>
+    <Button size="sm" disabled={!exported.length} onClick={onPosted}>Marcar como postado</Button>
     <Button size="sm" icon="download" disabled={!exported.length} onClick={onDownload}>Baixar ({exported.length} MP4)</Button>
     <Button variant="ghost" size="sm" onClick={onClear}>Limpar</Button>
     <Button variant="primary" onClick={onEdit}>Editar e exportar →</Button>

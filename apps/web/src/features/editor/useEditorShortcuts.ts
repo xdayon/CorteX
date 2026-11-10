@@ -1,10 +1,9 @@
 import { useEffect, useRef } from "react";
+import { isTyping } from "../../app/isTyping";
 
 export type EditorShortcuts = {
   enabled: boolean; togglePlay: () => void; skip: (seconds: number) => void; moveClip: (step: number) => void; exportAll: () => void;
 };
-
-const TYPING = "input, textarea, select, [contenteditable='true']";
 
 /** What a key press asks the editor to do, or null; the caller has already ruled out typing and open dialogs. */
 export function actionFor(event: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "metaKey" | "altKey">, shortcuts: EditorShortcuts) {
@@ -32,8 +31,7 @@ export function useEditorShortcuts(shortcuts: EditorShortcuts) {
     function onKey(event: KeyboardEvent) {
       const current = latest.current;
       if (!current.enabled) return;
-      const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest(TYPING) || document.querySelector('[role="dialog"], [role="menu"]')) return;
+      if (isTyping(event)) return;
       const action = actionFor(event, current);
       if (!action) return;
       event.preventDefault();

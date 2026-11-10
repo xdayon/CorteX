@@ -17,7 +17,7 @@ export function clipRow(rank: number, extra: Partial<ClipRow> = {}, clip: Partia
     project_id: "project", run_id: "run", source_asset_id: "src", run_created_at: "2026-10-15T10:00:00Z",
     clip_key: `${rank}:${start}:${start + 60}:balanced`, rank, score: 5 + rank, headline: base.headline, headline_options: ["Outra opção"],
     title: base.title, duration: 60, start_second: start, end_second: start + 60, piece_count: 2, warnings: [], clip: base,
-    state: null, exports: [], publication: null, status: "new" as ClipStatus, ...extra,
+    state: null, exports: [], status: "new" as ClipStatus, ...extra,
   };
 }
 

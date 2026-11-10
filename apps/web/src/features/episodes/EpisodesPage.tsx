@@ -7,7 +7,7 @@ import { NewEpisodeComposer } from "./NewEpisodeComposer";
 import { CamerasDialog } from "./CamerasDialog";
 import { VoiceDialog } from "./VoiceDialog";
 import { episodeStatus, exportedCount } from "./episodeStatus";
-import { defaultRunOptions } from "./runOptions";
+import { defaultRunOptions, loadClipDefaults } from "./runOptions";
 import { useCreateEpisodeRun } from "./useCreateEpisodeRun";
 import { useEpisodeActions } from "./useEpisodeActions";
 import { useEpisodeCatalog } from "./useEpisodeCatalog";
@@ -24,6 +24,7 @@ export function EpisodesPage() {
   const catalog = useEpisodeCatalog(filter === "archived");
   const actions = useEpisodeActions(catalog.refresh, catalog.invalidate);
   const create = useCreateEpisodeRun();
+  useEffect(() => { void loadClipDefaults(); }, []);
   const [summary, setSummary] = useState<Record<string, ClipCounts>>({});
   const signature = catalog.entries.map(entry => `${entry.id}:${entry.runs.map(run => run.status).join("")}:${entry.renders.length}`).join("|");
   useEffect(() => {
@@ -49,18 +50,22 @@ export function EpisodesPage() {
     <NewEpisodeComposer />
     <section className="library" aria-label="Biblioteca de episódios" aria-busy={catalog.loading}>
       <div className="lib-head">
-        <h1>Episódios</h1>
-        <span className="lib-sub">{catalog.loading ? "Carregando…" : `${plural(scope.length, "episódio", "episódios")} · ${plural(videos, "vídeo gerado", "vídeos gerados")}`}</span>
+        <div className="lib-title">
+          <h1>Episódios</h1>
+          <span className="lib-sub">{catalog.loading ? "Carregando…" : `${plural(scope.length, "episódio", "episódios")} · ${plural(videos, "vídeo gerado", "vídeos gerados")}`}</span>
+        </div>
         <div className="grow" />
+        <div className="lib-tools">
         <label className="search"><Icon name="search" small /><input type="search" value={query} placeholder="Buscar título ou canal" aria-label="Buscar episódio" onChange={event => setQuery(event.target.value)} /></label>
         <Segmented label="Filtrar episódios" value={filter} onChange={setFilter} options={[
           { value: "all", label: "Todos", count: counts.all }, { value: "cuts", label: "Com cortes", count: counts.cuts },
           { value: "undownloaded", label: "Não baixados", count: counts.undownloaded }, { value: "archived", label: "Arquivados" },
         ]} />
+        </div>
       </div>
       {catalog.error && <div className="notice bad" role="alert"><p>Não foi possível carregar os episódios: {catalog.error}</p></div>}
       {catalog.loading && !catalog.entries.length && <div className="grid" role="status" aria-label="Carregando episódios">
-        {[0, 1, 2].map(index => <Skeleton key={index} height={250} style={{ borderRadius: 14 }} />)}
+        {[0, 1, 2].map(index => <Skeleton key={index} height={250} style={{ borderRadius: "var(--r-card)" }} />)}
       </div>}
       {!catalog.loading && !catalog.error && !scope.length && <EmptyState title={filter === "archived" ? "Nenhum episódio arquivado" : "Nenhum episódio ainda"}>
         {filter === "archived" ? "Episódios arquivados aparecem aqui." : "Cole o link de um episódio acima. Ele fica salvo aqui, com todas as seleções de cortes."}

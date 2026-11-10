@@ -1,26 +1,8 @@
-export type PublicationPlatform = "instagram" | "tiktok";
-
-export type PublicationInput = {
-  title?: string | null; headline?: string | null; hook_text?: string;
-  duration_seconds?: number | null; published: boolean; platforms: PublicationPlatform[];
-  published_on: string | null; url: string | null;
-  views: number | null; likes: number | null; comments: number | null;
-  shares: number | null; saves: number | null;
-  retention_3s_pct: number | null; avg_watch_seconds: number | null;
-  rating: -1 | 0 | 1 | null; notes: string;
-};
-
-export type Publication = PublicationInput & {
-  id: string; project_id: string; render_artifact_id: string;
-  title: string; headline: string; hook_text: string; duration_seconds: number;
-  created_at: string; updated_at: string;
-};
-
 export type ClipStatus = "new" | "approved" | "exported" | "saved" | "posted" | "discarded";
 export type ClipDecision = "approved" | "discarded" | null;
 export type DiscardReason = "weak_hook" | "off_topic" | "repeated" | "bad_edit" | "technical" | "other";
 export type ClipState = {
-  decision: ClipDecision; discard_reason: DiscardReason | null; saved: boolean; saved_at: string | null;
+  decision: ClipDecision; discard_reason: DiscardReason | null; saved: boolean; saved_at: string | null; posted: boolean; posted_at: string | null;
   notes: string; updated_at: string;
 };
 export type ClipExport = {
@@ -31,19 +13,19 @@ export type ClipRow = {
   project_id: string; run_id: string; source_asset_id: string; run_created_at: string; clip_key: string;
   rank: number; score: number | null; headline: string; headline_options: string[]; title: string; duration: number;
   start_second: number; end_second: number; piece_count: number; warnings: string[]; clip: SuggestedClip;
-  state: ClipState | null; exports: ClipExport[]; publication: Publication | null; status: ClipStatus;
+  state: ClipState | null; exports: ClipExport[]; status: ClipStatus;
 };
 export type BoardClip = ClipRow & { episode_id: string; episode_title: string };
-export type ClipRun = {
+type ClipRun = {
   id: string; project_id: string; source_asset_id: string; created_at: string; status: string; clip_count: number;
   brief: { count?: number; minimum_seconds?: number; maximum_seconds?: number; primary_subject?: string | null };
 };
 export type OtherExport = ClipExport & { project_id: string; title: string };
 export type ClipCounts = Record<ClipStatus | "total", number>;
 export type EpisodeClips = { runs: ClipRun[]; clips: ClipRow[]; other_exports: OtherExport[]; counts: ClipCounts; warnings: string[] };
-export type ClipStatePatch = {
+type ClipStatePatch = {
   project_id: string; run_id: string; clip_key: string; decision?: ClipDecision;
-  discard_reason?: DiscardReason | null; saved?: boolean; notes?: string;
+  discard_reason?: DiscardReason | null; saved?: boolean; posted?: boolean; notes?: string;
 };
 
 export type ApiJob = {
@@ -78,13 +60,13 @@ export type EpisodeCameras = {
   job: ApiJob | null;
 };
 
-export type Project = {
+type Project = {
   id: string;
   name: string;
   created_at?: string;
 };
 
-export type SourceAsset = {
+type SourceAsset = {
   id: string;
   project_id: string;
   kind: "upload" | "youtube";
@@ -122,19 +104,9 @@ export type WorkflowRun = {
   error?: string | null;
 };
 
-export type SuggestionArtifactDocument = {
-  provenance?: SuggestionProvenance;
-  selection: SuggestionSelection;
-};
-
-export type ArtifactEnvelope<T> = {
-  artifact: { id: string; project_id: string; schema_version: number; path: string };
-  document: T;
-};
-
 export type SuggestionBrief = {
   primary_subject?: string;
-  confirmed_voice?: Record<string, unknown> | null;
+  has_confirmed_voice?: boolean;
   new_clips_only?: boolean;
   count: number;
   minimum_seconds: number;
@@ -143,7 +115,7 @@ export type SuggestionBrief = {
   instructions?: string;
 };
 
-export type NarrativeBeat = {
+type NarrativeBeat = {
   start_second: number;
   end_second: number;
   summary: string;
@@ -152,7 +124,7 @@ export type NarrativeBeat = {
 
 // Selection v2 stores a single 1–10 score in `total`; the sub-scores exist only
 // in older (v1) selections.
-export type ClipScores = {
+type ClipScores = {
   spoken_hook?: number;
   standalone_clarity?: number;
   emotion?: number;
@@ -190,8 +162,8 @@ export type SuggestedClip = {
   connective_logic?: string;
 };
 
-export type ClipTeaser = {start: number; end: number; text: string};
-export type ClipPiece = {from_id: number; to_id: number; start: number; end: number; text: string};
+type ClipTeaser = {start: number; end: number; text: string};
+type ClipPiece = {from_id: number; to_id: number; start: number; end: number; text: string};
 
 export type ClipRevision = {
   id: string; project_id: string; workflow_run_id: string; version: number;
@@ -218,19 +190,7 @@ export type ExportBatch = {
   active_job_id?: string | null; error?: string | null; items: ExportItem[];
 };
 
-export type SuggestionProvenance = {
-  provider?: string;
-  model?: string;
-};
-
-export type SuggestionSelection = {
-  schema_version: "1.0";
-  selection_notes: string;
-  clips: SuggestedClip[];
-  provenance?: SuggestionProvenance;
-};
-
-export type SceneFramingOverride = { scene_index: number; target: "left" | "right" | "full" };
+type SceneFramingOverride = { scene_index: number; target: "left" | "right" | "full" };
 
 export type CaptionCorrection = {word_index: number; original: string; text: string};
 export type TranscriptWord = {start:number; end:number; word:string};
@@ -314,7 +274,7 @@ export type RenderSettings = {
   inserts?: RenderInsert[] | null;
 };
 
-export type QuestionWindow = {start: number; end: number};
+type QuestionWindow = {start: number; end: number};
 export type RenderInsert = {kind: "reaction" | "wide"; anchor: number; duration: number; source_start: number; group?: number | null; suggestion_id?: string | null};
 export type SceneCandidate = {kind: "reaction" | "wide"; source_start: number; group: number | null; score: number};
 export type SceneSuggestion = {
@@ -322,7 +282,7 @@ export type SceneSuggestion = {
   group: number | null; score: number; reason: string; alternatives: SceneCandidate[];
 };
 export type SceneDecision = "accepted" | "rejected";
-export type SceneReview = {accepted: number; rejected: number; approval_rate: number | null};
+type SceneReview = {accepted: number; rejected: number; approval_rate: number | null};
 export type SceneSuggestions = {
   status: "ok" | "needs_camera_map" | "needs_voice"; algorithm_version: string | number; project_id: string; source_asset_id: string;
   camera_map_artifact_id: string | null; roles_source?: "confirmed" | "suggested" | null; suggestions: SceneSuggestion[]; question: {start: number; end: number; text: string} | null;
@@ -333,7 +293,7 @@ export type VoiceProfile = {
   calibration?: {balanced_accuracy?: number; [key: string]: unknown}; model_revision?: string;
 };
 
-export type DeepPartial<T> = { [K in keyof T]?: T[K] extends readonly unknown[] ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K] };
+type DeepPartial<T> = { [K in keyof T]?: T[K] extends readonly unknown[] ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K] };
 /** Per-clip override: only the settings that differ from the shared ones. */
 export type SettingsPatch = DeepPartial<RenderSettings>;
 
@@ -341,7 +301,7 @@ export type EditPlanSegment = {
   start: number; end: number; video_start?: number; video_end?: number; timeline_order: number;
   piece_index?: number | null; teaser?: boolean;
 };
-export type EditPlanDocument = { segments: EditPlanSegment[]; timeline_duration_seconds: number };
+type EditPlanDocument = { segments: EditPlanSegment[]; timeline_duration_seconds: number };
 
 export type CaptionStyle = "classic" | "word_reveal" | "pop" | "box";
 export type PieceJunction = "cut" | "flash" | "zoom";
@@ -357,18 +317,19 @@ export type OverlayPreview = {
   pages: OverlayPage[]; junctions: number[];
   fonts: Array<{ass_name: string; url: string}>;
 };
-export type SafeRect = [number, number, number, number];
+type SafeRect = [number, number, number, number];
 export type SafeZones = {
   version: number;
   platforms: Record<string, {top_bar: SafeRect; right_actions: SafeRect; bottom_meta: SafeRect}>;
 };
-export type EditPlanOptions = {
+type EditPlanOptions = {
   transcriptArtifactId: string; analysisArtifactId: string; start: number; end: number; profile: string;
   maximumSeconds?: number; minimumSeconds?: number; approximateEdl?: Array<Record<string, unknown>>;
-  confirmedVoice?: Record<string, unknown> | null; sceneIndexArtifactId?: string | null;
+  workflowRunId?: string; sceneIndexArtifactId?: string | null;
   tighten?: boolean; headline?: string | null; primarySubject?: string | null;
   teaserStart?: number; teaserEnd?: number; questionStart?: number; questionEnd?: number;
 };
+export type ClipDefaults = {count: number; minimum_seconds: number; maximum_seconds: number};
 export type RefineStatus = {status: "accepted" | "skipped" | "rejected"; reason?: string};
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
@@ -383,84 +344,93 @@ export function isRemoteOrigin(hostname: string): boolean {
   return !["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname);
 }
 
+function detailOf(body: unknown, status: string | number): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (!detail) return String(status);
+  if (typeof detail === "string") return detail;
+  // FastAPI validation errors: [{loc: [..., "field"], msg}] → "field: msg" instead of raw JSON.
+  if (Array.isArray(detail) && detail.every(item => item && typeof item === "object" && "msg" in item)) {
+    return "Pedido inválido — " + detail.map(item => {
+      const loc = Array.isArray(item.loc) ? item.loc.filter((part: unknown) => part !== "body").join(".") : "";
+      return loc ? `${loc}: ${item.msg}` : String(item.msg);
+    }).join("; ");
+  }
+  return JSON.stringify(detail);
+}
+
 async function failure(response: Response): Promise<Error> {
-  let detail = `${response.status} ${response.statusText}`;
-  try {
-    const body = await response.json();
-    if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-  } catch { /* corpo não-JSON: mantém status */ }
-  return new Error(detail);
+  let body: unknown = null;
+  try { body = await response.json(); } catch { /* corpo não-JSON: mantém status */ }
+  return new Error(detailOf(body, `${response.status} ${response.statusText}`));
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
   });
   if (!response.ok) throw await failure(response);
   return response.json() as Promise<T>;
 }
 
+const enc = encodeURIComponent;
+
 export const api = {
   episodeCameras: async (id: string, signal?: AbortSignal): Promise<EpisodeCameras | null> => {
     // "Never mapped" (no map, no job) is null: the dialog offers to map instead of showing an error.
-    const response = await fetch(`/api/v1/episodes/${encodeURIComponent(id)}/cameras`, { signal });
+    const response = await fetch(`/api/v1/episodes/${enc(id)}/cameras`, { signal });
     if (response.status === 404) return null;
     if (!response.ok) throw await failure(response);
     const body = await response.json() as EpisodeCameras;
     return body.document || body.job ? body : null;
   },
   scenes: (episodeId: string, planId: string, signal?: AbortSignal) =>
-    request<SceneSuggestions>(`/api/v1/episodes/${encodeURIComponent(episodeId)}/scenes?edit_plan_artifact_id=${encodeURIComponent(planId)}`, {signal}),
+    request<SceneSuggestions>(`/api/v1/episodes/${enc(episodeId)}/scenes?edit_plan_artifact_id=${enc(planId)}`, {signal}),
   saveSceneReviews: (episodeId: string, decisions: Record<string, SceneDecision | null>) =>
-    request<SceneReview>(`/api/v1/episodes/${encodeURIComponent(episodeId)}/scene-reviews`, {method: "PUT", body: JSON.stringify({decisions})}),
+    request<SceneReview>(`/api/v1/episodes/${enc(episodeId)}/scene-reviews`, {method: "PUT", body: JSON.stringify({decisions})}),
   voiceProfile: (signal?: AbortSignal) => request<VoiceProfile>("/api/v1/voice/profile", {signal}),
   createVoiceProfile: (episodeId: string) => request<VoiceProfile>("/api/v1/voice/profile", {method: "POST", body: JSON.stringify({episode_id: episodeId})}),
-  mapEpisodeCameras: (id: string) => request<ApiJob>(`/api/v1/episodes/${id}/cameras`, {method:"POST"}),
+  mapEpisodeCameras: (id: string) => request<ApiJob>(`/api/v1/episodes/${enc(id)}/cameras`, {method:"POST"}),
   saveCameraRoles: (id: string, artifact_id: string, roles: Record<string, CameraRole>) =>
-    request<EpisodeEntry>(`/api/v1/episodes/${id}/cameras/roles`, {method:"PUT", body: JSON.stringify({artifact_id, roles})}),
+    request<EpisodeEntry>(`/api/v1/episodes/${enc(id)}/cameras/roles`, {method:"PUT", body: JSON.stringify({artifact_id, roles})}),
   diarizationStatus: () => request<{ready:boolean;runtime_installed:boolean;token_configured:boolean;device:string;missing:string[];model_url:string}>("/api/v1/diarization-status"),
-  diarizeEpisode: (id:string) => request<ApiJob>(`/api/v1/episodes/${id}/diarization`, {method:"POST"}),
-  episodeVoices: (id:string, artifact:string) => request<{turns:Array<{start:number;end:number;speaker:string}>}>(`/api/v1/episodes/${id}/diarization/${artifact}`),
-  selectEpisodeVoice: (id:string, artifact_id:string, speaker:string) => request<EpisodeEntry>(`/api/v1/episodes/${id}/voice`,{method:"PUT",body:JSON.stringify({artifact_id,speaker})}),
+  diarizeEpisode: (id:string) => request<ApiJob>(`/api/v1/episodes/${enc(id)}/diarization`, {method:"POST"}),
+  episodeVoices: (id:string, artifact:string) => request<{turns:Array<{start:number;end:number;speaker:string}>}>(`/api/v1/episodes/${enc(id)}/diarization/${enc(artifact)}`),
+  selectEpisodeVoice: (id:string, artifact_id:string, speaker:string) => request<EpisodeEntry>(`/api/v1/episodes/${enc(id)}/voice`,{method:"PUT",body:JSON.stringify({artifact_id,speaker})}),
   episodes: (includeArchived = false) => request<EpisodeEntry[]>(`/api/v1/episodes${includeArchived ? '?include_archived=true' : ''}`),
-  refreshEpisodeMetadata: (id: string) => request<EpisodeEntry>(`/api/v1/episodes/${id}/metadata`, {method:'POST'}),
-  archiveEpisode: (id: string, archived: boolean) => request<EpisodeEntry>(`/api/v1/episodes/${id}`, {method:'PATCH', body:JSON.stringify({archived})}),
+  episode: (id: string, signal?: AbortSignal) => request<EpisodeEntry>(`/api/v1/episodes/${enc(id)}`, {signal}),
+  refreshEpisodeMetadata: (id: string) => request<EpisodeEntry>(`/api/v1/episodes/${enc(id)}/metadata`, {method:'POST'}),
+  archiveEpisode: (id: string, archived: boolean) => request<EpisodeEntry>(`/api/v1/episodes/${enc(id)}`, {method:'PATCH', body:JSON.stringify({archived})}),
   registerEpisode: (url: string, participant_count?: number) => request<EpisodeEntry>("/api/v1/episodes", {method:"POST", body:JSON.stringify({url, participant_count})}),
-  downloadEpisode: (id: string) => request<{source: SourceAsset | null; job: ApiJob | null; cached: boolean}>(`/api/v1/episodes/${id}/download`, {method:"POST"}),
-  jobs: (limit = 20, signal?: AbortSignal) => request<ApiJob[]>(`/api/v1/jobs?limit=${limit}`, {signal}),
-  episodeClips: (id: string, signal?: AbortSignal) => request<EpisodeClips>(`/api/v1/episodes/${encodeURIComponent(id)}/clips`, {signal}),
+  downloadEpisode: (id: string) => request<{source: SourceAsset | null; job: ApiJob | null; cached: boolean}>(`/api/v1/episodes/${enc(id)}/download`, {method:"POST"}),
+  activeJobs: (signal?: AbortSignal) => request<ApiJob[]>("/api/v1/jobs?active=true&view=summary&limit=20", {signal}),
+  clipDefaults: (signal?: AbortSignal) => request<ClipDefaults>("/api/v1/settings/clip-defaults", {signal}),
+  episodeClips: (id: string, signal?: AbortSignal) => request<EpisodeClips>(`/api/v1/episodes/${enc(id)}/clips`, {signal}),
   clips: (status: ClipStatus[] = [], signal?: AbortSignal) =>
     request<{clips: BoardClip[]; total: number}>(`/api/v1/clips?${status.length ? `status=${status.join(",")}&` : ""}limit=200`, {signal}),
   clipsSummary: (signal?: AbortSignal) => request<{episodes: Record<string, ClipCounts>}>("/api/v1/clips/summary", {signal}),
   patchClipStates: (items: ClipStatePatch[]) => request<{items: ClipState[]}>("/api/v1/clip-states", {method: "PATCH", body: JSON.stringify({items})}),
-  posterUrl: (projectId: string, artifactId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/renders/${encodeURIComponent(artifactId)}/poster`,
-  sourceMediaUrl: (projectId: string, sourceAssetId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/media`,
+  posterUrl: (projectId: string, artifactId: string) => `/api/v1/projects/${enc(projectId)}/renders/${enc(artifactId)}/poster`,
+  sourceMediaUrl: (projectId: string, sourceAssetId: string) => `/api/v1/projects/${enc(projectId)}/sources/${enc(sourceAssetId)}/media`,
   quickPreviewUrl: (projectId: string, runId: string, clipKey: string) =>
-    `/api/v1/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}/quick-preview?clip_key=${encodeURIComponent(clipKey)}`,
+    `/api/v1/projects/${enc(projectId)}/runs/${enc(runId)}/quick-preview?clip_key=${enc(clipKey)}`,
   /** Asks the server to render (or reuse) a quick preview without downloading it. */
   warmQuickPreview: async (url: string, signal?: AbortSignal): Promise<void> => {
     const response = await fetch(url, { headers: { Range: "bytes=0-0" }, signal });
-    if (response.ok) return;
-    let detail = `${response.status} ${response.statusText}`;
-    try {
-      const body = await response.json();
-      if (typeof body?.detail === "string") detail = body.detail;
-    } catch { /* corpo não-JSON: mantém status */ }
-    throw new Error(detail);
+    if (!response.ok) throw await failure(response);
   },
-  cancelJob: (jobId: string) => request<ApiJob>(`/api/v1/jobs/${jobId}/cancel`, {method:"POST"}),
-  job: (jobId: string, signal?: AbortSignal) => request<ApiJob>(`/api/v1/jobs/${jobId}`, {signal}),
+  cancelJob: (jobId: string) => request<ApiJob>(`/api/v1/jobs/${enc(jobId)}/cancel`, {method:"POST"}),
+  job: (jobId: string, signal?: AbortSignal) => request<ApiJob>(`/api/v1/jobs/${enc(jobId)}`, {signal}),
   createProject: (name: string) =>
     request<Project>("/api/v1/projects", { method: "POST", body: JSON.stringify({ name }) }),
 
   createWorkflowRun: (projectId: string, sourceAssetId: string, brief: SuggestionBrief & {hotwords?: string[]}) =>
-    request<WorkflowRun>(`/api/v1/projects/${projectId}/runs`, {
+    request<WorkflowRun>(`/api/v1/projects/${enc(projectId)}/runs`, {
       method: "POST", body: JSON.stringify({ source_asset_id: sourceAssetId, ...brief }),
     }),
 
   workflowRun: (projectId: string, runId: string, signal?: AbortSignal) =>
-    request<WorkflowRun>(`/api/v1/projects/${projectId}/runs/${runId}`, { signal }),
+    request<WorkflowRun>(`/api/v1/projects/${enc(projectId)}/runs/${enc(runId)}`, { signal }),
 
   saveRevision: (projectId: string, runId: string, body: {
     selection_artifact_id: string;
@@ -472,47 +442,41 @@ export const api = {
     line_breaks?: Record<string, number[]>;
     clip_settings?: Record<string, SettingsPatch>;
     visual_artifacts: Record<string,string>;
-  }) => request<ClipRevision>(`/api/v1/projects/${projectId}/runs/${runId}/revisions`, {
+  }) => request<ClipRevision>(`/api/v1/projects/${enc(projectId)}/runs/${enc(runId)}/revisions`, {
     method:"POST", body:JSON.stringify(body),
   }),
 
   latestRevision: (projectId:string, runId:string) =>
-    request<ClipRevision>(`/api/v1/projects/${projectId}/runs/${runId}/revision`),
+    request<ClipRevision>(`/api/v1/projects/${enc(projectId)}/runs/${enc(runId)}/revision`),
 
   createExportBatch: (projectId:string, runId:string, revisionId:string, idempotencyKey:string) =>
-    request<ExportBatch>(`/api/v1/projects/${projectId}/runs/${runId}/export-batches`, {
+    request<ExportBatch>(`/api/v1/projects/${enc(projectId)}/runs/${enc(runId)}/export-batches`, {
       method:"POST", body:JSON.stringify({revision_id:revisionId,idempotency_key:idempotencyKey}),
     }),
 
   exportBatches: (projectId:string, runId:string) =>
-    request<ExportBatch[]>(`/api/v1/projects/${projectId}/runs/${runId}/export-batches`),
+    request<ExportBatch[]>(`/api/v1/projects/${enc(projectId)}/runs/${enc(runId)}/export-batches`),
 
   exportBatch: (projectId:string, batchId:string, signal?:AbortSignal) =>
-    request<ExportBatch>(`/api/v1/projects/${projectId}/export-batches/${batchId}`, {signal}),
+    request<ExportBatch>(`/api/v1/projects/${enc(projectId)}/export-batches/${enc(batchId)}`, {signal}),
 
   cancelExportBatch: (projectId:string,batchId:string) =>
-    request<ExportBatch>(`/api/v1/projects/${projectId}/export-batches/${batchId}/cancel`,{method:"POST"}),
+    request<ExportBatch>(`/api/v1/projects/${enc(projectId)}/export-batches/${enc(batchId)}/cancel`,{method:"POST"}),
 
   retryExportBatch: (projectId:string,batchId:string) =>
-    request<ExportBatch>(`/api/v1/projects/${projectId}/export-batches/${batchId}/retry`,{method:"POST"}),
-
-  suggestion: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<SuggestionArtifactDocument>>(`/api/v1/projects/${projectId}/suggestions/${artifactId}`),
-
-  createYoutubeSource: (projectId: string, url: string) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/sources/youtube`, { method: "POST", body: JSON.stringify({ url }) }),
+    request<ExportBatch>(`/api/v1/projects/${enc(projectId)}/export-batches/${enc(batchId)}/retry`,{method:"POST"}),
 
   transcript: (projectId: string, artifactId: string, signal?: AbortSignal) =>
-    request<{document:{segments:Array<{words:TranscriptWord[]}>}}>(`/api/v1/projects/${projectId}/transcripts/${artifactId}`, {signal}),
+    request<{document:{segments:Array<{words:TranscriptWord[]}>}}>(`/api/v1/projects/${enc(projectId)}/transcripts/${enc(artifactId)}`, {signal}),
 
   startEditPlan: (projectId: string, o: EditPlanOptions) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/edit-plans`, {
+    request<ApiJob>(`/api/v1/projects/${enc(projectId)}/edit-plans`, {
       method: "POST",
       body: JSON.stringify({
         transcript_artifact_id: o.transcriptArtifactId, analysis_artifact_id: o.analysisArtifactId,
         start: o.start, end: o.end, profile: o.profile,
         maximum_seconds: o.maximumSeconds, minimum_seconds: o.minimumSeconds,
-        approximate_edl: o.approximateEdl, confirmed_voice: o.confirmedVoice ?? undefined,
+        approximate_edl: o.approximateEdl, workflow_run_id: o.workflowRunId,
         scene_index_artifact_id: o.sceneIndexArtifactId ?? undefined,
         tighten: o.tighten, headline: o.headline || undefined, primary_subject: o.primarySubject || undefined,
         teaser_start: o.teaserStart, teaser_end: o.teaserEnd, question_start: o.questionStart, question_end: o.questionEnd,
@@ -520,30 +484,24 @@ export const api = {
     }),
 
   editPlan: (projectId: string, artifactId: string, signal?: AbortSignal) =>
-    request<{document: EditPlanDocument}>(`/api/v1/projects/${projectId}/edit-plans/${artifactId}`, {signal}),
-
-  startSceneIndex: (projectId: string, sourceAssetId: string, sourceRanges?: Array<{start:number;end:number}>) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/scenes`, {
-      method: "POST",
-      body: JSON.stringify({ source_asset_id: sourceAssetId, source_ranges: sourceRanges }),
-    }),
+    request<{document: EditPlanDocument}>(`/api/v1/projects/${enc(projectId)}/edit-plans/${enc(artifactId)}`, {signal}),
 
   sourcePreviewUrl: (projectId: string, sourceAssetId: string, timeSeconds: number) =>
-    `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceAssetId)}/preview?time_seconds=${encodeURIComponent(timeSeconds.toFixed(3))}`,
+    `/api/v1/projects/${enc(projectId)}/sources/${enc(sourceAssetId)}/preview?time_seconds=${enc(timeSeconds.toFixed(3))}`,
 
-  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, confirmedVoice?: Record<string, unknown> | null, options: {purpose?: "draft" | "export"} = {}) =>
-    request<ApiJob>(`/api/v1/projects/${projectId}/renders`, {
+  startRender: (projectId: string, editPlanArtifactId: string, renderSettings: RenderSettings, options: {purpose?: "draft" | "export"; workflowRunId?: string} = {}) =>
+    request<ApiJob>(`/api/v1/projects/${enc(projectId)}/renders`, {
       method: "POST",
       body: JSON.stringify({
         edit_plan_artifact_id: editPlanArtifactId,
         render_settings: renderSettings,
-        confirmed_voice: confirmedVoice ?? null,
+        workflow_run_id: options.workflowRunId,
         purpose: options.purpose ?? "export",
       }),
     }),
 
   overlayPreview: (projectId: string, editPlanArtifactId: string, settings: RenderSettings, signal?: AbortSignal) =>
-    request<OverlayPreview>(`/api/v1/projects/${projectId}/overlay-preview`, {
+    request<OverlayPreview>(`/api/v1/projects/${enc(projectId)}/overlay-preview`, {
       method: "POST", signal,
       body: JSON.stringify({edit_plan_artifact_id: editPlanArtifactId, settings}),
     }),
@@ -552,26 +510,11 @@ export const api = {
 
   safeZones: (signal?: AbortSignal) => request<SafeZones>("/api/v1/safe-zones", {signal}),
 
-  renderArtifact: (projectId: string, artifactId: string) =>
-    request<ArtifactEnvelope<{ auto_framing?: Array<{ mode: string; reason: string }> }>>(`/api/v1/projects/${projectId}/renders/${artifactId}`),
-
-  publications: (limit = 500) => request<Publication[]>(`/api/v1/publications?limit=${limit}`),
-
-  savePublication: (projectId: string, artifactId: string, input: PublicationInput) =>
-    request<Publication>(`/api/v1/projects/${projectId}/renders/${artifactId}/publication`, {
-      method: "PUT", body: JSON.stringify(input),
-    }),
-
-  deletePublication: async (projectId: string, artifactId: string) => {
-    const response = await fetch(`/api/v1/projects/${projectId}/renders/${artifactId}/publication`, {method: "DELETE"});
-    if (!response.ok && response.status !== 404) throw new Error(`${response.status} ${response.statusText}`);
-  },
-
   renderMediaUrl: (projectId: string, artifactId: string) =>
-    `/api/v1/projects/${projectId}/renders/${artifactId}/media`,
+    `/api/v1/projects/${enc(projectId)}/renders/${enc(artifactId)}/media`,
 
   renderSubtitlesUrl: (projectId: string, artifactId: string) =>
-    `/api/v1/projects/${projectId}/renders/${artifactId}/subtitles`,
+    `/api/v1/projects/${enc(projectId)}/renders/${enc(artifactId)}/subtitles`,
 
   // Upload via XHR para ter progresso real de envio (fetch não expõe upload progress).
   uploadSource: (projectId: string, file: File, onProgress?: (fraction: number) => void) =>
@@ -581,7 +524,7 @@ export const api = {
         return;
       }
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", `/api/v1/projects/${projectId}/sources/upload`);
+      xhr.open("POST", `/api/v1/projects/${enc(projectId)}/sources/upload`);
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) onProgress?.(event.loaded / event.total);
       };
@@ -591,9 +534,9 @@ export const api = {
         } else if (xhr.status === 413) {
           reject(new Error(REMOTE_UPLOAD_MESSAGE));
         } else {
-          let detail = `${xhr.status}`;
-          try { detail = JSON.parse(xhr.responseText).detail ?? detail; } catch { /* mantém status */ }
-          reject(new Error(detail));
+          let body: unknown = null;
+          try { body = JSON.parse(xhr.responseText); } catch { /* mantém status */ }
+          reject(new Error(detailOf(body, xhr.status)));
         }
       };
       xhr.onerror = () => reject(new Error("Falha de rede durante o upload"));
@@ -602,11 +545,11 @@ export const api = {
       xhr.send(form);
     }),
 
-  // Acompanha um job via SSE até estado terminal; resolve com o job final.
+  // Acompanha um job via SSE até estado terminal; resolve com o job final. Se o SSE cai, a consulta periódica assume.
   watchJob: (jobId: string, onUpdate?: (job: ApiJob) => void, signal?: AbortSignal) =>
     new Promise<ApiJob>((resolve, reject) => {
       signal?.throwIfAborted();
-      const source = new EventSource(`/api/v1/jobs/${jobId}/events`);
+      const source = new EventSource(`/api/v1/jobs/${enc(jobId)}/events`);
       let polling = false;
       function close() {
         source.close();
@@ -619,7 +562,7 @@ export const api = {
         source.close();
         try {
           while (!signal?.aborted) {
-            const job = await request<ApiJob>(`/api/v1/jobs/${jobId}`, {signal});
+            const job = await request<ApiJob>(`/api/v1/jobs/${enc(jobId)}`, {signal});
             onUpdate?.(job);
             if (TERMINAL_STATUSES.has(job.status)) { close(); resolve(job); return; }
             await new Promise<void>((done) => window.setTimeout(done, 1500));
@@ -636,9 +579,5 @@ export const api = {
         } catch (reason) { close(); reject(reason); }
       });
       source.addEventListener("error", () => { void pollAfterDisconnect(); });
-      source.onerror = () => {
-        close();
-        reject(new Error("Conexão de eventos perdida — verifique se a API está de pé"));
-      };
     }),
 };

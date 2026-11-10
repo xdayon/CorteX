@@ -1,8 +1,8 @@
 import { useMemo } from "react";
-import type { ClipRow, DiscardReason, Publication } from "../../api";
+import type { ClipRow, DiscardReason } from "../../api";
 import { editorPath, navigate } from "../../router";
 import { useToast } from "../../ui";
-import { downloadAll, headlineOf, newestExport, rowId, withPublication } from "./clipModel";
+import { downloadAll, headlineOf, newestExport, rowId } from "./clipModel";
 import { useClipMutations } from "./useClipMutations";
 
 type SetRows<R> = (update: (rows: R[]) => R[]) => void;
@@ -20,6 +20,11 @@ export function useClipCommands<R extends ClipRow>(setRows: SetRows<R>, episodeI
       if (!exported.length) return;
       return mutate(exported, { saved: !exported.every(row => row.state?.saved) });
     },
+    togglePosted: (rows: R[]) => {
+      const exported = rows.filter(row => row.exports.length);
+      if (!exported.length) return;
+      return mutate(exported, { posted: !exported.every(row => row.state?.posted) });
+    },
     download: (rows: R[]) => {
       const items = rows.flatMap(row => { const item = newestExport(row); return item ? [{ title: headlineOf(row), url: item.media_url }] : []; });
       return downloadAll(items);
@@ -29,10 +34,5 @@ export function useClipCommands<R extends ClipRow>(setRows: SetRows<R>, episodeI
       if (new Set(rows.map(episodeIdOf)).size > 1) { toast("Escolha cortes de um mesmo episódio para editar juntos."); return; }
       navigate(editorPath(episodeIdOf(rows[0]), rows.map(rowId)));
     },
-    published: (item: Publication) => {
-      setRows(rows => rows.map(row => row.exports.some(entry => entry.render_artifact_id === item.render_artifact_id) ? withPublication(row, item) : row));
-      toast(item.published ? "Publicação registrada." : "Publicação salva.", "ok");
-    },
-    unpublished: (artifactId: string) => setRows(rows => rows.map(row => row.exports.some(entry => entry.render_artifact_id === artifactId) ? withPublication(row, null) : row)),
-  }), [mutate, setRows, episodeIdOf, toast]);
+  }), [mutate, episodeIdOf, toast]);
 }

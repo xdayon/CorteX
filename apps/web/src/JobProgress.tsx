@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ApiJob } from "./api";
+import { jobLabel, stageLabel } from "./app/humanize";
 import { ProgressBar } from "./ui";
 import "./JobProgress.css";
 
@@ -31,17 +32,17 @@ export function staleMessage(age: number) {
 export function JobDetails({ job, history, age, stale }: { job: ApiJob | null; history: JobActivity[]; age: number; stale: boolean }) {
   return <div className="job-details">
     {job ? <>
-      <p><strong>{job.message || job.type}</strong> · <span className="mono">{Math.round(job.progress || 0)}%</span> desta tarefa</p>
+      <p><strong>{job.message || jobLabel(job.type)}</strong> · <span className="mono">{Math.round(job.progress || 0)}%</span> desta tarefa</p>
       <dl>
-        <dt>Estado</dt><dd>{STATUS_LABELS[job.status] || job.status}</dd>
-        <dt>Etapa</dt><dd>{job.stage || job.type}</dd>
+        <dt>Estado</dt><dd>{STATUS_LABELS[job.status] || "Processando"}</dd>
+        <dt>Etapa</dt><dd>{job.stage ? stageLabel(job.stage) : jobLabel(job.type)}</dd>
         <dt>Tarefa</dt><dd className="mono">{job.id}</dd>
         {job.worker_pid && <><dt>Processo local</dt><dd className="mono">{job.worker_pid}</dd></>}
         <dt>Última atualização</dt><dd className="mono">{age}s atrás</dd>
       </dl>
-      {stale && <p>Sem atividade recente. Se chegar a 5 minutos, o worker encerra a tarefa como falha para ela não ficar presa em “processando”.</p>}
+      {stale && <p>Sem atividade recente. Se chegar a 5 minutos, o processador encerra a tarefa como falha para ela não ficar presa em “processando”.</p>}
     </> : <p>Aguardando a primeira tarefa do servidor.</p>}
-    <ol className="job-events">{history.map((event, index) => <li key={index}><time className="mono">{new Date(event.receivedAt).toLocaleTimeString("pt-BR")}</time> {event.job.message || event.job.type} · <span className="mono">{Math.round(event.job.progress || 0)}%</span></li>)}</ol>
+    <ol className="job-events">{history.map((event, index) => <li key={index}><time className="mono">{new Date(event.receivedAt).toLocaleTimeString("pt-BR")}</time> {event.job.message || jobLabel(event.job.type)} · <span className="mono">{Math.round(event.job.progress || 0)}%</span></li>)}</ol>
     <small>Os percentuais vêm das tarefas locais. O avanço do lote é uma estimativa; cada etapa tem duração diferente.</small>
   </div>;
 }
@@ -54,7 +55,7 @@ export function JobProgress({ job, history, progress, label, busy, completed = f
     <div className="job-head"><b>{label}</b><span className="mono">{Math.round(progress)}%</span></div>
     <ProgressBar value={progress} label="Lote de cortes" />
     {completed && <span className="sr-only">Concluído</span>}
-    {job && <p className="job-status" role={stale ? "alert" : "status"}>{stale ? staleMessage(age) : `Etapa atual: ${job.message || job.type || "aguardando o servidor"} · atualização há ${age}s.`}</p>}
+    {job && <p className="job-status" role={stale ? "alert" : "status"}>{stale ? staleMessage(age) : `Etapa atual: ${job.message || (job.type ? jobLabel(job.type) : "aguardando o servidor")} · atualização há ${age}s.`}</p>}
     <details><summary>Detalhes técnicos</summary><JobDetails job={job} history={history} age={age} stale={stale} /></details>
   </section>;
 }

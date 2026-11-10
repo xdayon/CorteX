@@ -1,4 +1,5 @@
 import type { CaptionCorrection, EditPlanSegment, OverlayPage, RenderInsert, SceneSuggestion, SceneSuggestions } from "../../api";
+import { formatClock } from "../../app/humanize";
 import { isDoubtful } from "../../editor/captions";
 
 export type Trecho = { label: string; start: number; end: number; teaser: boolean };
@@ -47,7 +48,7 @@ export function rulerTicks(total: number) {
   return ticks;
 }
 
-export const tickLabel = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, "0")}`;
+export const tickLabel = formatClock;
 
 export type SceneBlock = { id: string; kind: SceneSuggestion["kind"]; start: number; duration: number; state: "accepted" | "pending" };
 

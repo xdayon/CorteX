@@ -1,20 +1,28 @@
 .shell { min-height: 100vh; display: flex; flex-direction: column; }
-.top { position: sticky; top: 0; z-index: 30; height: 52px; flex: none; display: flex; align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--s1); }
-.brand { display: flex; align-items: center; gap: 10px; color: var(--tx); font-weight: 600; letter-spacing: -.01em; text-decoration: none; }
-.logo { width: 26px; height: 26px; border-radius: 7px; background: var(--ac); color: var(--ink); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.top { position: sticky; top: 0; z-index: 30; height: 56px; flex: none; display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-4); border-bottom: 1px solid var(--line); background: var(--s1); }
+.brand { display: flex; align-items: center; gap: var(--sp-2); color: var(--tx); font-weight: 600; letter-spacing: -.01em; text-decoration: none; }
+.logo { width: 28px; height: 28px; border-radius: var(--r-ctl); background: var(--ac); color: var(--ink); display: grid; place-items: center; font-size: var(--fs-xs); font-weight: 700; }
 .nav { display: flex; gap: 2px; }
-.nav a { display: inline-flex; align-items: center; height: 32px; padding: 0 10px; border-radius: 7px; color: var(--tx2); text-decoration: none; font-size: 13px; font-weight: 500; }
+.nav a { display: inline-flex; align-items: center; height: 34px; padding: 0 var(--sp-3); border-radius: var(--r-ctl); color: var(--tx2); text-decoration: none; font-size: var(--fs-sm); font-weight: 500; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
 .nav a:hover { color: var(--tx); background: var(--s2); }
 .nav a.on { color: var(--tx); background: var(--s3); }
-.activity { display: inline-flex; align-items: center; gap: 10px; height: 32px; padding: 0 12px 0 10px; border-radius: 999px; border: 1px solid var(--line2); background: var(--s2); color: var(--tx2); font-size: 12px; white-space: nowrap; cursor: pointer; }
+.top-end { display: flex; align-items: center; gap: var(--sp-2); }
+.activity { display: inline-flex; align-items: center; gap: var(--sp-2); height: 32px; padding: 0 var(--sp-3) 0 10px; border-radius: var(--r-pill); border: 1px solid var(--line2); background: var(--s2); color: var(--tx2); font-size: var(--fs-xs); white-space: nowrap; cursor: pointer; }
 .activity:hover { background: var(--s3); color: var(--tx); }
 .ring { width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(var(--ac) 0 var(--p, 0%), var(--s4) var(--p, 0%) 100%); flex: none; }
-.activity-idle { color: var(--tx3); font-size: 12px; }
-.activity-item { display: flex; justify-content: space-between; gap: 16px; padding: 6px 10px; font-size: 13px; }
+.activity-idle { display: inline-flex; align-items: center; gap: var(--sp-2); height: 32px; padding: 0 var(--sp-3); border-radius: var(--r-pill); color: var(--tx3); font-size: var(--fs-xs); white-space: nowrap; }
+.activity-idle::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.activity-idle.bad { color: var(--bad); }
+.activity-idle.bad::before { background: var(--bad); }
+.activity-item { display: flex; justify-content: space-between; gap: var(--sp-4); padding: 6px 10px; font-size: var(--fs-sm); }
 .activity-item b { font-weight: 500; }
 .page { flex: 1; min-width: 0; }
-@media (max-width: 480px) {
+.keys { display: flex; flex-direction: column; gap: var(--sp-4); padding-bottom: var(--sp-2); }
+.keys h3 { margin-bottom: var(--sp-2); color: var(--tx2); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .02em; text-transform: uppercase; }
+.keys dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px var(--sp-4); margin: 0; font-size: var(--fs-sm); }
+.keys dt { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.keys dd { margin: 0; color: var(--tx2); }
+@media (max-width: 640px) {
   .brand-name { display: none; }
-  .top { gap: 8px; padding: 0 12px; }
+  .top { gap: var(--sp-2); padding: 0 var(--sp-3); }
 }
-.stub { max-width: 720px; margin: 64px auto; padding: 0 16px; }

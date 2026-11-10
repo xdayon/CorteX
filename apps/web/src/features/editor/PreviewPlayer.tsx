@@ -1,5 +1,6 @@
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { api, type OverlayPreview, type SafeZones } from "../../api";
+import { errorText } from "../../app/humanize";
 import type { PreviewView } from "./previewQueue";
 
 export type PlayerHandle = { seek: (seconds: number) => void; toggle: () => void; skip: (delta: number) => void };
@@ -13,6 +14,7 @@ type Engine = {
   resize: (forceRepaint?: boolean) => Promise<void>; destroy: () => Promise<void>;
 };
 
+const SLOW_QUEUE_MS = 20000;
 const QUEUE_COPY: Record<string, string> = {
   queued: "Na fila para preparar", planning: "Montando o corte", rendering: "Gerando a prévia",
 };
@@ -73,7 +75,7 @@ export function PreviewPlayer({ preview, overlay, muted, zonesOn, onTime, onPlay
       engineRef.current = created;
       setEngine(created);
     }).catch(reason => {
-      if (!cancelled) setEngineError(`Não foi possível iniciar a legenda da prévia: ${reason instanceof Error ? reason.message : reason}`);
+      if (!cancelled) setEngineError(`Não foi possível iniciar a legenda da prévia: ${errorText(reason)}`);
     });
     return () => {
       cancelled = true;
@@ -93,7 +95,7 @@ export function PreviewPlayer({ preview, overlay, muted, zonesOn, onTime, onPlay
     void engine.ready.then(() => cancelled ? undefined : engine.renderer.setTrack(overlay.ass_text))
       // A paused video produces no new frames, so repaint the current one.
       .then(() => { if (cancelled) return; nudgeFrame(); return engine.resize(true); })
-      .catch(reason => { if (!cancelled) setEngineError(`Legenda da prévia indisponível: ${reason instanceof Error ? reason.message : reason}`); });
+      .catch(reason => { if (!cancelled) setEngineError(`Legenda da prévia indisponível: ${errorText(reason)}`); });
     return () => { cancelled = true; };
   }, [engine, overlay]);
 
@@ -122,11 +124,19 @@ export function PreviewPlayer({ preview, overlay, muted, zonesOn, onTime, onPlay
     if (!zonesOn || zones) return;
     const controller = new AbortController();
     void api.safeZones(controller.signal).then(setZones)
-      .catch(reason => { if (!controller.signal.aborted) setZonesError(reason instanceof Error ? reason.message : String(reason)); });
+      .catch(reason => { if (!controller.signal.aborted) setZonesError(errorText(reason)); });
     return () => controller.abort();
   }, [zonesOn, zones]);
 
   const waiting = !hasVideo && preview.phase !== "error";
+  const stuck = waiting && preview.phase === "queued" && preview.progress <= 0;
+  const [slowQueue, setSlowQueue] = useState(false);
+  useEffect(() => {
+    setSlowQueue(false);
+    if (!stuck) return;
+    const timer = window.setTimeout(() => setSlowQueue(true), SLOW_QUEUE_MS);
+    return () => window.clearTimeout(timer);
+  }, [stuck]);
   return <div className="vid">
     <video
       ref={videoRef} playsInline preload="auto" muted={muted} src={preview.videoUrl ?? undefined} aria-label="Prévia do corte"
@@ -147,7 +157,7 @@ export function PreviewPlayer({ preview, overlay, muted, zonesOn, onTime, onPlay
     {waiting && <div className="preview-overlay" role="status">
       <b>{QUEUE_COPY[preview.phase] ?? "Preparando"}</b>
       {preview.phase !== "queued" && <progress max={100} value={preview.progress} aria-label="Progresso da prévia" />}
-      <small>{preview.phase === "queued" ? "Outro corte está sendo preparado antes deste." : `${Math.round(preview.progress)}% · isso leva alguns segundos`}</small>
+      <small>{preview.phase === "queued" ? (slowQueue ? "Na fila — o processador do CorteX ainda não pegou esta prévia." : "Outro corte está sendo preparado antes deste.") : `${Math.round(preview.progress)}% · isso leva alguns segundos`}</small>
     </div>}
     {preview.phase === "error" && <div className="preview-overlay error" role="alert">
       <b>Não foi possível gerar a prévia</b><small>{preview.error}</small>

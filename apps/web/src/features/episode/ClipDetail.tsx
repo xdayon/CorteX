@@ -1,23 +1,25 @@
 import { forwardRef, useState } from "react";
+import { useShortcutsDialog } from "../../app/ShortcutsDialog";
 import { type ClipRow, type DiscardReason } from "../../api";
-import { formatClock } from "../../app/humanize";
+import { formatClock, formatSeconds } from "../../app/humanize";
 import { clipDuration } from "../../editor/clips";
 import { Button, buttonClass, Chip } from "../../ui";
 import { DiscardMenu } from "../clips/DiscardMenu";
+import { PostedToggle } from "../clips/PostedToggle";
 import { SavedToggle } from "../clips/SavedToggle";
-import { headlineOf, newestExport, REASON_LABELS, shortDate, STATUS_LABELS, STATUS_TONES } from "../clips/clipModel";
+import { formatScore, headlineOf, isTopScore, newestExport, REASON_LABELS, shortDate, STATUS_LABELS, STATUS_TONES } from "../clips/clipModel";
 import { ExportPlayer } from "./ExportPlayer";
 import { QuickPreviewPlayer } from "./QuickPreviewPlayer";
 import type { PlayerHandle } from "./SourcePiecesPlayer";
 
 type Handlers = {
   onApprove: () => void; onDiscard: (reason: DiscardReason) => void; onEdit: () => void;
-  onToggleSaved: () => void; onPublish: () => void;
+  onToggleSaved: () => void; onTogglePosted: () => void;
 };
 
-const jump = (seconds: number) => `junção · pula ${seconds.toFixed(1).replace(".", ",")} s`;
+const jump = (seconds: number) => `junção · pula ${formatSeconds(seconds)}`;
 
-export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; topScore: boolean; discardRef: React.Ref<{ open: () => void }> } & Handlers>(function ClipDetail({ row, topScore, discardRef, ...on }, player) {
+export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; discardRef: React.Ref<{ open: () => void }> } & Handlers>(function ClipDetail({ row, discardRef, ...on }, player) {
   const latest = newestExport(row);
   const [view, setView] = useState<"export" | "source">(latest ? "export" : "source");
   const showExport = !!latest && view === "export";
@@ -26,7 +28,8 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; topScore: boo
   const approved = row.state?.decision === "approved";
   const saved = !!row.state?.saved;
   const others = (row.headline_options ?? []).filter(option => option !== row.headline);
-  const publication = row.publication;
+  const posted = !!row.state?.posted;
+  const showShortcuts = useShortcutsDialog();
 
   return <article className="cd">
     <div className="cd-player">
@@ -43,7 +46,7 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; topScore: boo
       <div className="cd-chips">
         {row.status !== "new" && <Chip tone={STATUS_TONES[row.status]}>{STATUS_LABELS[row.status]}</Chip>}
         {row.status === "discarded" && row.state?.discard_reason && <Chip>{REASON_LABELS[row.state.discard_reason]}</Chip>}
-        {row.score != null && <Chip tone={topScore ? "ac" : "neutral"}>Nota <span className="mono">{row.score}</span></Chip>}
+        {row.score != null && <Chip tone={isTopScore(row) ? "ac" : "neutral"}>Nota <span className="mono">{formatScore(row.score)}</span></Chip>}
         <Chip><span className="mono">{clipDuration(row.duration)}</span></Chip>
         {row.piece_count > 1 && <Chip>{row.piece_count} trechos</Chip>}
         {clip.lead_trimmed && <Chip>começo limpo</Chip>}
@@ -58,7 +61,7 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; topScore: boo
         <a className={buttonClass("secondary", "sm")} href={latest.media_url} download>Baixar MP4</a>
         <a className={buttonClass("secondary", "sm")} href={latest.subtitles_url} download>Baixar SRT</a>
         <SavedToggle saved={saved} onClick={on.onToggleSaved} />
-        <Button size="sm" onClick={on.onPublish}>{publication ? "Editar publicação" : "Registrar publicação"}</Button>
+        <PostedToggle posted={posted} onClick={on.onTogglePosted} />
       </div>}
     </div>
 
@@ -77,11 +80,9 @@ export const ClipDetail = forwardRef<PlayerHandle, { row: ClipRow; topScore: boo
         <li>Sugerido na seleção de {shortDate(row.run_created_at)}</li>
         {row.exports.map(item => <li key={item.render_artifact_id}>Exportado em {shortDate(item.exported_at)}</li>)}
         {row.state?.saved && row.state.saved_at && <li>Salvo em {shortDate(row.state.saved_at)}</li>}
-        {publication?.published && <li>Postado{publication.published_on ? ` em ${shortDate(publication.published_on)}` : ""}
-          {publication.platforms.length > 0 && ` · ${publication.platforms.map(name => name === "instagram" ? "Instagram" : "TikTok").join(", ")}`}
-          {publication.url && <> · <a href={publication.url} target="_blank" rel="noreferrer">abrir publicação</a></>}</li>}
+        {row.state?.posted && row.state.posted_at && <li>Postado em {shortDate(row.state.posted_at)}</li>}
       </ul></section>
     </div>
-    <p className="cd-hint">↑ ↓ navegar · Espaço reproduzir · X selecionar · A aprovar · D descartar · S salvo · E editar</p>
+    <p className="cd-hint">↑ ↓ navegar · Espaço reproduzir · X selecionar · A aprovar · D descartar · S salvo · P postado · E editar · <button type="button" onClick={showShortcuts} aria-label="Ver todos os atalhos">?</button></p>
   </article>;
 });

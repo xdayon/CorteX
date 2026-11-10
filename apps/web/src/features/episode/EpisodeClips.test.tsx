@@ -12,7 +12,7 @@ vi.mock("../../api", async (original) => {
   ])) };
 });
 
-const state = (extra: Partial<ClipState>): ClipState => ({ decision: null, discard_reason: null, saved: false, saved_at: null, notes: "", updated_at: "x", ...extra });
+const state = (extra: Partial<ClipState>): ClipState => ({ decision: null, discard_reason: null, saved: false, saved_at: null, posted: false, posted_at: null, notes: "", updated_at: "x", ...extra });
 const first = clipRow(1);
 const second = withExport(clipRow(2), "exported");
 const third = clipRow(3, { run_id: "run2", clip_key: "3:300:360:balanced", run_created_at: "2026-10-16T10:00:00Z" });
@@ -36,7 +36,6 @@ const play = vi.fn(() => Promise.resolve());
 beforeEach(() => {
   vi.resetAllMocks();
   window.history.replaceState(null, "", "/episodios/ep");
-  vi.mocked(api.publications).mockResolvedValue([]);
   vi.mocked(api.patchClipStates).mockResolvedValue({ items: [] });
   vi.mocked(api.warmQuickPreview).mockResolvedValue(undefined);
   Object.defineProperty(HTMLMediaElement.prototype, "play", { configurable: true, value: play });
@@ -84,7 +83,7 @@ test("discarding asks for a reason, dims the row in Todos and removes it from ot
   expect(row.className).toContain("dim");
   expect(within(row).getByText("Descartado")).toBeTruthy();
   expect(screen.getByText("Gancho fraco", { selector: ".cd-chips .chip" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("radio", { name: /Novos/ }));
+  fireEvent.change(screen.getByLabelText("Filtrar por situação"), { target: { value: "new" } });
   expect(screen.queryByRole("button", { name: /Manchete 1/ })).toBeNull();
 });
 
@@ -176,15 +175,11 @@ test("clips from different runs open the editor together, with run-qualified key
   expect(new URLSearchParams(window.location.search).get("clips")).toBe(`run~${K1},run2~3:300:360:balanced`);
 });
 
-test("the score badge is accented against the run's own scale", async () => {
-  const big = [10, 20, 30, 40, 50].map(score => clipRow(score / 10, { score }));
-  await open(big);
-  const accented = document.querySelectorAll(".score.hi");
-  expect(accented).toHaveLength(1);
-  expect(accented[0].textContent).toBe("50");
-  cleanup();
-  await open([clipRow(1, { score: 8.5 }), clipRow(2, { score: 9 })]);
-  expect(document.querySelectorAll(".score.hi")).toHaveLength(1);
+test("scores of 9 or more are accented and decimals use a pt-BR comma", async () => {
+  await open([clipRow(1, { score: 8.5 }), clipRow(2, { score: 9 }), clipRow(3, { score: 9.7 })]);
+  const accented = [...document.querySelectorAll(".score.hi")].map(node => node.textContent);
+  expect(accented.sort()).toEqual(["9", "9,7"]);
+  expect([...document.querySelectorAll(".score")].map(node => node.textContent)).toContain("8,5");
 });
 
 test("the exported video uses the custom transport instead of native controls", async () => {
@@ -207,16 +202,23 @@ test("saved reads Marcar salvo while off and Salvo with a check while on", async
   expect(on.querySelector("svg")).toBeTruthy();
 });
 
-test("publication is registered from the detail pane and the row becomes posted", async () => {
+test("posted is a manual toggle: the row becomes Postado and the change is saved", async () => {
   await open([second]);
-  fireEvent.click(screen.getByRole("button", { name: "Registrar publicação" }));
-  const dialog = screen.getByRole("dialog");
-  expect(within(dialog).getByRole("button", { name: "Salvar publicação" })).toBeTruthy();
-  vi.mocked(api.savePublication).mockResolvedValue({ id: "p", project_id: "project", render_artifact_id: "r1", published: true, platforms: ["instagram"], published_on: "2026-10-16", url: null } as never);
-  fireEvent.click(within(dialog).getByLabelText(/Publicado/));
-  fireEvent.click(within(dialog).getByRole("button", { name: "Salvar publicação" }));
+  const button = screen.getByRole("button", { name: "Marcar como postado" });
+  expect(button.getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(button);
   await settle();
-  expect(api.savePublication).toHaveBeenCalledWith("project", "r1", expect.objectContaining({ published: true }));
-  fireEvent.keyDown(document, { key: "Escape" });
+  expect(api.patchClipStates).toHaveBeenLastCalledWith([expect.objectContaining({ clip_key: second.clip_key, posted: true })]);
+  expect(screen.getByRole("button", { name: "Postado ✓" }).getAttribute("aria-pressed")).toBe("true");
   expect(within(screen.getByRole("list", { name: "Lista de cortes" })).getByText("Postado")).toBeTruthy();
+});
+
+test("P toggles posted for the active clip and a failed save rolls back", async () => {
+  await open([second]);
+  vi.mocked(api.patchClipStates).mockRejectedValue(new Error("rede"));
+  fireEvent.keyDown(document, { key: "p" });
+  await settle();
+  expect(api.patchClipStates).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", { name: "Marcar como postado" })).toBeTruthy();
+  expect(screen.getByText(/Não foi possível salvar a mudança: rede/)).toBeTruthy();
 });

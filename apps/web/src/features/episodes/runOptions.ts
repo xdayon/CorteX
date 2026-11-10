@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { parseHotwords } from "../../editor/hotwords";
-import type { SuggestionBrief, WorkflowRun } from "../../api";
+import { api, type ClipDefaults, type SuggestionBrief, type WorkflowRun } from "../../api";
 
 export type RunOptions = {
   count: number;
@@ -29,8 +29,25 @@ export function saveInstructions(value: string) {
   try { localStorage.setItem(INSTRUCTIONS_KEY, value); } catch { /* storage indisponível: só perde a lembrança */ }
 }
 
+// Valores usados até o servidor responder; depois valem os de config/cortex.yaml.
+const FALLBACK_DEFAULTS: ClipDefaults = { count: 10, minimum_seconds: 40, maximum_seconds: 120 };
+let clipDefaults = FALLBACK_DEFAULTS;
+let clipDefaultsRequest: Promise<ClipDefaults> | null = null;
+
+/** Fetches the server's clip defaults once; a failed request is retried on the next call. */
+export function loadClipDefaults(): Promise<ClipDefaults> {
+  clipDefaultsRequest ??= Promise.resolve().then(() => api.clipDefaults()).then(result => {
+    if (result && result.count > 0) clipDefaults = result;
+    return clipDefaults;
+  }).catch(() => { clipDefaultsRequest = null; return clipDefaults; });
+  return clipDefaultsRequest;
+}
+
+export function resetClipDefaults() { clipDefaults = FALLBACK_DEFAULTS; clipDefaultsRequest = null; }
+
 export function defaultRunOptions(): RunOptions {
-  return { count: 10, minimum: 40, maximum: 120, primarySubject: "Dayon", hotwordsText: "", instructions: storedInstructions(), newClipsOnly: true };
+  void loadClipDefaults();
+  return { count: clipDefaults.count, minimum: clipDefaults.minimum_seconds, maximum: clipDefaults.maximum_seconds, primarySubject: "Dayon", hotwordsText: "", instructions: storedInstructions(), newClipsOnly: true };
 }
 
 export function useRunOptions(initial?: Partial<RunOptions>) {
@@ -40,6 +57,16 @@ export function useRunOptions(initial?: Partial<RunOptions>) {
       if (next.instructions !== current.instructions) saveInstructions(next.instructions);
       return next;
     });
+  }, []);
+  useEffect(() => {
+    let live = true;
+    void loadClipDefaults().then(loaded => {
+      if (!live) return;
+      setOptionsState(current => current.count === FALLBACK_DEFAULTS.count && current.minimum === FALLBACK_DEFAULTS.minimum_seconds && current.maximum === FALLBACK_DEFAULTS.maximum_seconds && !initial
+        ? { ...current, count: loaded.count, minimum: loaded.minimum_seconds, maximum: loaded.maximum_seconds } : current);
+    });
+    return () => { live = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return [options, setOptions] as const;
 }

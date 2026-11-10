@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
+import { isTyping } from "../../app/isTyping";
 import { Icon } from "../../ui";
-
-const TYPING = "input, textarea, select, [contenteditable='true']";
 
 /** Selects or clears every visible clip at once; IDs outside `ids` stay selected. */
 export function toggleAll(selected: string[], ids: string[]) {
@@ -18,8 +17,7 @@ export function SelectAll({ ids, selected, onChange }: { ids: string[]; selected
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "a") return;
-      const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest(TYPING) || document.querySelector('[role="dialog"], [role="menu"]')) return;
+      if (isTyping(event)) return;
       event.preventDefault();
       latest.current();
     }

@@ -1,7 +1,6 @@
-import { api, type ClipRow, type ExportBatch, type ExportItem } from "../../api";
+import { api, type ExportBatch, type ExportItem } from "../../api";
 import { shortError } from "../../app/humanize";
 import { JobProgress } from "../../JobProgress";
-import { PublicationPanel, usePublications } from "../../PublicationPanel";
 import { Button, Chip, type ChipTone } from "../../ui";
 import { downloadAll, downloadName } from "../clips/clipModel";
 import { isOpen } from "./useExportBatches";
@@ -12,16 +11,13 @@ const STATUS: Record<ExportItem["status"], [string, ChipTone]> = {
 };
 
 /** Progress and downloads of an export: one batch per run, listed together. */
-export function ExportBatchPanel({ batches, rows, busy, progress, onCancel, onRetry }: {
-  batches: ExportBatch[]; rows: ClipRow[]; busy: boolean; progress: number; onCancel: () => void; onRetry: () => void;
+export function ExportBatchPanel({ batches, busy, progress, onCancel, onRetry }: {
+  batches: ExportBatch[]; busy: boolean; progress: number; onCancel: () => void; onRetry: () => void;
 }) {
-  const publications = usePublications();
   const open = batches.some(isOpen);
   const items = batches.flatMap(batch => batch.items.map(item => ({ batch, item })));
   const done = items.filter(({ item }) => item.status === "succeeded" && item.render_artifact_id);
   const outputs = done.map(({ batch, item }) => ({ title: item.title, url: api.renderMediaUrl(batch.project_id, item.render_artifact_id!) }));
-  const hookOf = (batch: ExportBatch, item: ExportItem) =>
-    rows.find(row => row.run_id === batch.workflow_run_id && row.clip_key === item.clip_key)?.clip.hook?.summary?.slice(0, 200) || undefined;
   return <section className="batch" aria-label="Exportação">
     <div className="batch-head">
       <span className="batch-count">{done.length} de {items.length} prontos</span>
@@ -45,8 +41,6 @@ export function ExportBatchPanel({ batches, rows, busy, progress, onCancel, onRe
             </>}
           </div>
           {item.status === "failed" && <p className="batch-error">{shortError(item.error, "Esta exportação falhou.")}</p>}
-          {item.status === "succeeded" && item.render_artifact_id && <PublicationPanel projectId={batch.project_id} artifactId={item.render_artifact_id}
-            publication={publications.items[item.render_artifact_id]} hookText={hookOf(batch, item)} onSaved={publications.save} onDeleted={publications.remove} />}
         </li>;
       })}
     </ul>

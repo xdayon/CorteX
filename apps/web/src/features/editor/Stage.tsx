@@ -55,7 +55,7 @@ export function Stage({ row, preview, overlay, overlayError, settings, scenes, c
 
   return <main className="stage">
     <div className="stage-bar">
-      <Chip tone="ac"><Icon name="check" small />Prévia igual ao export</Chip>
+      {preview.phase === "ready" && <Chip tone="ac"><Icon name="check" small />Prévia igual ao export</Chip>}
       {refine?.status === "accepted" && preview.timeline != null
         ? <Chip><Icon name="spark" small />Refino da IA: {clipDuration(row.clip.estimated_duration)} → {clipDuration(preview.timeline)}</Chip>
         : refine && <span title={refine.reason}><Chip><Icon name="spark" small />Refino da IA não aplicado</Chip></span>}

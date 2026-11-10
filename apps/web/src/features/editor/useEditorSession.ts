@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type CaptionCorrection, type ClipRow, type ExportBatch, type RenderSettings, type SettingsPatch, type WorkflowRun } from "../../api";
+import { api, type CaptionCorrection, type ClipRevision, type ClipRow, type ExportBatch, type RenderSettings, type SettingsPatch, type WorkflowRun } from "../../api";
+import { KEY_SEPARATOR } from "../../router";
 import { errorText } from "../../app/humanize";
 import { type EditorDraft, type VisualArtifacts } from "../../editorDraft";
-import { hookOf } from "../../editor/clips";
 import { draftKey, loadEditor, scoped } from "./loadEditor";
 import { applySettingsEdit, effectiveSettings, resetStyle, type Overrides } from "./overrides";
 import { useExportBatches } from "./useExportBatches";
@@ -83,42 +83,54 @@ export function useEditorSession(episodeId: string, urlKeys: string[], legacyRun
     };
   }, [rows, runs, settings, overrides, captionEdits, headlines, emphasisEdits, lineBreakEdits, visual]);
 
-  const exporter = useExportBatches({ runs, runIds, ready, initial: initialBatches, revisionBody, signal: () => lifetime.current?.signal });
+  const saveTimer = useRef(0);
+  const persist = useCallback(async () => {
+    const saved = await Promise.all(runIds.map(async runId => [runId, await api.saveRevision(runs[runId].project_id, runId, revisionBody(runId))] as const));
+    return Object.fromEntries(saved) as Record<string, ClipRevision>;
+  }, [runIds, runs, revisionBody]);
+  const flushSave = useCallback(async () => {
+    window.clearTimeout(saveTimer.current);
+    setSaveState("saving");
+    try {
+      const saved = await persist();
+      setDraftError(""); setSaveState("saved");
+      return saved;
+    } catch (reason) {
+      setSaveState("error");
+      throw reason;
+    }
+  }, [persist]);
+
+  const exporter = useExportBatches({ runs, runIds, ready, initial: initialBatches, flushSave, signal: () => lifetime.current?.signal });
 
   useEffect(() => {
     if (!ready) return;
     try {
       for (const runId of runIds) {
         const run = runs[runId];
-        const keys = rows.filter(row => row.run_id === runId).map(row => row.clip_key);
-        const batch = exporter.batches[runId];
-        const rendered: EditorDraft["rendered"] = (batch?.items ?? []).filter(item => item.status === "succeeded" && item.render_artifact_id).map(item => ({
-          title: item.title, url: api.renderMediaUrl(run.project_id, item.render_artifact_id!), subtitles: api.renderSubtitlesUrl(run.project_id, item.render_artifact_id!),
-          projectId: run.project_id, artifactId: item.render_artifact_id!, hookText: hookOf(rows.filter(row => row.run_id === runId).map(row => row.clip), item.clip_key),
-        }));
         const own = revisionBody(runId);
         const draft: EditorDraft = {
-          schema_version: 1, settings, selectedKeys: keys, captionEdits: own.caption_edits, headlines: scoped(headlines, runId),
-          emphasisEdits: own.emphasis, lineBreakEdits: own.line_breaks, clipSettings: own.clip_settings, focusedKey: focusedKey.startsWith(`${runId}~`) ? focusedKey.slice(runId.length + 1) : "",
-          rendered, visualArtifacts: visual[runId] ?? null,
+          schema_version: 1, settings, captionEdits: own.caption_edits, headlines: scoped(headlines, runId),
+          emphasisEdits: own.emphasis, lineBreakEdits: own.line_breaks, clipSettings: own.clip_settings, focusedKey: focusedKey.startsWith(`${runId}${KEY_SEPARATOR}`) ? focusedKey.slice(runId.length + 1) : "",
+          visualArtifacts: visual[runId] ?? null,
         };
         localStorage.setItem(draftKey(run), JSON.stringify(draft));
       }
       setDraftError("");
     } catch { setDraftError("Não foi possível salvar os ajustes neste navegador. Libere espaço antes de fechar a página."); }
-  }, [ready, runIds, runs, rows, settings, headlines, focusedKey, visual, exporter.batches, revisionBody]);
+  }, [ready, runIds, runs, settings, headlines, focusedKey, visual, revisionBody]);
 
   useEffect(() => {
     if (!ready || !rows.length) return;
     if (!firstSave.current) setSaveState("saving");
     firstSave.current = false;
-    const timer = window.setTimeout(() => {
-      void Promise.all(runIds.map(runId => api.saveRevision(runs[runId].project_id, runId, revisionBody(runId))))
+    saveTimer.current = window.setTimeout(() => {
+      void persist()
         .then(() => { setDraftError(""); setSaveState("saved"); })
         .catch(reason => { setSaveState("error"); setDraftError(`Ajustes salvos neste navegador, mas não no servidor: ${errorText(reason)}`); });
     }, 500);
-    return () => window.clearTimeout(timer);
-  }, [ready, rows, runIds, runs, revisionBody]);
+    return () => window.clearTimeout(saveTimer.current);
+  }, [ready, rows, persist]);
 
   const setCaptionFor = useCallback((key: string, edits: CaptionCorrection[]) => setCaptionEdits(current => ({ ...current, [key]: edits })), []);
   const setHeadlineFor = useCallback((key: string, text: string | null) => setHeadlines(current => {
