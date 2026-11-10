@@ -53,6 +53,8 @@ def test_three_pieces_render_vertical_in_sync_and_cache(tmp_path: Path, monkeypa
     frames = int(streams["video"]["nb_read_frames"])
     assert frames == round(total * FPS)
     assert abs(frames / FPS - float(streams["audio"]["duration"])) < 1 / FPS
+    # 96k AAC sounded metallic; the preview must match the final render's audio bitrate.
+    assert quick_preview.AUDIO_BITRATE == "192k"
 
     mtime = output.stat().st_mtime_ns
     calls: list[list[str]] = []

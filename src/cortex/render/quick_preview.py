@@ -15,7 +15,10 @@ from pathlib import Path
 from cortex.config import CortexConfig
 from cortex.render.service import _blurred_geometry
 
-QUICK_PREVIEW_VERSION = 1
+QUICK_PREVIEW_VERSION = 2
+# Same AAC bitrate as the final render: at 96k the native encoder, re-encoding the
+# YouTube AAC master, sounded metallic (coding SNR 23 dB vs 39 dB at 192k).
+AUDIO_BITRATE = "192k"
 CANVAS_WIDTH = 360
 CANVAS_HEIGHT = 640
 FPS = 30
@@ -41,6 +44,7 @@ def quick_preview_key(source_sha256: str, pieces: list[tuple[float, float]]) -> 
         "pieces": [[round(start * 1000), round(end * 1000)] for start, end in pieces],
         "framing": [FRAMING_ZOOM, FRAMING_FOCUS_X, FRAMING_POSITION_Y],
         "canvas": [CANVAS_WIDTH, CANVAS_HEIGHT, FPS],
+        "audio_bitrate": AUDIO_BITRATE,
     }, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
@@ -132,7 +136,7 @@ def build_quick_preview(
             "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]",
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
             "-pix_fmt", "yuv420p", "-profile:v", "main", "-r", str(FPS),
-            "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(temporary),
+            "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-movflags", "+faststart", str(temporary),
         ]
         try:
             completed = subprocess.run(
