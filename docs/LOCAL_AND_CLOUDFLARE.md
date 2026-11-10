@@ -14,11 +14,13 @@ Endereço: `https://cortex.synapses.academy` (o e-mail autorizado fica só no pa
 ```bash
 cd apps/web && npm ci && npm run build && cd ../..
 .venv/bin/python scripts/install_local_service.py --install
-systemctl --user start cortex.service
 ```
 
-O serviço `cortex.service` sobe API + worker (`scripts/studio.sh`) no login, com o
-alias estável do fnm no PATH, e lê `.env` via systemd. Para atualizar com segurança:
+Abra o app **CorteX** pelo atalho: `scripts/open_studio.py` inicia o
+`cortex.service` (API + worker, `scripts/studio.sh`) e abre a janela; ao fechar a
+janela o serviço é parado (se houver job na fila ou rodando, espera terminar e avisa
+por notificação). O serviço não sobe mais no login, então o acesso remoto só funciona
+com o app aberto. O unit usa o alias estável do fnm no PATH e lê `.env` via systemd. Para atualizar com segurança:
 `./scripts/update_and_verify.sh`. Não rode `dev.sh` junto com o serviço.
 
 ## Ligar o acesso remoto (uma vez)

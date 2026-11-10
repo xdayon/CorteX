@@ -41,7 +41,7 @@ WantedBy=default.target
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--install", action="store_true", help="Install and enable at user login; does not start jobs now")
+    parser.add_argument("--install", action="store_true", help="Install the unit and launcher (not started at login); does not start jobs now")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     binary_dirs = []
@@ -95,9 +95,10 @@ Terminal=false
 Categories=AudioVideo;Video;
 """)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "cortex.service"], check=True)
+    # The service lives and dies with the app window (open_studio.py), not with the login.
+    subprocess.run(["systemctl", "--user", "disable", "cortex.service"], check=False)
     print(f"Instalado: {unit}\nAtalho: {launcher}")
-    print("Inicie quando desejar: systemctl --user start cortex.service")
+    print("Abra o app CorteX pelo atalho: ele inicia o serviço e o encerra ao fechar a janela.")
 
 
 if __name__ == "__main__":
