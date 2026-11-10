@@ -21,8 +21,14 @@ grep -Eq 'git[[:space:]]+add[^|;&]*(-f|--force)[^|;&]*(\.env|data/)' <<<"$cmd" &
 grep -Eq 'git[[:space:]]+add[^|;&]*([[:space:]]|^)(\./)?(\.env|data)(/|[[:space:]]|$)' <<<"$cmd" && block "não versionar .env nem data/."
 
 # User data: media, SQLite, lessons and the ElevenLabs/Flow inbox are never deleted by an agent.
-if grep -Eq '(^|[;&|[:space:]])(rm|shred|truncate|find[^|;&]*-delete)([[:space:]]|$)[^|;&]*([[:space:]/"'"'"'](data|entrada)(/|[[:space:]"'"'"']|$)|cortex\.sqlite3|\.claude)' <<<"$cmd"; then
+# Protected: the project's data/ and entrada/ (relative, ./, or under the CorteX checkout), the
+# SQLite and Claude's own config. A different folder that happens to be called data is not.
+if grep -Eq '(^|[;&|[:space:]])(rm|shred|truncate|find[^|;&]*-delete)([[:space:]]|$)[^|;&]*([[:space:]"'"'"'](\./)?(data|entrada)(/|[[:space:]"'"'"']|$)|CorteX/(data|entrada)(/|[[:space:]"'"'"']|$)|cortex\.sqlite3|\.claude)' <<<"$cmd"; then
   block "não apagar data/, entrada/, o banco SQLite nem a configuração do Claude."
+fi
+# find names the folder before -delete/-exec rm.
+if grep -Eq '(^|[;&|[:space:]])find[^|;&]*((^|[[:space:]"'"'"'])(\./)?(data|entrada)(/|[[:space:]"'"'"']|$)|CorteX/(data|entrada)(/|[[:space:]"'"'"']|$))[^|;&]*(-delete|-exec[[:space:]]+rm)' <<<"$cmd"; then
+  block "não apagar data/ nem entrada/."
 fi
 
 # Git history and uncommitted work.
