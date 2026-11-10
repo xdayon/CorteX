@@ -32,6 +32,10 @@ export function selectRows(all: ClipRow[], urlKeys: string[], legacyRun: string)
   return legacyRun ? all.filter(row => row.run_id === legacyRun) : [];
 }
 
+/** A run whose export failed keeps its suggestion and stays editable; only unfinished analysis blocks. */
+const isEditableRun = (run: WorkflowRun) =>
+  !!run.artifacts.suggestion && (isRunReady(run) || (run.status === "failed" && run.stage === "render"));
+
 export async function loadEditor(episodeId: string, urlKeys: string[], legacyRun: string, signal: AbortSignal): Promise<Loaded> {
   let encoder: RenderSettings["encoder"] | null = null;
   let encoderError = "";
@@ -54,7 +58,7 @@ export async function loadEditor(episodeId: string, urlKeys: string[], legacyRun
     const row = rows.find(item => item.run_id === runId)!;
     const run = await api.workflowRun(row.project_id, runId, signal);
     signal.throwIfAborted();
-    if (!isRunReady(run) || !run.artifacts.suggestion) throw new Error("Esta seleção ainda não está pronta para editar.");
+    if (!isEditableRun(run)) throw new Error("Esta seleção ainda não está pronta para editar.");
     runs[runId] = run;
   }
 

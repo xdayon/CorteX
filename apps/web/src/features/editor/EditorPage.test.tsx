@@ -142,6 +142,12 @@ test("a run that is missing or not ready explains why instead of opening the edi
   expect(screen.getByText(/ainda não está pronta/)).toBeTruthy();
 });
 
+test("a run whose export failed can still be opened to edit and export again", async () => {
+  vi.mocked(api.workflowRun).mockResolvedValue({ ...ready, status: "failed", stage: "render" });
+  await openEditor();
+  expect(screen.queryByText("Não foi possível abrir o editor")).toBeNull();
+});
+
 test("exporting saves the revision and submits one durable batch, then lists this batch's downloads", async () => {
   await openEditor();
   vi.mocked(api.startEditPlan).mockClear();
