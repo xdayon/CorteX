@@ -1012,6 +1012,8 @@ def create_app(config: CortexConfig | None = None):
 
     from cortex.review_api import create_review_router
     app.include_router(create_review_router(router_prefix, domain, jobs))
+    from cortex.drive import create_drive_router
+    app.include_router(create_drive_router(router_prefix, settings, domain, jobs))
     from cortex.clips_api import create_clips_router
     app.include_router(create_clips_router(router_prefix, domain, library, settings))
     from cortex.overlay_api import create_overlay_router

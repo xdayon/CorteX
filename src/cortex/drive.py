@@ -198,6 +198,69 @@ def queue_after_export_render(job: Job, config: CortexConfig, jobs: JobStore, do
         queue_drive_upload(jobs, item)
 
 
+def requeue_drive_upload(jobs: JobStore, item: ExportItem) -> Job:
+    """Queue the upload again: a failed/cancelled earlier attempt keeps its key, so go to the next one."""
+    attempt = 1
+    while (job := queue_drive_upload(jobs, item, attempt=attempt)).status in {JobStatus.FAILED, JobStatus.CANCELLED}:
+        attempt += 1
+    return job
+
+
+def drive_state(config: CortexConfig, jobs: JobStore, item: ExportItem) -> dict:
+    """What the export panel shows for one clip: off | waiting | uploading | done | failed."""
+    if not config.drive.enabled:
+        return {"state": "off"}
+    if item.status != ExportItemStatus.SUCCEEDED or not item.render_artifact_id:
+        return {"state": "waiting"}
+    latest, attempt = None, 1
+    while (job := jobs.get_by_idempotency_key(
+        f"drive:{item.render_artifact_id}" + ("" if attempt == 1 else f":retry:{attempt}"),
+    )) is not None:
+        latest, attempt = job, attempt + 1
+    if latest is None:
+        return {"state": "uploading"}  # the worker queues it right after the render
+    if latest.status == JobStatus.SUCCEEDED:
+        path = (latest.result or {}).get("drive_path", "")
+        return {"state": "done", "path": path.split(":", 1)[-1]}
+    if latest.status in {JobStatus.FAILED, JobStatus.CANCELLED}:
+        return {"state": "failed", "error": latest.error or latest.message or "O envio ao Drive não terminou."}
+    return {"state": "uploading"}
+
+
+def create_drive_router(prefix: str, config: CortexConfig, domain: DomainStore, jobs: JobStore):
+    from fastapi import APIRouter, HTTPException
+
+    from cortex.domain.store import ExportBatchNotFoundError
+
+    router = APIRouter(prefix=prefix)
+
+    def owned_batch(project_id: str, batch_id: str):
+        try:
+            batch = domain.get_export_batch(batch_id)
+        except ExportBatchNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Lote não encontrado") from exc
+        if batch.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Lote não encontrado")
+        return batch
+
+    @router.get("/projects/{project_id}/export-batches/{batch_id}/drive")
+    def batch_drive_state(project_id: str, batch_id: str):
+        batch = owned_batch(project_id, batch_id)
+        return {item.id: drive_state(config, jobs, item) for item in batch.items}
+
+    @router.post("/projects/{project_id}/export-batches/{batch_id}/drive/retry")
+    def retry_batch_drive(project_id: str, batch_id: str):
+        batch = owned_batch(project_id, batch_id)
+        if not config.drive.enabled:
+            raise HTTPException(status_code=409, detail="O envio ao Google Drive está desligado (drive.enabled).")
+        for item in batch.items:
+            if drive_state(config, jobs, item)["state"] == "failed":
+                requeue_drive_upload(jobs, item)
+        return {item.id: drive_state(config, jobs, item) for item in batch.items}
+
+    return router
+
+
 def _exported_since(config: CortexConfig, since: date) -> list[str]:
     with sqlite3.connect(config.paths.database, timeout=30) as connection:
         rows = connection.execute(
@@ -230,12 +293,7 @@ def main(argv: list[str] | None = None) -> None:
     jobs, domain = JobStore(config.paths.database), DomainStore(config.paths.database)
     for item_id in ids:
         item = domain.get_export_item(item_id)
-        attempt = 1
-        # An earlier failed/cancelled upload keeps its key: retry under the next attempt.
-        while (job := queue_drive_upload(jobs, item, attempt=attempt)).status in {
-            JobStatus.FAILED, JobStatus.CANCELLED,
-        }:
-            attempt += 1
+        job = requeue_drive_upload(jobs, item)
         print(f"{item.title[:60]}: {job.status.value} ({job.id})")
 
 

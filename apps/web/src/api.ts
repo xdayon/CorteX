@@ -184,6 +184,8 @@ export type ExportItem = {
   active_job_id?: string | null; render_artifact_id?: string | null; error?: string | null;
 };
 
+export type DriveState = {state: "off"|"waiting"|"uploading"|"done"|"failed"; path?: string; error?: string};
+
 export type ExportBatch = {
   id: string; project_id: string; workflow_run_id: string; revision_id: string;
   status: "queued"|"running"|"succeeded"|"partial"|"failed"|"cancelled";
@@ -453,6 +455,12 @@ export const api = {
 
   retryExportBatch: (projectId:string,batchId:string) =>
     request<ExportBatch>(`/api/v1/projects/${enc(projectId)}/export-batches/${enc(batchId)}/retry`,{method:"POST"}),
+
+  driveStates: (projectId:string, batchId:string, signal?:AbortSignal) =>
+    request<Record<string, DriveState>>(`/api/v1/projects/${enc(projectId)}/export-batches/${enc(batchId)}/drive`, {signal}),
+
+  retryDrive: (projectId:string, batchId:string) =>
+    request<Record<string, DriveState>>(`/api/v1/projects/${enc(projectId)}/export-batches/${enc(batchId)}/drive/retry`, {method:"POST"}),
 
   transcript: (projectId: string, artifactId: string, signal?: AbortSignal) =>
     request<{document:{segments:Array<{words:TranscriptWord[]}>}}>(`/api/v1/projects/${enc(projectId)}/transcripts/${enc(artifactId)}`, {signal}),

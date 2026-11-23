@@ -207,6 +207,7 @@
 .batch-item { padding: 10px 0; border-top: 1px solid var(--line); }
 .batch-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .batch-title { flex: 1 1 200px; min-width: 0; font-size: var(--fs-md); overflow-wrap: anywhere; }
+.batch-drive { margin-top: 6px; color: var(--tx3); font-size: var(--fs-xs); overflow-wrap: anywhere; }
 .batch-error { margin-top: 6px; color: var(--bad); font-size: var(--fs-xs); }
 
 @media (max-width: 1180px) {

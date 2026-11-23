@@ -10,8 +10,8 @@ from asgi_client import ASGITestClient as TestClient
 
 from cortex.api import create_app
 from cortex.config import CortexConfig, load_config
-from cortex.domain.models import StageArtifact
-from cortex.drive import DriveError, drive_target, upload_file
+from cortex.domain.models import ExportItem, ExportItemStatus, StageArtifact
+from cortex.drive import DriveError, drive_state, drive_target, queue_drive_upload, requeue_drive_upload, upload_file
 from cortex.jobs import JobStore
 from cortex.schemas import JobStatus, JobType, JobUpdate, PipelineStage
 from cortex.worker import process_next
@@ -116,9 +116,13 @@ def test_export_render_queues_upload_that_marks_the_clip_saved(tmp_path: Path, m
     monkeypatch.setitem(worker._HANDLERS, JobType.EDIT_PLAN, finish_plan)
     monkeypatch.setitem(worker._HANDLERS, JobType.RENDER, finish_render)
     jobs = JobStore(config.paths.database)
+    drive_url = f"/api/v1/projects/{project.id}/export-batches/{batch_id}/drive"
+    assert {v["state"] for v in client.get(drive_url).json().values()} == {"waiting"}
     for _ in range(3):
         assert process_next(config, jobs, domain, FakeTranscriptionEngine())
     assert not process_next(config, jobs, domain, FakeTranscriptionEngine())
+    [shown] = client.get(drive_url).json().values()
+    assert shown["state"] == "done" and shown["path"].startswith("CorteX/Batch/")
 
     assert domain.get_export_batch(batch_id).status == "succeeded"
     upload = next(job for job in jobs.list(limit=20) if job.type == JobType.DRIVE_UPLOAD)
@@ -129,6 +133,25 @@ def test_export_render_queues_upload_that_marks_the_clip_saved(tmp_path: Path, m
     assert log.read_text().splitlines()[2] == target
     state = next(s for s in domain.list_clip_states([project.id]) if s.clip_key == "clip-0")
     assert state.saved and state.saved_at is not None
+
+
+def test_failed_upload_is_reported_and_retried_as_a_new_attempt(tmp_path: Path) -> None:
+    config, domain, project, run = _workflow(tmp_path)
+    config = _with_drive(config, tmp_path / "rclone")
+    jobs = JobStore(config.paths.database)
+    item = ExportItem(batch_id="batch", project_id=project.id, position=0, clip_key="clip-0", title="Corte",
+                      clip={}, render_settings={}, status=ExportItemStatus.SUCCEEDED, render_artifact_id="art1")
+    assert drive_state(config, jobs, item) == {"state": "uploading"}
+    first = queue_drive_upload(jobs, item)
+    jobs.update(first.id, JobUpdate(status=JobStatus.RUNNING))
+    assert drive_state(config, jobs, item) == {"state": "uploading"}
+    jobs.update(first.id, JobUpdate(status=JobStatus.FAILED, error="Login do Google Drive expirou"))
+    assert drive_state(config, jobs, item) == {"state": "failed", "error": "Login do Google Drive expirou"}
+    retry = requeue_drive_upload(jobs, item)
+    assert retry.id != first.id and retry.status == JobStatus.QUEUED
+    assert drive_state(config, jobs, item) == {"state": "uploading"}
+    assert drive_state(config.model_copy(update={"drive": config.drive.model_copy(update={"enabled": False})}),
+                       jobs, item) == {"state": "off"}
 
 
 def test_tests_never_reach_the_real_drive() -> None:
