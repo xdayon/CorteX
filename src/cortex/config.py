@@ -157,7 +157,7 @@ class LessonsConfig(BaseModel):
     ingest_dir: Path = Path("entrada")
     language: str = "en"
     lead_in_seconds: float = Field(default=0.8, ge=0.0)
-    flow_durations: list[float] = Field(default_factory=lambda: [4, 6, 8, 10], min_length=1)
+    flow_durations: list[float] = Field(default_factory=lambda: [3, 4, 5, 6, 7, 8, 9, 10], min_length=1)  # Flow Omni 1.2
     flow_max_retime: float = Field(default=1.1, ge=1.0)
     fps: int = Field(default=30, ge=15, le=120)
     width: int = Field(default=1920, ge=64)

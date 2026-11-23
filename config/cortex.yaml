@@ -103,7 +103,10 @@ lessons:
   ingest_dir: entrada
   language: en
   lead_in_seconds: 0.8
-  flow_durations: [4, 6, 8, 10]
+  # Google Flow Omni 1.2 Flash (12/nov/2026): qualquer duração inteira de 3 a 15 s. Até 10 s o custo é linear
+  # (x2 720p = 6 créditos/s); de 11 a 15 s cada segundo extra custa o dobro, então o plano pede no máximo 10 s
+  # e divide a fala mais longa. Os 11–15 s ficam para um pedido explícito por tomada (request no prompts.py).
+  flow_durations: [3, 4, 5, 6, 7, 8, 9, 10]
   flow_max_retime: 1.1
   fps: 30
   width: 1920
